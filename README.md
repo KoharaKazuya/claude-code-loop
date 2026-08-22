@@ -172,13 +172,15 @@ npm test
 
 リリースは `npm version <patch|minor|major>` を実行する。`package.json` の `version` が更新された
 あと、`version` フック(`scripts/sync-version.mjs`)が `features/ccloop/devcontainer-feature.json` の
-`version` と README.md 中の ccloop feature 参照バージョンを同期し、コミットと `vX.Y.Z` タグの作成まで
-1 コマンドで完結する。あとは `git push --follow-tags` するだけでよい。3 ファイルを手で編集しては
-いけない(`scripts/sync-version.mjs` が上書きする)。
+`version`、README.md と `.devcontainer/devcontainer.json` 中の ccloop feature 参照バージョンを同期し、
+コミットと `vX.Y.Z` タグの作成まで 1 コマンドで完結する。あとは `git push --follow-tags` するだけでよい。
+これら 3 ファイルを手で編集してはいけない(`scripts/sync-version.mjs` が上書きする)。
 
-`scripts/check-version.mjs` が 3 箇所のバージョン一致を検証する。CI(`.github/workflows/ci.yml`)は
-push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は `vX.Y.Z` タグ push 時に
-タグバージョンとの一致まで検証したうえで `lib/` と `bin/` を feature にバンドルし、GHCR へ publish する。
+`scripts/check-version.mjs` が package.json を含む 4 箇所のバージョン一致を検証する。CI
+(`.github/workflows/ci.yml`)は push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は
+`vX.Y.Z` タグ push 時にタグバージョンとの一致まで検証したうえで `lib/` と `bin/` を feature にバンドルし、
+GHCR へ publish する。`.devcontainer/devcontainer-lock.json` の ccloop エントリは同期対象に含めない
+(digest は publish 後にしか分からないため)。コンテナ再ビルド時に devcontainer CLI が解決し直す。
 
 ## ドキュメント
 
