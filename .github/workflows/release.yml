@@ -43,3 +43,7 @@ jobs:
           publish-features: "true"
           base-path-to-features: "./features"
           generate-docs: "false"
+        # devcontainer CLI は ghcr.io への push 認証に GITHUB_TOKEN 環境変数を使う。
+        # action 側は自動で渡さないため、明示しないと匿名 push になり失敗する。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
