@@ -6,7 +6,8 @@
     "target": "es2023",
     "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
+    "allowJs": true,
     "types": ["node"]
   },
-  "include": ["lib/**/*.ts"]
+  "include": ["lib/**/*.ts", "scripts/**/*.ts", "scripts/**/*.mjs"]
 }
