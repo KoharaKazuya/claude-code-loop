@@ -36,7 +36,7 @@
       "Bash(diff *)"
     ],
     "deny": [
-      "Read(//home/node/.claude/**)",
+      "Read(/{{HOME}}/.claude/**)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Bash(git push*)",
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.agent/hooks/deny-ask-user.mjs\""
+            "command": "node \"$CCLOOP_HOME/hooks/deny-ask-user.ts\""
           }
         ]
       }
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.agent/hooks/stop-check.mjs\""
+            "command": "node \"$CCLOOP_HOME/hooks/stop-check.ts\""
           }
         ]
       }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.agent/hooks/worktree-create.mjs\""
+            "command": "node \"$CCLOOP_HOME/hooks/worktree-create.ts\""
           }
         ]
       }

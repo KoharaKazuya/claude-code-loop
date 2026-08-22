@@ -1,0 +1,8 @@
+#!/bin/sh
+# ccloop のランチャー。CCLOOP_HOME(= lib/ の絶対パス)を決めて cli.ts を Node で直接実行する。
+# ビルド成果物は持たず、Node の型ストリップで .ts をそのまま動かす。
+set -e
+self="$(readlink -f "$0")"
+CCLOOP_HOME="${CCLOOP_HOME:-$(dirname "$self")/../lib}"
+export CCLOOP_HOME
+exec node --no-warnings=ExperimentalWarning "$CCLOOP_HOME/cli.ts" "$@"

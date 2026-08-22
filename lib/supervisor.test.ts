@@ -31,7 +31,6 @@ import {
   loadDenyRules,
   loadPermissionDenials,
   nextStopEscalation,
-  normalizeConfig,
   normalizeState,
   overviewSectionLines,
   parseNameStatus,
@@ -56,6 +55,7 @@ import {
   sessionDeadline,
   skipMainWriteIfGitBusy,
   startupRecoveryTotal,
+  statePathOf,
   type SessionResult,
   type StagedChange,
   summarizeAgentCommit,
@@ -1219,15 +1219,15 @@ describe("normalizeState", () => {
 });
 
 describe("supervisorSourceHash", () => {
+  // dir は CCLOOP_HOME(ccloop 自身のインストール先 = lib/)に見立てた一時ディレクトリ
   let dir: string;
 
   function writeSrc(name: string, content: string): void {
-    fs.writeFileSync(path.join(dir, ".agent", "supervisor", name), content);
+    fs.writeFileSync(path.join(dir, name), content);
   }
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-srchash-"));
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor"), { recursive: true });
   });
 
   afterEach(() => {
@@ -1245,6 +1245,16 @@ describe("supervisorSourceHash", () => {
     const before = supervisorSourceHash(dir);
 
     writeSrc("supervisor.ts", "export const a = 2;\n");
+
+    expect(supervisorSourceHash(dir)).not.toBe(before);
+  });
+
+  it(".md / .json の内容を変えるとハッシュが変わる(PROMPT やテンプレートの変更も再起動が要る)", () => {
+    writeSrc("supervisor.ts", "export const a = 1;\n");
+    writeSrc("settings.template.json", "{}\n");
+    const before = supervisorSourceHash(dir);
+
+    writeSrc("settings.template.json", "{\"permissions\": {}}\n");
 
     expect(supervisorSourceHash(dir)).not.toBe(before);
   });
@@ -1268,8 +1278,8 @@ describe("supervisorSourceHash", () => {
     expect(supervisorSourceHash(dir)).not.toBe(before);
   });
 
-  it(".agent/supervisor ディレクトリが無ければ例外を投げず空文字を返す", () => {
-    fs.rmSync(path.join(dir, ".agent", "supervisor"), { recursive: true, force: true });
+  it("CCLOOP_HOME のディレクトリが無ければ例外を投げず空文字を返す", () => {
+    fs.rmSync(dir, { recursive: true, force: true });
 
     expect(() => supervisorSourceHash(dir)).not.toThrow();
     expect(supervisorSourceHash(dir)).toBe("");
@@ -1278,7 +1288,7 @@ describe("supervisorSourceHash", () => {
   it(".ts で終わる名前のディレクトリがあっても無視する(例外を投げない)", () => {
     writeSrc("supervisor.ts", "export const a = 1;\n");
     const before = supervisorSourceHash(dir);
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor", "sub.ts"));
+    fs.mkdirSync(path.join(dir, "sub.ts"));
 
     expect(() => supervisorSourceHash(dir)).not.toThrow();
     expect(supervisorSourceHash(dir)).toBe(before);
@@ -1346,96 +1356,6 @@ describe("ensureWritableDir", () => {
     } finally {
       fs.chmodSync(dir, 0o755);
     }
-  });
-});
-
-describe("normalizeConfig", () => {
-  const root = "/workspaces/my-type";
-
-  it("parallel が無い既存の config.json 形式は既定値で埋める", () => {
-    const raw = {
-      claudeCommand: "claude",
-      model: "opus",
-      escalation: { model: "claude-fable-5", afterRetries: 2 },
-      permissionMode: "auto",
-      maxRetries: 3,
-      taskTimeoutMs: 2400000,
-      maxTurns: 150,
-      rateLimit: { backoffMs: 300000 },
-      explore: { enabled: true, minIntervalMs: 3600000 },
-      idlePollMs: 60000,
-    };
-
-    const config = normalizeConfig(raw, root);
-
-    expect(config.parallel).toEqual({
-      maxSessions: 1,
-      worktreeDir: "/workspaces/my-type-worktrees",
-      linkPaths: ["node_modules"],
-    });
-    // 既存フィールドは変更されない
-    expect(config.claudeCommand).toBe("claude");
-    expect(config.model).toBe("opus");
-    expect(config.escalation).toEqual({ model: "claude-fable-5", afterRetries: 2 });
-    expect(config.maxRetries).toBe(3);
-  });
-
-  it("maxSessions は 1..8 にクランプする(上限超過)", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: 100 } }, root);
-    expect(config.parallel.maxSessions).toBe(8);
-  });
-
-  it("maxSessions は 1..8 にクランプする(下限未満)", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: 0 } }, root);
-    expect(config.parallel.maxSessions).toBe(1);
-  });
-
-  it("maxSessions が数値でなければ既定の1にする", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: "3" } }, root);
-    expect(config.parallel.maxSessions).toBe(1);
-  });
-
-  it("escalation が欠損していれば無効化した既定値を使う", () => {
-    const config = normalizeConfig({}, root);
-    expect(config.escalation).toEqual({ model: "", afterRetries: Infinity });
-  });
-
-  it("worktreeDir / linkPaths を明示すればそれを使う", () => {
-    const config = normalizeConfig(
-      { parallel: { maxSessions: 2, worktreeDir: "/custom/dir", linkPaths: ["node_modules", ".venv"] } },
-      root,
-    );
-    expect(config.parallel).toEqual({
-      maxSessions: 2,
-      worktreeDir: "/custom/dir",
-      linkPaths: ["node_modules", ".venv"],
-    });
-  });
-
-  // 実ファイルを通す。config.json の書き間違い(parallel の位置ずれ・型違い)は
-  // 既定値 1 に落ちて静かに並列実行が無効化されるため、ここで検出する
-  it("実際の .agent/config.json から並列度を読み取れる", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-    const raw = JSON.parse(fs.readFileSync(path.join(repoRoot, ".agent", "config.json"), "utf8")) as unknown;
-
-    const config = normalizeConfig(raw, repoRoot);
-
-    expect(config.parallel.maxSessions).toBe(4);
-  });
-
-  it("triage が無い既存の config.json 形式は既定値(enabled: true, model: haiku)で埋める", () => {
-    const config = normalizeConfig({}, root);
-    expect(config.triage).toEqual({ enabled: true, model: "haiku" });
-  });
-
-  it("triage.enabled / triage.model を明示すればそれを使う", () => {
-    const config = normalizeConfig({ triage: { enabled: false, model: "opus" } }, root);
-    expect(config.triage).toEqual({ enabled: false, model: "opus" });
-  });
-
-  it("triage.model が空文字・非文字列なら既定の haiku にする", () => {
-    expect(normalizeConfig({ triage: { model: "" } }, root).triage.model).toBe("haiku");
-    expect(normalizeConfig({ triage: { model: 1 } }, root).triage.model).toBe("haiku");
   });
 });
 
@@ -2751,8 +2671,8 @@ describe("taskFileChangedOnBranch", () => {
   });
 });
 
-describe("stop-check hook", () => {
-  const script = path.resolve(import.meta.dirname, "..", "hooks", "stop-check.mjs");
+describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
+  const script = path.resolve(import.meta.dirname, "hooks", "stop-check.ts");
   let dir: string;
   let hooksDir: string;
 
@@ -2889,14 +2809,14 @@ describe("prunePatches", () => {
     fs.writeFileSync(path.join(patchesDir, "T-002-20260815T000000Z.patch"), "new");
     fs.writeFileSync(path.join(patchesDir, "メモ.txt"), "人間が置いたファイル");
 
-    const removed = prunePatches(dir, new Date("2026-08-16T00:00:00.000Z"), 14);
+    const removed = prunePatches(patchesDir, new Date("2026-08-16T00:00:00.000Z"), 14);
 
     expect(removed).toBe(1);
     expect(fs.readdirSync(patchesDir).sort()).toEqual(["T-002-20260815T000000Z.patch", "メモ.txt"]);
   });
 
   it("patches ディレクトリが無ければ 0 件", () => {
-    expect(prunePatches(dir, new Date("2026-08-16T00:00:00.000Z"), 14)).toBe(0);
+    expect(prunePatches(path.join(dir, "patches"), new Date("2026-08-16T00:00:00.000Z"), 14)).toBe(0);
   });
 });
 
@@ -3182,7 +3102,7 @@ describe("recoverStartupIn", () => {
   });
 
   it("H: state.json の runningSessions を空にする", () => {
-    const statePath = path.join(dir, ".agent", "state.json");
+    const statePath = statePathOf(dir);
     fs.writeFileSync(
       statePath,
       JSON.stringify({
@@ -3215,15 +3135,11 @@ describe("recoverStartupIn", () => {
     expect(fs.existsSync(path.join(dir, "result.txt"))).toBe(false);
   });
 
-  it("J: 起動時点の supervisor ソースのハッシュを state.json に記録する", () => {
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".agent", "supervisor", "supervisor.ts"), "export const a = 1;\n");
-
+  it("J: 起動時点の ccloop 自身のソースのハッシュを state.json に記録する", () => {
     recoverStartupIn(dir, config(), NOW);
 
-    const statePath = path.join(dir, ".agent", "state.json");
-    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as { supervisorSourceHash?: string };
-    expect(state.supervisorSourceHash).toBe(supervisorSourceHash(dir));
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { supervisorSourceHash?: string };
+    expect(state.supervisorSourceHash).toBe(supervisorSourceHash());
     expect(state.supervisorSourceHash).not.toBe("");
   });
 });

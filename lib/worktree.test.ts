@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { defaultWorktreeDir } from "./config.ts";
 import {
   branchNameFor,
   createWorktree,
@@ -389,19 +390,25 @@ describe("salvagePatch", () => {
   });
 });
 
-describe("worktree-create.mjs", () => {
+describe("worktree-create hook (lib/hooks/worktree-create.ts)", () => {
   let dir: string;
   let hooksDir: string;
   let worktreesDir: string;
 
-  const scriptPath = path.join(import.meta.dirname, "..", "hooks", "worktree-create.mjs");
+  const scriptPath = path.join(import.meta.dirname, "hooks", "worktree-create.ts");
 
+  // hook は CLAUDE_PROJECT_DIR を最優先で見る。テストは stdin の cwd で対象を指定するため、
+  // 実行環境から継承した値がテスト対象のリポジトリを上書きしないよう取り除く
   function runHook(input: object): { stdout: string; status: number } {
+    const env = { ...process.env };
+    delete env.CLAUDE_PROJECT_DIR;
+    delete env.CCLOOP_REPO;
     try {
       const stdout = execFileSync("node", [scriptPath], {
         input: JSON.stringify(input),
         cwd: dir,
         encoding: "utf8",
+        env,
       });
       return { stdout, status: 0 };
     } catch (err) {
@@ -414,7 +421,8 @@ describe("worktree-create.mjs", () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-create-test-repo-"));
     hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-create-test-hooks-"));
     initRepo(dir, hooksDir);
-    worktreesDir = path.join(path.dirname(dir), `${path.basename(dir)}-worktrees`);
+    // hook は Supervisor と同じ config.ts の既定値(state ディレクトリ配下)を使う
+    worktreesDir = defaultWorktreeDir(dir);
   });
 
   afterEach(() => {

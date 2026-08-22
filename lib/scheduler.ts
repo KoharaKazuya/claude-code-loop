@@ -68,7 +68,7 @@ export const STOP_REASON = {
     "STOP (clean): .agent/ 以外に未コミットの差分が残っているが、新規セッションを起動しない以上は解消しないため差分を残して停止する(再開時は .agent/STOP を削除)",
   onceDone: "once 完了",
   onceIdle: "実行可能なタスクが無い(探索も実行間隔内)。終了",
-  idleExit: "実行可能なタスクが無く、探索しても新しいタスクが生まれなかったため終了する(再開: npm run agent)",
+  idleExit: "実行可能なタスクが無く、探索しても新しいタスクが生まれなかったため終了する(再開: ccloop run)",
 } as const;
 
 /**
