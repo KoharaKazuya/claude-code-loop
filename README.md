@@ -32,7 +32,7 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/koharakazuya/claude-code-loop/ccloop:1": {}
+    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0": {}
   }
 }
 ```
@@ -164,10 +164,11 @@ npm run lint
 npm test
 ```
 
-`bin/ccloop` はこのリポジトリの checkout をそのまま実行できるランチャーなので、`.devcontainer/` で
-開発する場合は `ccloop` コマンドがこのリポジトリの `lib/` を指すようセットアップ済み(`post-create.sh`
-を参照)。feature 自体の動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと
-同じ手順)。
+`.devcontainer/` のコンテナ内で `ccloop` コマンドが指すのは、利用者と同じ経路でインストールされた
+公開済み feature(`ghcr.io/koharakazuya/claude-code-loop/ccloop:0.1.0`)であり、この checkout の
+`lib/` ではない。`lib/` のローカル変更を試すときは `./bin/ccloop <subcommand>` を直接実行する
+(`bin/ccloop` は自身の実体から見た `../lib` を `CCLOOP_HOME` として解決するランチャー)。feature 自体の
+動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと同じ手順)。
 
 リリースは `package.json` と `features/ccloop/devcontainer-feature.json` の `version` を同じ値に
 上げてコミットし、`vX.Y.Z` タグを push する。GitHub Actions(`.github/workflows/release.yml`)が

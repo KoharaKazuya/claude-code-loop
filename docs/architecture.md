@@ -18,6 +18,17 @@ ccloop は DevContainer feature としてインストールされ、`/usr/local/
 (`lib/paths.ts` のコメント参照)。リポジトリルートは `--repo` / `CCLOOP_REPO` / cwd からの `.git` 探索で
 実行時に決定する。
 
+## このリポジトリ自身も公開 feature 経由で ccloop を使う理由
+
+`.devcontainer/` は checkout の `bin/ccloop` を symlink せず、利用者と同じくバージョン固定の公開済み
+feature(`ghcr.io/koharakazuya/claude-code-loop/ccloop:0.1.0`)をインストールする。
+
+- 自律ループがこのリポジトリの `lib/` を書き換えても、コンテナ内で動いている `ccloop` は feature 側の
+  固定コピーなので影響を受けない(自己改変で実行中のツールが壊れない)。
+- 利用者と同じインストール経路で動かすため、install.sh や feature 定義の不具合を開発環境で検出できる。
+
+`lib/` のローカル変更は `./bin/ccloop` を直接実行して検証する。
+
 ## `.claude/` を要求しない
 
 利用側リポジトリに `.claude/CLAUDE.md` や `.claude/agents/reviewer.md` を置く運用も可能だが、ccloop は
