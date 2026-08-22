@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  feature-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bundle lib/ and bin/ into the feature
+        run: |
+          cp -R lib features/ccloop/lib
+          cp -R bin features/ccloop/bin
+
+      - name: Link features/ as src/ for the devcontainer CLI test convention
+        # `devcontainer features test` has no option equivalent to the publish
+        # action's `base-path-to-features`: it always looks for a `src/<feature>`
+        # directory mirrored by `test/<feature>` under --project-folder. This repo
+        # keeps the feature under `features/ccloop` (not `src/ccloop`), so a
+        # symlink bridges the two without duplicating or relocating files.
+        run: ln -s features src
+
+      - name: Install devcontainer CLI
+        run: npm install -g @devcontainers/cli
+
+      - name: Run feature tests
+        run: devcontainer features test -f ccloop -p . --base-image mcr.microsoft.com/devcontainers/typescript-node:4-24-trixie
