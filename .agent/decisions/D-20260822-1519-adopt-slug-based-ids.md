@@ -8,7 +8,7 @@ createdAt: 2026-08-22T15:19:03.887Z
 「既存ファイルの最大番号 + 1」の連番から `<prefix>-<YYYYMMDD>-<HHMM>-<slug>`
 (prefix ∈ {T, D, HR})へ変更した。同一 ID が既にある場合(`.agent/archive/` 内も含む)は末尾に
 `-2`, `-3`… を付ける。マージ時の ID 改番ロジックは廃止し、同名 add/add は通常の実質的コンフリクトと
-して人間に回す。`ccloop task add` に `--slug` オプションを追加し、未指定ならタイトルから自動生成する
+して人間に回す。`ccloop add` に `--slug` オプションを追加し、未指定ならタイトルから自動生成する
 (ASCII 化できなければ `task`)。
 
 理由:
@@ -31,9 +31,10 @@ createdAt: 2026-08-22T15:19:03.887Z
   という単純さが失われ、実装・運用が複雑になる。
 
 影響範囲: `lib/prompt/PROMPT.md`(採番規則・テンプレート例)、README.md、
-`docs/architecture.md`(設計理由)、`lib/rotate.ts` / `lib/paths.ts` のコメント、既存の
+`docs/architecture.md`(設計理由)、`lib/rotate.ts` のコメント、既存の
 `.agent/decisions/D-20260822-01.md` を新形式へ `git mv` で移行済み。採番・slug 生成の実装
-(`lib/supervisor.ts` / `lib/triage.ts` / `lib/merge.ts`)は別セッションの担当。
+(`lib/ids.ts` / `lib/supervisor.ts` / `lib/triage.ts` / `lib/merge.ts`)も同じ変更に含む。
 
-未確認事項: `--slug` オプションと自動生成ロジックの実装状況・実際の挙動はこのセッションでは
-未検証(担当外のため触っていない)。
+`--slug` オプションは実装・テスト済みで、実機でも確認済み(`ccloop add "Fix the login retry loop"`
+→ `T-20260822-1534-fix-the-login-retry-loop.md`、日本語のみのタイトル → `…-task.md`、不正な
+`--slug` 指定 → exit 1)。

@@ -181,12 +181,16 @@ tasks / decisions / human-review は `.agent/<種類>/<ID>.md` に 1 件 1 フ�
 ファイル名(拡張子除く)が ID そのもの。ID の形式は `<prefix>-<YYYYMMDD>-<HHMM>-<slug>`(タスクは
 `T-`、判断は `D-`、Review は `HR-`)。
 
-- `YYYYMMDD-HHMM` は作成時刻(UTC)。`createdAt` に書く ISO 8601 文字列の先頭 `YYYY-MM-DDTHH:MM` から
-  ハイフンとコロンを除いたもの(`node -e "console.log(new Date().toISOString())"` で取得した実測値を使う)。
+- `YYYYMMDD-HHMM` は作成時刻(UTC)。`createdAt` に書く ISO 8601 文字列の日付部分のハイフンと時刻部分の
+  コロンを除き、区切りの `T` を `-` にしたもの(秒以下は切り捨てる)。例:
+  `2026-01-01T00:00:00.000Z` → `20260101-0000`(`node -e "console.log(new Date().toISOString())"` で
+  取得した実測値を使う)。
 - slug は内容を表す英語の名詞句(3〜5 語目安、`^[a-z0-9]+(?:-[a-z0-9]+)*$`、最大 40 文字)。状態や結果は
   含めない(status で表す)。日本語・記号は使わない(ブランチ名 `agent/<taskId>` や grep での扱いやすさの
   ため)。一度付けた slug は変更しない(本文からの参照が壊れるため)。
-- `ls` の辞書順がそのまま作成順になる(decisions の直近 10 件ローテーションはこの前提で動く)。
+- `ls` の辞書順がそのまま作成順になる(decisions の直近 10 件ローテーションはこの前提で動く)。ただし
+  これは新形式の ID 同士に限る。旧形式(`D-YYYYMMDD-NN` のような連番)のファイルが同じ日の新形式
+  ファイルと混在する場合、辞書順は厳密な時系列と一致しないことがある。
 - 同一 ID のファイルが既にある場合(`.agent/archive/` 内も含む)は末尾に `-2`, `-3`… を付ける。
 
 frontmatter はフラットな `key: value` とインライン配列 `[a, b]` のみで、複数行の値は使わない

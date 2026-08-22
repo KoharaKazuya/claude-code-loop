@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildId,
-  disambiguateId,
-  idTimestamp,
-  isLegacyId,
-  isNewFormatId,
-  isValidId,
-  isValidSlug,
-  slugify,
-  SLUG_MAX_LENGTH,
-} from "./ids.ts";
+import { buildId, disambiguateId, idTimestamp, isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
 
 describe("slugify", () => {
   it("英語の語句をハイフン区切りの小文字にする", () => {
@@ -56,6 +46,17 @@ describe("slugify", () => {
   it("1 語だけで上限を超える場合は語の途中で切る", () => {
     const slug = slugify("a".repeat(60));
     expect(slug).toBe("a".repeat(SLUG_MAX_LENGTH));
+  });
+
+  it("語境界での切り詰めが極端に短くなる場合はハード切り詰めにフォールバックする", () => {
+    // 語境界だと先頭の "x" 1 文字しか残らない(短すぎる)ため、40 文字でのハード切り詰めになる
+    const slug = slugify(`x ${"a".repeat(45)}`);
+    expect(slug).toBe(`x-${"a".repeat(38)}`);
+    expect((slug ?? "").length).toBe(SLUG_MAX_LENGTH);
+  });
+
+  it("付随的な ASCII 断片だけが残り意味を持たない場合は null", () => {
+    expect(slugify("ひらがな2")).toBeNull();
   });
 
   it("生成結果は必ず妥当な slug になる", () => {
@@ -108,10 +109,6 @@ describe("buildId", () => {
       "HR-20260822-0905-review-merge-policy",
     );
   });
-
-  it("作った ID は新形式として妥当", () => {
-    expect(isNewFormatId(buildId("D", "drop-id-renumbering", "2026-08-22T09:05:31.123Z"))).toBe(true);
-  });
 });
 
 describe("disambiguateId", () => {
@@ -127,39 +124,5 @@ describe("disambiguateId", () => {
   it("連続して衝突する場合は空いている番号まで進める", () => {
     const taken = new Set(["T-20260822-0905-a-b", "T-20260822-0905-a-b-2", "T-20260822-0905-a-b-3"]);
     expect(disambiguateId("T-20260822-0905-a-b", (id) => taken.has(id))).toBe("T-20260822-0905-a-b-4");
-  });
-
-  it("サフィックス付きの ID も新形式として妥当なまま", () => {
-    const taken = new Set(["T-20260822-0905-a-b"]);
-    expect(isNewFormatId(disambiguateId("T-20260822-0905-a-b", (id) => taken.has(id)))).toBe(true);
-  });
-});
-
-describe("isNewFormatId / isLegacyId / isValidId", () => {
-  it("新形式を認識する", () => {
-    expect(isNewFormatId("T-20260822-0905-fix-login-retry")).toBe(true);
-    expect(isNewFormatId("D-20260822-0905-drop-renumbering")).toBe(true);
-    expect(isNewFormatId("HR-20260822-0905-review-policy")).toBe(true);
-    expect(isLegacyId("T-20260822-0905-fix-login-retry")).toBe(false);
-  });
-
-  it("旧形式を読み取り互換として認める", () => {
-    expect(isLegacyId("T-001")).toBe(true);
-    expect(isLegacyId("D-20260818-01")).toBe(true);
-    expect(isLegacyId("HR-20260818-02")).toBe(true);
-    expect(isNewFormatId("T-001")).toBe(false);
-  });
-
-  it("どちらでもない文字列は認めない", () => {
-    expect(isValidId("T-20260822-0905-")).toBe(false);
-    expect(isValidId("X-20260822-0905-slug")).toBe(false);
-    expect(isValidId("T-20260822-0905-Slug")).toBe(false);
-    expect(isValidId("T-2026822-0905-slug")).toBe(false);
-    expect(isValidId("../../etc/passwd")).toBe(false);
-  });
-
-  it("新旧どちらの形式でも isValidId は真", () => {
-    expect(isValidId("T-20260822-0905-fix-login-retry")).toBe(true);
-    expect(isValidId("T-001")).toBe(true);
   });
 });

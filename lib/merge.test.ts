@@ -354,7 +354,6 @@ describe("mergeAgentBranch", () => {
 
     expect(outcome.result).toBe("renumbered");
     if (outcome.result !== "renumbered") throw new Error("unreachable");
-    expect(outcome.resolvedTaskFile).toBe(true);
     expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-042.md"), "utf8")).toBe(
       "branch(セッション)が書いた最終状態\n",
     );

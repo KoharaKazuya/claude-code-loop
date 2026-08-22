@@ -2216,7 +2216,7 @@ function conflictResolutionSection(task: Task): string {
     "- この作業ツリーには main とのマージが進行中で、衝突マーカーが残っている(`git status` で確認する)",
     "- まず衝突を解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` でマージを完成させること",
     "- 解消の判断に迷う箇所は main 側を優先する。優先した理由と捨てた変更は `.agent/decisions/` に記録する",
-    "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、後から起票した側の ID を付け直して解決すること",
+    "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、どちらかの ID を付け替えて両方残すこと。これは新規追加同士の衝突であり、どちらの ID もこの時点ではまだ他から参照されていないため付け替えてよい(一度付けた slug を変更しないルールは、参照が発生した後の ID に対するもの)。付け替える場合は重複時の規約と同様に末尾へ `-2` を付ける",
     "- 衝突解消が終わってから、必要なら本来のタスクの続きに取りかかること",
   ].join("\n");
 }
@@ -2607,10 +2607,8 @@ function describeMergeOutcome(outcome: MergeOutcome): string {
   switch (outcome.result) {
     case "merged":
       return "main へマージした";
-    case "renumbered": {
-      const note = outcome.resolvedTaskFile ? ": タスクファイルはブランチ側を採用" : "";
-      return `main へマージした(機械的に解決${note})`;
-    }
+    case "renumbered":
+      return "main へマージした(機械的に解決: タスクファイルはブランチ側を採用)";
     case "nothing-to-merge":
       return "ブランチに新しいコミットがなく、マージするものがなかった";
     case "conflict":
@@ -3238,6 +3236,24 @@ function positionalArgs(argv: string[]): string[] {
   return positional;
 }
 
+/**
+ * 新規タスクの ID に使う slug を決定する。`explicit`(`--slug`)が指定されていればその妥当性を
+ * 検証して使う(不正なら throw)。未指定なら title から生成し、日本語だけのタイトルなど
+ * slugify が null を返す入力では既定値 "task" にフォールバックする(採番自体は必ず成功させる)。
+ * process.exit を伴わない純粋関数にして cmdAdd から切り出し、単体テストできるようにしている。
+ */
+export function resolveTaskSlug(title: string, explicit?: string): string {
+  if (explicit !== undefined) {
+    if (!isValidSlug(explicit)) {
+      throw new Error(
+        `--slug は小文字英数字とハイフンのみ・${SLUG_MAX_LENGTH} 文字以内で指定する(例: fix-login-retry): ${explicit}`,
+      );
+    }
+    return explicit;
+  }
+  return slugify(title) ?? "task";
+}
+
 export function cmdAdd(argv: string[]): void {
   const positional = positionalArgs(argv);
   const title = positional[0];
@@ -3253,16 +3269,13 @@ export function cmdAdd(argv: string[]): void {
   };
   const now = new Date().toISOString();
   const fallbackBody = positional.slice(1).join("\n") || title;
-  // ID の slug は明示指定 > タイトルからの生成 > 既定値("task")の順。日本語だけのタイトルは
-  // slugify が null を返すため、既定値に落として採番自体は必ず成功させる
-  const slugOpt = opt("slug");
-  if (slugOpt !== undefined && !isValidSlug(slugOpt)) {
-    console.error(
-      `エラー: --slug は小文字英数字とハイフンのみ・${SLUG_MAX_LENGTH} 文字以内で指定する(例: fix-login-retry): ${slugOpt}`,
-    );
+  let slug: string;
+  try {
+    slug = resolveTaskSlug(title, opt("slug"));
+  } catch (err) {
+    console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
-  const slug = slugOpt ?? slugify(title) ?? "task";
   const task: Task = {
     id: newTaskId(slug, now),
     title,

@@ -48,11 +48,14 @@ import {
   recordFailure,
   recordPermissionDenials,
   recoverStartupIn,
+  repoPaths,
+  resolveTaskSlug,
   retryContextSection,
   type RunningSessionState,
   runningSessionLines,
   runRotate,
   sessionDeadline,
+  setRepoPaths,
   skipMainWriteIfGitBusy,
   startupRecoveryTotal,
   statePathOf,
@@ -3223,14 +3226,19 @@ describe("recoverStartupIn", () => {
 
 describe("newTaskId", () => {
   let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
 
   beforeEach(() => {
+    // useRepoRoot はモジュール内で共有される currentPaths を書き換えるため、他のテストへ
+    // 影響を残さないよう元の値を退避し、afterEach で必ず復元する
+    originalPaths = repoPaths();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-taskid-"));
     // newTaskId は repoPaths() 経由で対象リポジトリを見るため、テスト用の一時リポジトリを注入する
     useRepoRoot(dir);
   });
 
   afterEach(() => {
+    setRepoPaths(originalPaths);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -3264,5 +3272,23 @@ describe("newTaskId", () => {
     writeTask("tasks", "T-001");
     writeTask("archive/tasks", "T-042");
     expect(newTaskId("drop-serial-ids", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-drop-serial-ids");
+  });
+});
+
+describe("resolveTaskSlug", () => {
+  it("有効な --slug 指定があればそのまま使う", () => {
+    expect(resolveTaskSlug("タイトルは無視される", "fix-login-retry")).toBe("fix-login-retry");
+  });
+
+  it("不正な --slug 指定は throw する", () => {
+    expect(() => resolveTaskSlug("タイトル", "Fix Login")).toThrow(/--slug/);
+  });
+
+  it("--slug 未指定なら title から生成する", () => {
+    expect(resolveTaskSlug("Fix login retry", undefined)).toBe("fix-login-retry");
+  });
+
+  it("--slug 未指定かつ日本語だけの title なら既定値 task にフォールバックする", () => {
+    expect(resolveTaskSlug("タスクの整理", undefined)).toBe("task");
   });
 });

@@ -17,37 +17,26 @@ export const SLUG_MAX_LENGTH = 40;
 /** slug 単体の形。小文字英数字の語をハイフンで繋いだもの(先頭・末尾・連続のハイフンなし) */
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/** 新形式の ID 全体。衝突回避で付く `-2` などは slug 側の語として吸収される */
-export const ID_RE = /^(?:T|D|HR)-\d{8}-\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-/** 旧形式の ID(読み取り互換のためだけに認める) */
-export const LEGACY_ID_RE = /^(?:T-\d+|(?:D|HR)-\d{8}-\d+)$/;
-
 /** 外から渡された slug(`--slug` や triage の応答)が使える形か。長さ上限も含めて判定する */
 export function isValidSlug(slug: string): boolean {
   return slug.length <= SLUG_MAX_LENGTH && SLUG_RE.test(slug);
 }
 
-/** 新形式の ID か */
-export function isNewFormatId(id: string): boolean {
-  return ID_RE.test(id);
-}
+/** slug として意味を持つとみなす最小の長さ。これ未満は「たまたま拾えた断片」とみなし null にする */
+const MIN_MEANINGFUL_SLUG_LENGTH = 3;
 
-/** 旧形式の ID か */
-export function isLegacyId(id: string): boolean {
-  return LEGACY_ID_RE.test(id);
-}
-
-/** ID として妥当か(新形式・旧形式のどちらでも真) */
-export function isValidId(id: string): boolean {
-  return isNewFormatId(id) || isLegacyId(id);
-}
+/** 語境界での切り詰め結果をこの長さ未満とみなしたら、ハード切り詰めへフォールバックする */
+const WORD_BOUNDARY_TRUNCATION_MIN_LENGTH = 8;
 
 /**
  * 任意のテキストから slug を作る。ASCII 英数字以外は区切りとして落とすため、
  * 日本語だけのタイトルなど slug に残る文字が無い入力では null を返す
  * (呼び出し側で既定値へフォールバックする)。上限を超える場合は語境界で切り詰める
- * (1 語だけで上限を超える場合に限り、語の途中で切る)。
+ * (1 語だけで上限を超える場合に限り、語の途中で切る)。ただし語境界での切り詰めが
+ * 極端に短い結果(例: 短い先頭語の直後に上限を超える 1 語が続く場合)を生むときは、
+ * 語境界を無視した上限までのハード切り詰めにフォールバックする(末尾のハイフンは除去する)。
+ * また、日本語混じりの入力から付随的な ASCII 断片だけが残ったような、内容の見当が
+ * 付かない短すぎる結果(3 文字未満)は null にする。
  */
 export function slugify(text: string): string | null {
   const normalized = text
@@ -58,13 +47,22 @@ export function slugify(text: string): string | null {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   if (normalized === "") return null;
-  if (normalized.length <= SLUG_MAX_LENGTH) return normalized;
 
-  // 上限の 1 文字先まで見ることで、境界がちょうど区切りに当たる場合に語を落とさずに済ませる
-  const window = normalized.slice(0, SLUG_MAX_LENGTH + 1);
-  const lastSep = window.lastIndexOf("-");
-  const truncated = lastSep > 0 ? window.slice(0, lastSep) : normalized.slice(0, SLUG_MAX_LENGTH);
-  return truncated === "" ? null : truncated;
+  let result: string;
+  if (normalized.length <= SLUG_MAX_LENGTH) {
+    result = normalized;
+  } else {
+    // 上限の 1 文字先まで見ることで、境界がちょうど区切りに当たる場合に語を落とさずに済ませる
+    const window = normalized.slice(0, SLUG_MAX_LENGTH + 1);
+    const lastSep = window.lastIndexOf("-");
+    const wordBoundaryTruncated = lastSep > 0 ? window.slice(0, lastSep) : normalized.slice(0, SLUG_MAX_LENGTH);
+    result =
+      wordBoundaryTruncated.length >= WORD_BOUNDARY_TRUNCATION_MIN_LENGTH
+        ? wordBoundaryTruncated
+        : normalized.slice(0, SLUG_MAX_LENGTH).replace(/-+$/, "");
+  }
+
+  return result.length < MIN_MEANINGFUL_SLUG_LENGTH ? null : result;
 }
 
 /**
