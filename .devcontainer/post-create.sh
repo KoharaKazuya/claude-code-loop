@@ -15,8 +15,3 @@ sudo chown -R node: /home/node/.claude
 # コンテナ内の node ユーザーが書き込めるようにする。
 sudo chown node: node_modules
 npm install
-
-# --- このリポジトリの checkout を ccloop 本体として使えるようにする ---
-# bin/ccloop は自分の実体(readlink -f)から見た ../lib を CCLOOP_HOME として解決するため、
-# ここへのシンボリックリンクだけで feature 版と同じ動かし方(ccloop <subcommand>)ができる。
-sudo ln -sfn "$(pwd)/bin/ccloop" /usr/local/bin/ccloop
