@@ -9,7 +9,7 @@
  *   status   稼働状況・進捗の要約
  *   watch    status を一定間隔で再描画し続ける: watch [--interval <秒>]
  *   list     タスク一覧
- *   add      タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002] [--model m]
+ *   add      タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps <ID>,<ID>] [--model m] [--slug slug]
  *   init     `.agent/` の雛形を配置する: init [--yes] [--upgrade]
  *   doctor   実行環境の自己診断(副作用なし)
  *   version  ccloop 自身のバージョン

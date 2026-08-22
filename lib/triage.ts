@@ -6,6 +6,8 @@
  * レスポンス解釈だけをここに持ち、ファイルの読み書きや claude の起動は持たない。
  */
 
+import { isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
+
 /** triage 対象の Human Review 1 件(supervisor.ts の HrEntry から必要な項目だけを渡す) */
 export interface TriageCandidate {
   id: string;
@@ -25,10 +27,22 @@ export interface TaskSummary {
   priority: number;
 }
 
-/** action で判別可能な union にし、"task" のときだけ title/priority/body を要求する */
+/**
+ * action で判別可能な union にし、"task" のときだけ title/slug/priority/body を要求する。
+ * slug はタスク ID(`T-<YYYYMMDD>-<HHMM>-<slug>`)の末尾に使う。モデルの出力が不正でも
+ * 採番できるよう、パーサ側で必ず妥当な値に正規化してから渡す(呼び出し側は検証不要)。
+ */
 export type TriageDecision =
   | { id: string; action: "close" | "escalate"; reason: string }
-  | { id: string; action: "task"; reason: string; title: string; priority: number; body: string };
+  | {
+      id: string;
+      action: "task";
+      reason: string;
+      title: string;
+      slug: string;
+      priority: number;
+      body: string;
+    };
 
 /** 本文から `## 回答` セクションの中身だけを取り出す。無ければ空文字 */
 export function extractAnswerSection(body: string): string {
@@ -187,9 +201,11 @@ export function buildTriagePrompt(candidates: TriageCandidate[], tasks: TaskSumm
     "decisions に含めること(判定を保留するものは escalate)。",
     "",
     "- `close`: 回答の内容が対応不要、または既に対応済みで新規作業が不要。`reason` に理由を書く。",
-    "- `task`: 回答の内容から新規タスクを 1 件登録すべき。`title`(短いタイトル)・`priority`",
-    "  (1〜5、数字が小さいほど優先度が高い)・`body`(担当セッションが読んで作業を開始できる",
-    "  程度のタスク本文)を書く。上の現行タスク一覧と重複する場合は `close` にする。",
+    "- `task`: 回答の内容から新規タスクを 1 件登録すべき。`title`(短いタイトル)・`slug`",
+    `  (タスク ID に使う英語の名詞句。小文字英数字とハイフンのみ、3〜5 語・${SLUG_MAX_LENGTH} 文字以内。`,
+    "  例: `fix-login-retry`)・`priority`(1〜5、数字が小さいほど優先度が高い)・`body`",
+    "  (担当セッションが読んで作業を開始できる程度のタスク本文)を書く。",
+    "  上の現行タスク一覧と重複する場合は `close` にする。",
     "- `escalate`: 判定に自信が持てない、影響範囲が大きい、複数タスクにまたがる等、人間の意図を",
     "  読み違えるリスクがある場合。何もせずフル探索セッションへ判断を委ねる。迷ったら必ずこちらを選ぶ。",
     "  回答本文が空(判定材料が無い)場合も必ず escalate にする。",
@@ -197,7 +213,7 @@ export function buildTriagePrompt(candidates: TriageCandidate[], tasks: TaskSumm
     "出力は次の JSON 契約のみ。説明文は不要。",
     "",
     "```json",
-    '{"decisions":[{"id":"HR-YYYYMMDD-NN","action":"close|task|escalate","reason":"...","title":"...","priority":3,"body":"..."}]}',
+    '{"decisions":[{"id":"<対象エントリの ID>","action":"close|task|escalate","reason":"...","title":"...","slug":"...","priority":3,"body":"..."}]}',
     "```",
   ].join("\n");
 }
@@ -214,9 +230,24 @@ function extractJsonPayload(text: string): string | null {
 }
 
 /**
+ * decision の slug を必ず使える値にする(欠落・不正 -> タイトルから生成 -> それも無理なら "task")。
+ * slug が原因でタスク登録を落とすと人間の回答が握り潰されるため、ここは fail-closed にしない。
+ */
+function normalizeSlug(raw: unknown, title: string): string {
+  if (typeof raw === "string" && isValidSlug(raw)) return raw;
+  if (typeof raw === "string") {
+    // 大文字・空白混じりなど「惜しい」応答は捨てず、正規化して活かす
+    const fromRaw = slugify(raw);
+    if (fromRaw !== null) return fromRaw;
+  }
+  return slugify(title) ?? "task";
+}
+
+/**
  * Stage 2 のレスポンスを解釈する(fail-closed)。
  * パース不能なら空配列。個々の decision は 未知 id・不正 action・(action=task で)title 欠落・
  * 同一 id の重複(2 件目以降)を個別に無視する。priority は 1〜5 にクランプする(欠落・不正値は既定 3)。
+ * slug は normalizeSlug で必ず妥当な値に正規化する(欠落・不正でも decision は捨てない)。
  */
 export function parseTriageResponse(text: string, validIds: ReadonlySet<string>): TriageDecision[] {
   const payload = extractJsonPayload(text);
@@ -249,6 +280,7 @@ export function parseTriageResponse(text: string, validIds: ReadonlySet<string>)
         action: "task",
         reason,
         title: raw.title,
+        slug: normalizeSlug(raw.slug, raw.title),
         priority: Math.min(5, Math.max(1, priority)),
         body: typeof raw.body === "string" ? raw.body : "",
       });

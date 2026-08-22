@@ -34,13 +34,8 @@ import * as path from "node:path";
 import { styleText } from "node:util";
 import { normalizeConfig, type Config } from "./config.ts";
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
-import {
-  basenameId,
-  mergeAgentBranch,
-  preResolveIdCollisions,
-  type ConflictKind,
-  type MergeOutcome,
-} from "./merge.ts";
+import { buildId, disambiguateId, isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
+import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty } from "./rotate.ts";
@@ -1135,19 +1130,15 @@ function recoverOrphanBranch(
 
   if (outcome.result === "conflict") {
     if (worktreeExists) {
-      // ここで初めて先行解決を実際に試みる(それまでは preResolvedRenames は計画に過ぎない)
-      const resolved = reproduceMergeConflict(worktree, { root, renames: outcome.preResolvedRenames });
-      const note = describePreResolvedRenames(outcome.preResolvedRenames, resolved.length);
-      const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})${note !== "" ? `。${note}` : ""}`;
+      reproduceMergeConflict(worktree, { root });
+      const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
       counts.keptConflicts += 1;
       recordStartupRecoveryNote(root, config, taskId, {
         reason: conflictReason,
         at,
       });
     } else {
-      // worktree が無いため先行解決は試みていない(resolvedCount は常に 0)
-      const note = describePreResolvedRenames(outcome.preResolvedRenames, 0);
-      const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})${note !== "" ? `。${note}` : ""}`;
+      const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
       const parked = parkedBranchNameFor(taskId, now);
       try {
         renameBranch(root, branch, parked);
@@ -2209,8 +2200,6 @@ function worktreeSection(task: Task, times: { startedAt?: string; deadline?: str
     "- コミットは通常どおり行う(メッセージは日本語、意味のある単位で)",
     "- ブランチの切替(checkout / switch)・マージ・push はしない。ブランチ操作は Supervisor の担当",
     "- main への統合はセッション終了後に Supervisor が自動で行う",
-    "- 新規に作る `D-`(decisions)/ `HR-`(human-review)の ID は、マージ時に既存 ID と衝突すると機械的に改番されることがある。" +
-      "本文から ID を参照するのは同一セッション内で作ったファイルに留めること(改番時は参照ごと機械的に書き換えられる)",
     ...sessionTimeLines(times.startedAt, times.deadline),
   ].join("\n");
 }
@@ -2227,7 +2216,7 @@ function conflictResolutionSection(task: Task): string {
     "- この作業ツリーには main とのマージが進行中で、衝突マーカーが残っている(`git status` で確認する)",
     "- まず衝突を解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` でマージを完成させること",
     "- 解消の判断に迷う箇所は main 側を優先する。優先した理由と捨てた変更は `.agent/decisions/` に記録する",
-    "- `D-`/`HR-` の ID 採番が重複しただけの衝突は、Supervisor が改番して解決済み(index に載った状態)のことがある。まず `git status` で実際に残っている衝突を確認し、内容の衝突だけに集中すること",
+    "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、後から起票した側の ID を付け直して解決すること",
     "- 衝突解消が終わってから、必要なら本来のタスクの続きに取りかかること",
   ].join("\n");
 }
@@ -2555,40 +2544,18 @@ export function taskFileChangedOnBranch(root: string, branch: string, taskId: st
  * main の現在の HEAD を worktree へマージし直し、コンフリクトを worktree 上に再現する。
  * 次の試行を「衝突解消セッション」として同じ worktree で起動するための準備であり、
  * マージが失敗する(= 衝突マーカーと MERGE_HEAD が残る)のが期待動作。
- * opts.renames が渡されていれば(mergeAgentBranch が "partial" 分類で立てた ID 改番計画)、
- * 衝突再現後に ID 採番衝突だけを preResolveIdCollisions で先に解決しておく。実質衝突の
- * マーカーはそのまま残る。
- * 戻り値は実際に先行解決できた(旧)パスの一覧(実測値)。マージが衝突なく通った場合・
- * renames が無い場合・解決 0 件の場合は空配列。呼び出し側はこの実測値を記録・プロンプトへ
- * 反映すること(preResolvedRenames は「計画」に過ぎず、実際に解決できたとは限らない)。
+ * 衝突はすべて内容の対立(substantive)なので、ここでは何も先行解決せず、衝突マーカーを
+ * 残したまま次のセッションへ渡す。
  */
-function reproduceMergeConflict(
-  worktree: string,
-  opts: { root?: string; renames?: Map<string, string> } = {},
-): string[] {
+function reproduceMergeConflict(worktree: string, opts: { root?: string } = {}): void {
   const root = opts.root ?? repoPaths().root;
   try {
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root }).toString().trim();
     execFileSync("git", ["merge", head], { cwd: worktree, stdio: "ignore" });
     log(`警告: ${worktree} で main のマージが衝突なく通った(次のセッションは通常起動になる)`);
-    return [];
   } catch {
     // コンフリクトによる非ゼロ終了が期待動作
   }
-
-  const renames = opts.renames ?? new Map<string, string>();
-  const resolved = preResolveIdCollisions(worktree, renames);
-  if (resolved.length > 0) {
-    const resolvedIds = new Set(resolved.map(basenameId));
-    const list = [...renames.entries()]
-      .filter(([oldId]) => resolvedIds.has(oldId))
-      .map(([o, n]) => `${o} -> ${n}`)
-      .join(", ");
-    log(`${worktree}: 先に ID 採番衝突 ${resolved.length} 件を解決した(${list})`);
-  } else if (renames.size > 0) {
-    log(`警告: ${worktree}: ID 採番衝突の先行解決に失敗した(計画: ${[...renames.keys()].join(", ")})。衝突マーカーが残っている`);
-  }
-  return resolved;
 }
 
 /** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する。戻り値はパッチの絶対パスと対象パス */
@@ -2635,54 +2602,19 @@ function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: 
   return lines;
 }
 
-/**
- * ID 採番衝突の先行解決について、「計画された renames」と「実際に解決できた件数」から
- * 人間可読な文を組み立てる(実測値専用。呼び出し側は reproduceMergeConflict /
- * preResolveIdCollisions の戻り値から resolvedCount を渡すこと)。分岐は 3 つ:
- *   - renames が未指定・空(先行解決の計画自体が無い) -> 補足なし(空文字列)
- *   - renames があり resolvedCount > 0 -> "ID 採番衝突 N 件は先に解決済み(D-x -> D-y, ...)"
- *   - renames があり resolvedCount === 0 -> "ID 採番衝突の先行解決に失敗した(D-x, ... の
- *     衝突マーカーが残っている)"
- * finishTaskSession の fail 理由 / recoverOrphanBranch の recordStartupRecoveryNote で
- * 共通して使う(どちらも reproduceMergeConflict の戻り値を実測値として持っている)。
- */
-export function describePreResolvedRenames(renames: Map<string, string> | undefined, resolvedCount: number): string {
-  if (renames === undefined || renames.size === 0) return "";
-  if (resolvedCount > 0) {
-    const list = [...renames.entries()].map(([o, n]) => `${o} -> ${n}`).join(", ");
-    return `ID 採番衝突 ${resolvedCount} 件は先に解決済み(${list})`;
-  }
-  return `ID 採番衝突の先行解決に失敗した(${[...renames.keys()].join(", ")} の衝突マーカーが残っている)`;
-}
-
-/**
- * MergeOutcome を 1 行のログ表現にする。この関数は mergeAgentBranch の戻り値(= 計画)
- * しか見ておらず、ID 採番衝突の先行解決を実際に試みてすらいない(worktree 側の
- * reproduceMergeConflict が呼ばれるのはこの後)。そのため conflict の補足は
- * 「先行解決予定」という計画止まりの表現に留め、解決済みであるかのようには書かない
- * (実測値を使った文言は describePreResolvedRenames 側が担う)。
- */
+/** MergeOutcome を 1 行のログ表現にする。 */
 function describeMergeOutcome(outcome: MergeOutcome): string {
   switch (outcome.result) {
     case "merged":
       return "main へマージした";
     case "renumbered": {
-      const parts: string[] = [];
-      if (outcome.renames.size > 0) {
-        parts.push(`ID を改番 ${outcome.renames.size} 件: ${[...outcome.renames.entries()].map(([o, n]) => `${o} -> ${n}`).join(", ")}`);
-      }
-      if (outcome.resolvedTaskFile) {
-        parts.push("タスクファイルはブランチ側を採用");
-      }
-      return `main へマージした(機械的に解決${parts.length > 0 ? `: ${parts.join(" / ")}` : ""})`;
+      const note = outcome.resolvedTaskFile ? ": タスクファイルはブランチ側を採用" : "";
+      return `main へマージした(機械的に解決${note})`;
     }
     case "nothing-to-merge":
       return "ブランチに新しいコミットがなく、マージするものがなかった";
-    case "conflict": {
-      const planned = outcome.preResolvedRenames;
-      const note = planned !== undefined && planned.size > 0 ? ` (ID 改番 ${planned.size} 件を先行解決する予定)` : "";
-      return `コンフリクトのためマージを中止した(${outcome.paths.join(", ")})${note}`;
-    }
+    case "conflict":
+      return `コンフリクトのためマージを中止した(${outcome.paths.join(", ")})`;
     case "blocked":
       return `マージを開始できなかった: ${outcome.reason}`;
     case "wedged":
@@ -2742,8 +2674,6 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
   let leftovers: { patchFile: string; paths: string[] } | null = null;
   let conflictPaths: string[] = [];
   let conflictKind: ConflictKind | undefined;
-  /** reproduceMergeConflict が実際に先行解決できた件数(実測値。outcome.preResolvedRenames は計画に過ぎない) */
-  let preResolvedCount = 0;
   let mergeStuck = false;
   let taskFileChanged = true;
 
@@ -2770,7 +2700,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         if (outcome.result === "conflict") {
           conflictPaths = outcome.paths;
           conflictKind = outcome.conflictKind;
-          preResolvedCount = reproduceMergeConflict(worktree, { renames: outcome.preResolvedRenames }).length;
+          reproduceMergeConflict(worktree);
         } else if (outcome.result === "wedged") {
           // main が git merge --abort の失敗で固まっている。ここでは stderr を全文ログに
           // 残すだけに留め、worktree・ブランチ・stale なコンフリクトには一切触れない
@@ -2857,8 +2787,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
           `${styleText("red", "✖")} ${taskId}: main が git 操作の途中で固まっているため記録を書かない(復旧後の再試行で再評価される)`,
         );
       } else if (outcome !== null && outcome.result === "conflict") {
-        const note = describePreResolvedRenames(outcome.preResolvedRenames, preResolvedCount);
-        fail(`main へのマージが衝突した(${conflictPaths.join(", ")})${note !== "" ? `。${note}` : ""}`, "merge-conflict");
+        fail(`main へのマージが衝突した(${conflictPaths.join(", ")})`, "merge-conflict");
       } else if (outcome !== null && outcome.result === "blocked") {
         fail(`main へのマージを開始できなかった: ${outcome.reason}`, "merge-conflict");
       } else if (res.exitCode !== 0) {
@@ -3274,16 +3203,21 @@ export async function mainLoop(): Promise<void> {
 
 // ---------- CLI サブコマンド ----------
 
-/** archive 済みタスクの ID も母集団に含め、ローテーション後の ID 再利用・衝突を防ぐ */
-function nextTaskId(): string {
-  const max = [...listMdFiles(repoPaths().tasksDir), ...listMdFiles(path.join(repoPaths().archiveDir, "tasks"))]
-    .map((f) => Number(f.replace(/^T-/, "").replace(/\.md$/, "")))
-    .filter((n) => Number.isFinite(n))
-    .reduce((a, b) => Math.max(a, b), 0);
-  return `T-${String(max + 1).padStart(3, "0")}`;
+/**
+ * 新規タスクの ID(`T-<YYYYMMDD>-<HHMM>-<slug>`)を作る。
+ * archive 済みタスクの ID も母集団に含め、ローテーション後の ID 再利用・衝突を防ぐ
+ * (旧形式 `T-NNN` のファイルもそのまま母集団に入る)。
+ */
+export function newTaskId(slug: string, createdAt: string): string {
+  const taken = new Set(
+    [...listMdFiles(repoPaths().tasksDir), ...listMdFiles(path.join(repoPaths().archiveDir, "tasks"))].map((f) =>
+      f.replace(/\.md$/, ""),
+    ),
+  );
+  return disambiguateId(buildId("T", slug, createdAt), (id) => taken.has(id));
 }
 
-const ADD_FLAG_NAMES = ["desc", "priority", "deps", "model"];
+const ADD_FLAG_NAMES = ["desc", "priority", "deps", "model", "slug"];
 
 /**
  * argv からフラグとその直後の値を除いた位置引数のみを抽出する。
@@ -3309,7 +3243,7 @@ export function cmdAdd(argv: string[]): void {
   const title = positional[0];
   if (!title) {
     console.error(
-      '使い方: supervisor.ts add "タイトル" [--desc 説明] [--priority N] [--deps a,b] [--model 名]',
+      '使い方: supervisor.ts add "タイトル" [--desc 説明] [--priority N] [--deps a,b] [--model 名] [--slug slug]',
     );
     process.exit(1);
   }
@@ -3319,8 +3253,18 @@ export function cmdAdd(argv: string[]): void {
   };
   const now = new Date().toISOString();
   const fallbackBody = positional.slice(1).join("\n") || title;
+  // ID の slug は明示指定 > タイトルからの生成 > 既定値("task")の順。日本語だけのタイトルは
+  // slugify が null を返すため、既定値に落として採番自体は必ず成功させる
+  const slugOpt = opt("slug");
+  if (slugOpt !== undefined && !isValidSlug(slugOpt)) {
+    console.error(
+      `エラー: --slug は小文字英数字とハイフンのみ・${SLUG_MAX_LENGTH} 文字以内で指定する(例: fix-login-retry): ${slugOpt}`,
+    );
+    process.exit(1);
+  }
+  const slug = slugOpt ?? slugify(title) ?? "task";
   const task: Task = {
-    id: nextTaskId(),
+    id: newTaskId(slug, now),
     title,
     status: "ready",
     priority: Number(opt("priority") ?? 3),
@@ -3366,9 +3310,12 @@ function truncateNote(note: string, maxLen = 80): string {
 
 // ---------- list ----------
 
-/** 1 タスクの表示(id/priority/title 行 + 依存行 + note 行) */
-function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean): void {
-  const idCol = t.id.padEnd(7);
+/**
+ * 1 タスクの表示(id/priority/title 行 + 依存行 + note 行)。
+ * ID は slug を含んで長さがまちまちなため、桁揃えの幅は呼び出し側が一覧全体から決めて渡す。
+ */
+function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean, idWidth: number): void {
+  const idCol = t.id.padEnd(idWidth);
   let line = `  ${idCol}p${t.priority}  ${t.title}`;
   if (t.retries > 0) {
     line += ` ${styleText("yellow", `retries=${t.retries}`)}`;
@@ -3409,6 +3356,8 @@ export function cmdList(argv: string[]): void {
   // 依存表示用の参照は archive 済みタスクも含める(rotate 後の依存先を (missing) ではなく
   // ✔ 完了として表示するため)。同一 ID はアクティブ側を優先
   const byId = new Map([...loadArchivedTasks(), ...tasks].map((t) => [t.id, t]));
+  // 表示する ID の最大長 + 区切りの 2 文字で桁を揃える(旧形式の短い ID だけなら従来どおり 7 桁)
+  const idWidth = tasks.reduce((w, t) => Math.max(w, t.id.length), 5) + 2;
 
   let printedGroup = false;
   for (const status of STATUS_ORDER) {
@@ -3422,7 +3371,7 @@ export function cmdList(argv: string[]): void {
     if (printedGroup) console.log("");
     printedGroup = true;
     console.log(`${statusLabel(status)} (${group.length})`);
-    for (const t of group) printTaskLine(t, byId, full);
+    for (const t of group) printTaskLine(t, byId, full, idWidth);
   }
   if (!printedGroup) console.log("タスクなし");
 }
@@ -3553,7 +3502,8 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
         closeHumanReview(d.id, d.reason);
         applied += 1;
       } else if (d.action === "task") {
-        const id = nextTaskId();
+        const createdAt = new Date().toISOString();
+        const id = newTaskId(d.slug, createdAt);
         saveTask({
           id,
           title: d.title,
@@ -3561,7 +3511,7 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
           priority: d.priority,
           dependencies: [],
           retries: 0,
-          createdAt: new Date().toISOString(),
+          createdAt,
           body: d.body,
         });
         closeHumanReview(d.id, `タスク ${id} を登録`);

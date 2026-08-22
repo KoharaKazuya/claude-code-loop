@@ -82,7 +82,7 @@ export function rotate(agentDir: string): RotateResult {
   );
 
   const decisionsDir = path.join(agentDir, "decisions");
-  // ID は D-YYYYMMDD-NN でゼロ埋めされており、ファイル名の辞書順 = 時系列である。
+  // ID は D-<YYYYMMDD>-<HHMM>-<slug> で、日時部分がゼロ埋めされているためファイル名の辞書順 = 時系列である。
   // そのため「古い側」は昇順ソート済み一覧の先頭側になる。
   const allDecisions = listMdFiles(decisionsDir);
   const decisionsToArchive = allDecisions.slice(0, Math.max(0, allDecisions.length - DECISIONS_KEEP));

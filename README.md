@@ -53,8 +53,9 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
    タスクを導出する
 4. 別の端末から `ccloop watch`(既定 1 秒間隔、`--interval` で変更可)で進捗を眺める。1 回だけ見たい
    ときは `ccloop status`、タスク一覧は `ccloop list`(`--full` で詳細)
-5. やりたい作業が明確なら `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--model ...]`
-   で直接タスクを積める
+5. やりたい作業が明確なら
+   `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--model ...] [--slug ...]`
+   で直接タスクを積める(`--slug` 省略時はタイトルから自動生成する。ASCII 化できなければ `task`)
 
 ### 停止
 
@@ -79,13 +80,13 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
   現在地・次の見立て(`.agent/OVERVIEW.md`)を見る。permission により拒否された操作の直近の要約も
   同じ出力に含まれる(対応不要。許可したい操作があれば `.agent/claude-settings.json` の
   `permissions.allow` に追記する)。
-- **Human Review への回答**: `.agent/human-review/HR-*.md` の「## 回答」節にあるチェックボックスに
+- **Human Review への回答**: `.agent/human-review/HR-<日時>-<slug>.md` の「## 回答」節にあるチェックボックスに
   チェックを入れるだけでよい(`status` の書き換えは不要)。
   - 対応不要なら `- [ ] 対応不要(このままクローズしてよい)` を `- [x]` にする。
   - 回答を書くなら `- [ ] 回答を下に書いた` を `- [x]` にしたうえで、その下に決定内容を書く。
   次のセッション起動時にこの変化が検出され、3 段階(決定論判定 → 軽量モデル判定 → 探索セッション)で
   取り込まれる(BLOCK は常に最終段のみ)。
-- **failed / blocked タスクの再実行**: 該当タスクファイル(`.agent/tasks/T-NNN.md`)の frontmatter を
+- **failed / blocked タスクの再実行**: 該当タスクファイル(`.agent/tasks/T-<日時>-<slug>.md`)の frontmatter を
   `status: ready`、`retries: 0` に手で編集する。失敗原因を放置すると再び失敗するので、原因側の修正を
   先に行うのが普通。古い completed / closed / 判断ファイルは `.agent/archive/` へ自動的に退避される
   (ローテーションはループ内で自動)。
