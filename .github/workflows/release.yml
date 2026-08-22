@@ -1,0 +1,45 @@
+name: Release devcontainer feature
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  packages: write
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bundle lib/, bin/ and package.json into the feature
+        # Tests aren't part of the distributed tool, so exclude *.test.ts and the vitest
+        # setup file from the copy.
+        run: |
+          rsync -a --exclude='*.test.ts' --exclude='test-setup.ts' lib/ features/ccloop/lib/
+          cp -R bin features/ccloop/bin
+          cp package.json features/ccloop/package.json
+
+      - name: Verify tag, feature and package versions all match
+        if: github.ref_type == 'tag'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          feature_version="$(node -e "console.log(require('./features/ccloop/devcontainer-feature.json').version)")"
+          package_version="$(node -e "console.log(require('./package.json').version)")"
+          if [ "${tag_version}" != "${feature_version}" ] || [ "${tag_version}" != "${package_version}" ]; then
+            echo "error: version mismatch - tag (${tag_version}), features/ccloop/devcontainer-feature.json (${feature_version}), package.json (${package_version})" >&2
+            exit 1
+          fi
+          echo "version OK: ${tag_version}"
+
+      - name: Publish feature
+        uses: devcontainers/action@v1
+        with:
+          publish-features: "true"
+          base-path-to-features: "./features"
+          generate-docs: "false"

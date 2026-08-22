@@ -31,7 +31,6 @@ import {
   loadDenyRules,
   loadPermissionDenials,
   nextStopEscalation,
-  normalizeConfig,
   normalizeState,
   overviewSectionLines,
   parseNameStatus,
@@ -56,6 +55,7 @@ import {
   sessionDeadline,
   skipMainWriteIfGitBusy,
   startupRecoveryTotal,
+  statePathOf,
   type SessionResult,
   type StagedChange,
   summarizeAgentCommit,
@@ -392,16 +392,24 @@ describe("pickModel", () => {
 });
 
 describe("nextStopEscalation", () => {
-  it("STOP なしなら clean(空)を作成する", () => {
-    expect(nextStopEscalation(null)).toEqual({ content: "" });
+  it("停止指示なし(none)なら clean を予約する", () => {
+    expect(nextStopEscalation("none")).toEqual({ mode: "clean" });
   });
 
-  it("STOP(clean)なら session へ更新する", () => {
-    expect(nextStopEscalation("clean")).toEqual({ content: "session" });
+  it("clean なら session へ格上げする", () => {
+    expect(nextStopEscalation("clean")).toEqual({ mode: "session" });
   });
 
-  it("STOP(session)なら緊急停止へ進む", () => {
+  it("session なら緊急停止へ進む", () => {
     expect(nextStopEscalation("session")).toBe("emergency");
+  });
+
+  it("3 段階で緊急停止に到達し、ファイルを一切介さない", () => {
+    const first = nextStopEscalation("none");
+    expect(first).not.toBe("emergency");
+    const second = nextStopEscalation((first as { mode: "clean" | "session" }).mode);
+    expect(second).not.toBe("emergency");
+    expect(nextStopEscalation((second as { mode: "clean" | "session" }).mode)).toBe("emergency");
   });
 });
 
@@ -837,7 +845,7 @@ describe("buildTaskPrompt", () => {
     const startedAt = new Date().toISOString();
     const prompt = buildTaskPrompt(makeConfig(), makeTask({ id: "T-042" }), { startedAt });
 
-    // PROMPT.md 本文にも例示の ISO 時刻が載っているため、注入行だけを取り出して検証する
+    // 他のセクションにも ISO 時刻が現れうるため、注入行だけを取り出して検証する
     const line = prompt.split("\n").find((l) => l.includes("「現在時刻」の基準"));
     expect(line).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(line).toContain(startedAt);
@@ -957,6 +965,16 @@ describe("overviewSectionLines", () => {
     const { rest } = overviewSectionLines(overview, 61, 82);
 
     expect(rest).toContain("不明 時点");
+  });
+
+  it("updatedAt が epoch(雛形の初期値)なら「(未生成)」と表示する", () => {
+    // lib/templates/agent/OVERVIEW.md の初期値。init 直後、探索セッションがまだ 1 度も
+    // 更新していない状態で「1970-01-01... 時点」と出るのを防ぐ。
+    const overview = { updatedAt: "1970-01-01T00:00:00.000Z", completed: 0, total: 0, body: "本文" };
+
+    const { rest } = overviewSectionLines(overview, 61, 82);
+
+    expect(rest).toContain("(未生成) 時点");
   });
 
   it("本文が maxLines を超える場合は先頭 maxLines 行 + 省略メッセージにする", () => {
@@ -1219,15 +1237,16 @@ describe("normalizeState", () => {
 });
 
 describe("supervisorSourceHash", () => {
+  // dir は CCLOOP_HOME(ccloop 自身のインストール先 = lib/)に見立てた一時ディレクトリ
   let dir: string;
 
   function writeSrc(name: string, content: string): void {
-    fs.writeFileSync(path.join(dir, ".agent", "supervisor", name), content);
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    fs.writeFileSync(path.join(dir, name), content);
   }
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-srchash-"));
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor"), { recursive: true });
   });
 
   afterEach(() => {
@@ -1249,6 +1268,30 @@ describe("supervisorSourceHash", () => {
     expect(supervisorSourceHash(dir)).not.toBe(before);
   });
 
+  it(".md / .json の内容を変えるとハッシュが変わる(PROMPT やテンプレートの変更も再起動が要る)", () => {
+    writeSrc("supervisor.ts", "export const a = 1;\n");
+    writeSrc("settings.template.json", "{}\n");
+    const before = supervisorSourceHash(dir);
+
+    writeSrc("settings.template.json", "{\"permissions\": {}}\n");
+
+    expect(supervisorSourceHash(dir)).not.toBe(before);
+  });
+
+  it("サブディレクトリの内容を変えてもハッシュが変わる(共通ルール・サブエージェント定義も対象)", () => {
+    writeSrc("supervisor.ts", "export const a = 1;\n");
+    writeSrc("prompt/PROMPT.md", "# 共通ルール\n");
+    writeSrc("agents/reviewer.md", "---\ndescription: d\n---\n\n本文\n");
+    const before = supervisorSourceHash(dir);
+
+    writeSrc("prompt/PROMPT.md", "# 共通ルール(改訂)\n");
+    const afterPrompt = supervisorSourceHash(dir);
+    expect(afterPrompt).not.toBe(before);
+
+    writeSrc("agents/reviewer.md", "---\ndescription: d2\n---\n\n本文\n");
+    expect(supervisorSourceHash(dir)).not.toBe(afterPrompt);
+  });
+
   it(".test.ts の内容を変えてもハッシュは変わらない", () => {
     writeSrc("supervisor.ts", "export const a = 1;\n");
     writeSrc("supervisor.test.ts", "it 1\n");
@@ -1268,8 +1311,8 @@ describe("supervisorSourceHash", () => {
     expect(supervisorSourceHash(dir)).not.toBe(before);
   });
 
-  it(".agent/supervisor ディレクトリが無ければ例外を投げず空文字を返す", () => {
-    fs.rmSync(path.join(dir, ".agent", "supervisor"), { recursive: true, force: true });
+  it("CCLOOP_HOME のディレクトリが無ければ例外を投げず空文字を返す", () => {
+    fs.rmSync(dir, { recursive: true, force: true });
 
     expect(() => supervisorSourceHash(dir)).not.toThrow();
     expect(supervisorSourceHash(dir)).toBe("");
@@ -1278,7 +1321,7 @@ describe("supervisorSourceHash", () => {
   it(".ts で終わる名前のディレクトリがあっても無視する(例外を投げない)", () => {
     writeSrc("supervisor.ts", "export const a = 1;\n");
     const before = supervisorSourceHash(dir);
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor", "sub.ts"));
+    fs.mkdirSync(path.join(dir, "sub.ts"));
 
     expect(() => supervisorSourceHash(dir)).not.toThrow();
     expect(supervisorSourceHash(dir)).toBe(before);
@@ -1349,96 +1392,6 @@ describe("ensureWritableDir", () => {
   });
 });
 
-describe("normalizeConfig", () => {
-  const root = "/workspaces/my-type";
-
-  it("parallel が無い既存の config.json 形式は既定値で埋める", () => {
-    const raw = {
-      claudeCommand: "claude",
-      model: "opus",
-      escalation: { model: "claude-fable-5", afterRetries: 2 },
-      permissionMode: "auto",
-      maxRetries: 3,
-      taskTimeoutMs: 2400000,
-      maxTurns: 150,
-      rateLimit: { backoffMs: 300000 },
-      explore: { enabled: true, minIntervalMs: 3600000 },
-      idlePollMs: 60000,
-    };
-
-    const config = normalizeConfig(raw, root);
-
-    expect(config.parallel).toEqual({
-      maxSessions: 1,
-      worktreeDir: "/workspaces/my-type-worktrees",
-      linkPaths: ["node_modules"],
-    });
-    // 既存フィールドは変更されない
-    expect(config.claudeCommand).toBe("claude");
-    expect(config.model).toBe("opus");
-    expect(config.escalation).toEqual({ model: "claude-fable-5", afterRetries: 2 });
-    expect(config.maxRetries).toBe(3);
-  });
-
-  it("maxSessions は 1..8 にクランプする(上限超過)", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: 100 } }, root);
-    expect(config.parallel.maxSessions).toBe(8);
-  });
-
-  it("maxSessions は 1..8 にクランプする(下限未満)", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: 0 } }, root);
-    expect(config.parallel.maxSessions).toBe(1);
-  });
-
-  it("maxSessions が数値でなければ既定の1にする", () => {
-    const config = normalizeConfig({ parallel: { maxSessions: "3" } }, root);
-    expect(config.parallel.maxSessions).toBe(1);
-  });
-
-  it("escalation が欠損していれば無効化した既定値を使う", () => {
-    const config = normalizeConfig({}, root);
-    expect(config.escalation).toEqual({ model: "", afterRetries: Infinity });
-  });
-
-  it("worktreeDir / linkPaths を明示すればそれを使う", () => {
-    const config = normalizeConfig(
-      { parallel: { maxSessions: 2, worktreeDir: "/custom/dir", linkPaths: ["node_modules", ".venv"] } },
-      root,
-    );
-    expect(config.parallel).toEqual({
-      maxSessions: 2,
-      worktreeDir: "/custom/dir",
-      linkPaths: ["node_modules", ".venv"],
-    });
-  });
-
-  // 実ファイルを通す。config.json の書き間違い(parallel の位置ずれ・型違い)は
-  // 既定値 1 に落ちて静かに並列実行が無効化されるため、ここで検出する
-  it("実際の .agent/config.json から並列度を読み取れる", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-    const raw = JSON.parse(fs.readFileSync(path.join(repoRoot, ".agent", "config.json"), "utf8")) as unknown;
-
-    const config = normalizeConfig(raw, repoRoot);
-
-    expect(config.parallel.maxSessions).toBe(4);
-  });
-
-  it("triage が無い既存の config.json 形式は既定値(enabled: true, model: haiku)で埋める", () => {
-    const config = normalizeConfig({}, root);
-    expect(config.triage).toEqual({ enabled: true, model: "haiku" });
-  });
-
-  it("triage.enabled / triage.model を明示すればそれを使う", () => {
-    const config = normalizeConfig({ triage: { enabled: false, model: "opus" } }, root);
-    expect(config.triage).toEqual({ enabled: false, model: "opus" });
-  });
-
-  it("triage.model が空文字・非文字列なら既定の haiku にする", () => {
-    expect(normalizeConfig({ triage: { model: "" } }, root).triage.model).toBe("haiku");
-    expect(normalizeConfig({ triage: { model: 1 } }, root).triage.model).toBe("haiku");
-  });
-});
-
 describe("crashResultFromError", () => {
   it("想定外の例外をセッション結果へ落とし込む(セッションを取りこぼさないため)", () => {
     const res = crashResultFromError(new Error("boom"));
@@ -1455,7 +1408,7 @@ describe("crashResultFromError", () => {
 });
 
 describe("buildClaudeArgs", () => {
-  it("プロンプト・model・permissionMode・settings を含む", () => {
+  it("プロンプト・model・permissionMode・settings・共通ルール・サブエージェントを含む", () => {
     const config = makeConfig({ permissionMode: "auto" });
     const args = buildClaudeArgs(config, "プロンプト本文", "haiku");
 
@@ -1470,7 +1423,33 @@ describe("buildClaudeArgs", () => {
       "auto",
       "--settings",
       expect.stringContaining("claude-settings.json"),
+      "--append-system-prompt-file",
+      expect.stringContaining("system-prompt.md"),
+      "--agents",
+      expect.any(String),
     ]);
+  });
+
+  it("--agents には lib/agents/ のサブエージェント定義(reviewer)が JSON で載る", () => {
+    const args = buildClaudeArgs(makeConfig(), "p", "opus");
+
+    const json = args[args.indexOf("--agents") + 1]!;
+    const parsed = JSON.parse(json) as Record<string, { description: string; prompt: string; tools: string[]; model: string }>;
+    expect(Object.keys(parsed)).toContain("reviewer");
+    expect(parsed.reviewer!.tools).toEqual(["Read", "Glob", "Grep", "Bash"]);
+    expect(parsed.reviewer!.model).toBe("sonnet");
+    expect(parsed.reviewer!.description).not.toBe("");
+    expect(parsed.reviewer!.prompt).toContain("独立したコードレビュアー");
+    // name は JSON のキーで表すため、フィールドとしては渡さない
+    expect(parsed.reviewer).not.toHaveProperty("name");
+  });
+
+  it("commonRules: false なら system prompt もサブエージェントも渡さない(triage セッション)", () => {
+    const args = buildClaudeArgs(makeConfig(), "p", "haiku", [], { commonRules: false });
+
+    expect(args).not.toContain("--append-system-prompt-file");
+    expect(args).not.toContain("--agents");
+    expect(args).toContain("--settings");
   });
 
   it("maxTurns > 0 なら --max-turns を付ける(既定値扱い)", () => {
@@ -1593,7 +1572,7 @@ describe("buildExplorePrompt", () => {
     const startedAt = new Date().toISOString();
     const prompt = buildExplorePrompt(ctx({ startedAt }));
 
-    // PROMPT.md 本文にも例示の ISO 時刻が載っているため、注入行だけを取り出して検証する
+    // 他のセクションにも ISO 時刻が現れうるため、注入行だけを取り出して検証する
     const line = prompt.split("\n").find((l) => l.includes("「現在時刻」の基準"));
     expect(line).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(line).toContain(startedAt);
@@ -1877,7 +1856,7 @@ describe("summarizeAgentCommit", () => {
 
   it("ID を持たないファイルはカテゴリ名で表現する", () => {
     expect(summarizeAgentCommit([edit(".agent/OVERVIEW.md")])).toBe("docs(agent): 全体像を更新する");
-    expect(summarizeAgentCommit([edit(".agent/supervisor/config.json")])).toBe("docs(agent): supervisorを更新する");
+    expect(summarizeAgentCommit([edit(".agent/PROMPT.local.md")])).toBe("docs(agent): 手順書を更新する");
   });
 
   it("カテゴリ不明のファイルは「運用ファイル」として扱う", () => {
@@ -1909,8 +1888,7 @@ describe("summarizeAgentCommit", () => {
       [edit(".agent/decisions/D-1.md", "D")],
       [edit(".agent/OVERVIEW.md")],
       [edit(".agent/GOAL.md")],
-      [edit(".agent/PROMPT.md")],
-      [edit(".agent/supervisor/supervisor.ts")],
+      [edit(".agent/PROMPT.local.md")],
       [edit(".agent/metrics.jsonl")],
       [edit(".agent/tasks/T-0\n01.md")],
       [edit(`.agent/tasks/T-${"0".repeat(80)}.md`)],
@@ -2572,9 +2550,12 @@ describe("permissionDenialLines", () => {
 });
 
 describe("appendUncommittedDiffRecord", () => {
+  // patchFile は実際には state ディレクトリ配下の絶対パス(lib/paths.ts の patchesDir 参照。
+  // `.agent/` 配下ではない)。フィクスチャもそれに合わせる。
+  const PATCH_FILE = "/home/node/.local/state/ccloop/repo-a1b2c3d4/patches/T-001-20260815T000000Z.patch";
   const rec = {
     at: "2026-08-15T00:00:00.000Z",
-    patchFile: ".agent/patches/T-001-20260815T000000Z.patch",
+    patchFile: PATCH_FILE,
     paths: ["src/a.ts", "src/b.ts"],
   };
 
@@ -2591,8 +2572,8 @@ describe("appendUncommittedDiffRecord", () => {
   it("退避先のパッチと復元コマンドを記載する", () => {
     const result = appendUncommittedDiffRecord("既存の本文", rec);
 
-    expect(result).toContain("`.agent/patches/T-001-20260815T000000Z.patch`");
-    expect(result).toContain("git apply .agent/patches/T-001-20260815T000000Z.patch");
+    expect(result).toContain(`\`${PATCH_FILE}\``);
+    expect(result).toContain(`git apply ${PATCH_FILE}`);
   });
 
   it("見出しが既にある本文にはエントリのみ末尾に追加し既存エントリを保持する", () => {
@@ -2679,10 +2660,10 @@ describe("dirtyPathsOutsideAgent", () => {
 });
 
 /** テスト用の git リポジトリを 1 つ作る(グローバルの hook / 署名設定から隔離する) */
-function initTestRepo(prefix: string): { dir: string; hooksDir: string } {
+function initTestRepo(prefix: string, branch = "main"): { dir: string; hooksDir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
   const hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-hooks-`));
-  execFileSync("git", ["init", "-b", "main"], { cwd: dir });
+  execFileSync("git", ["init", "-b", branch], { cwd: dir });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
   execFileSync("git", ["config", "core.hooksPath", hooksDir], { cwd: dir });
@@ -2751,28 +2732,35 @@ describe("taskFileChangedOnBranch", () => {
   });
 });
 
-describe("stop-check hook", () => {
-  const script = path.resolve(import.meta.dirname, "..", "hooks", "stop-check.mjs");
+describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
+  const script = path.resolve(import.meta.dirname, "hooks", "stop-check.ts");
   let dir: string;
   let hooksDir: string;
+  let wt: string;
 
   beforeEach(() => {
     ({ dir, hooksDir } = initTestRepo("supervisor-test-stop-check"));
     writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "ready" }, "本文"));
     execFileSync("git", ["add", "-A"], { cwd: dir });
     execFileSync("git", ["commit", "-m", "init"], { cwd: dir });
-    execFileSync("git", ["checkout", "-b", "agent/T-001"], { cwd: dir });
+    // 実際の Supervisor と同じく、タスクセッションは本体(dir, CCLOOP_REPO が指す先)とは
+    // 別の worktree で動く。本体側を main のままにしておかないと、既定ブランチの判定
+    // (CCLOOP_REPO の symbolic-ref)を正しく検査できない。
+    wt = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-stop-check-wt-"));
+    fs.rmdirSync(wt);
+    execFileSync("git", ["worktree", "add", "-b", "agent/T-001", wt, "main"], { cwd: dir });
   });
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.rmSync(wt, { recursive: true, force: true });
   });
 
   /** hook を子プロセスで実行する。env は Supervisor が渡す環境変数のみを明示的に与える */
   function runHook(
     env: Record<string, string>,
-    input: Record<string, unknown> = { cwd: dir },
+    input: Record<string, unknown> = { cwd: wt },
   ): { status: number | null; stderr: string } {
     const base = { ...process.env };
     delete base.CLAUDE_AGENT_SESSION_KIND;
@@ -2780,13 +2768,13 @@ describe("stop-check hook", () => {
     const res = spawnSync(process.execPath, [script], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...base, ...env },
+      env: { ...base, CCLOOP_REPO: dir, ...env },
     });
     return { status: res.status, stderr: res.stderr };
   }
 
   it("stop_hook_active なら何もせず許可する", () => {
-    expect(runHook({ CLAUDE_AGENT_TASK_ID: "T-001" }, { cwd: dir, stop_hook_active: true }).status).toBe(0);
+    expect(runHook({ CLAUDE_AGENT_TASK_ID: "T-001" }, { cwd: wt, stop_hook_active: true }).status).toBe(0);
   });
 
   it("タスク ID が渡されていない(対話セッション)なら許可する", () => {
@@ -2806,14 +2794,14 @@ describe("stop-check hook", () => {
   });
 
   it("タスクファイルに未コミットの変更があれば許可する", () => {
-    writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
+    writeTaskFile(wt, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
 
     expect(runHook({ CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" }).status).toBe(0);
   });
 
   it("ブランチ上でタスクファイルをコミット済みなら許可する", () => {
-    writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
-    execFileSync("git", ["commit", "-am", "タスクを完了する"], { cwd: dir });
+    writeTaskFile(wt, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
+    execFileSync("git", ["commit", "-am", "タスクを完了する"], { cwd: wt });
 
     expect(runHook({ CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" }).status).toBe(0);
   });
@@ -2821,10 +2809,37 @@ describe("stop-check hook", () => {
   it("git で判定できない場所では終了を許可する(fail-open)", () => {
     const res = runHook(
       { CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" },
-      { cwd: path.join(dir, "does-not-exist") },
+      { cwd: path.join(wt, "does-not-exist") },
     );
 
     expect(res.status).toBe(0);
+  });
+
+  it("既定ブランチが master のリポジトリでも判定できる(main を決め打ちしない)", () => {
+    const { dir: masterDir, hooksDir: masterHooksDir } = initTestRepo("supervisor-test-stop-check-master", "master");
+    writeTaskFile(masterDir, "T-002", serializeFrontmatter({ status: "ready" }, "本文"));
+    execFileSync("git", ["add", "-A"], { cwd: masterDir });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: masterDir });
+    const masterWt = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-stop-check-master-wt-"));
+    fs.rmdirSync(masterWt);
+    execFileSync("git", ["worktree", "add", "-b", "agent/T-002", masterWt, "master"], { cwd: masterDir });
+
+    try {
+      const base = { ...process.env };
+      delete base.CLAUDE_AGENT_SESSION_KIND;
+      delete base.CLAUDE_AGENT_TASK_ID;
+      const res = spawnSync(process.execPath, [script], {
+        input: JSON.stringify({ cwd: masterWt }),
+        encoding: "utf8",
+        env: { ...base, CCLOOP_REPO: masterDir, CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-002" },
+      });
+
+      expect(res.status).toBe(2);
+    } finally {
+      fs.rmSync(masterDir, { recursive: true, force: true });
+      fs.rmSync(masterHooksDir, { recursive: true, force: true });
+      fs.rmSync(masterWt, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2889,14 +2904,14 @@ describe("prunePatches", () => {
     fs.writeFileSync(path.join(patchesDir, "T-002-20260815T000000Z.patch"), "new");
     fs.writeFileSync(path.join(patchesDir, "メモ.txt"), "人間が置いたファイル");
 
-    const removed = prunePatches(dir, new Date("2026-08-16T00:00:00.000Z"), 14);
+    const removed = prunePatches(patchesDir, new Date("2026-08-16T00:00:00.000Z"), 14);
 
     expect(removed).toBe(1);
     expect(fs.readdirSync(patchesDir).sort()).toEqual(["T-002-20260815T000000Z.patch", "メモ.txt"]);
   });
 
   it("patches ディレクトリが無ければ 0 件", () => {
-    expect(prunePatches(dir, new Date("2026-08-16T00:00:00.000Z"), 14)).toBe(0);
+    expect(prunePatches(path.join(dir, "patches"), new Date("2026-08-16T00:00:00.000Z"), 14)).toBe(0);
   });
 });
 
@@ -3182,7 +3197,7 @@ describe("recoverStartupIn", () => {
   });
 
   it("H: state.json の runningSessions を空にする", () => {
-    const statePath = path.join(dir, ".agent", "state.json");
+    const statePath = statePathOf(dir);
     fs.writeFileSync(
       statePath,
       JSON.stringify({
@@ -3215,15 +3230,11 @@ describe("recoverStartupIn", () => {
     expect(fs.existsSync(path.join(dir, "result.txt"))).toBe(false);
   });
 
-  it("J: 起動時点の supervisor ソースのハッシュを state.json に記録する", () => {
-    fs.mkdirSync(path.join(dir, ".agent", "supervisor"), { recursive: true });
-    fs.writeFileSync(path.join(dir, ".agent", "supervisor", "supervisor.ts"), "export const a = 1;\n");
-
+  it("J: 起動時点の ccloop 自身のソースのハッシュを state.json に記録する", () => {
     recoverStartupIn(dir, config(), NOW);
 
-    const statePath = path.join(dir, ".agent", "state.json");
-    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as { supervisorSourceHash?: string };
-    expect(state.supervisorSourceHash).toBe(supervisorSourceHash(dir));
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { supervisorSourceHash?: string };
+    expect(state.supervisorSourceHash).toBe(supervisorSourceHash());
     expect(state.supervisorSourceHash).not.toBe("");
   });
 });

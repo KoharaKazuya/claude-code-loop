@@ -8,5 +8,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": [".agent/supervisor/**/*.ts", "src/**/*.ts"]
+  "include": ["lib/**/*.ts"]
 }

@@ -7,12 +7,12 @@ node_modules
 .env
 .env.*
 
-# 自律実行の実行時ファイル。STOP は停止指示、*.tmp はアトミック書き込みの一時ファイル
-.agent/STOP
+# アトミック書き込みの一時ファイル。実行時状態(state.json / metrics.jsonl /
+# permission-denials.jsonl / patches/ / worktrees/)はリポジトリ外の state ディレクトリ
+# (${XDG_STATE_HOME:-~/.local/state}/ccloop/<repo-id>)に置くため、ここには現れない
 .agent/**/*.tmp
-.agent/state.json
-.agent/metrics.jsonl
-.agent/permission-denials.jsonl
-# セッションの未コミット差分の退避先。worktree の削除で失われないようパッチとして残すが、
-# 検証もコミットもされていない差分なので git 管理下には入れない
-.agent/patches/
+
+# CI/リリースワークフローがリポジトリの lib/ と bin/ と package.json をコピーして生成する成果物
+features/ccloop/lib
+features/ccloop/bin
+features/ccloop/package.json

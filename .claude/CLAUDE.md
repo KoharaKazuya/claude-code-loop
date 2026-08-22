@@ -9,6 +9,8 @@
 - 結果は構造化した要約で受け取る。メインのコンテキストでファイルを大量に読まない。
 - メインの読み込みは最小限にする。Grep で該当箇所を特定してから Read の offset/limit で部分読みし、大きいファイルの全文 Read や `cat`/`head` による複数ファイルの連結読みはしない(結果が以降全ターンの履歴に載り続け、コンテキストを恒久的に膨らませる)。まとまった読み込みが必要ならサブエージェントに読ませて要約で受け取る。
 - 検証方法は変更内容とリポジトリの実態に応じて選ぶ。未検証事項は推測で埋めず明示させ、メインが確認する。
+- 実装完了後のレビューは reviewer サブエージェント(`.claude/agents/reviewer.md` は `lib/agents/reviewer.md` への
+  シンボリックリンク)で行う。
 
 ## docs/ 運用ルール
 
@@ -20,40 +22,27 @@ docs/ は今後のエージェント・人間が作業時に参照するため�
 - 量を増やしすぎない。かならず読まれるわけではない前提で、読者(エージェント・人間)が得たい情報にたどり着けること、たどり着いた場合に効果がある内容だけを残すことを重視する。
 - このリポジトリを触る開発者に伝えて意義がある内容かどうかを掲載基準にする。
 - セッション中に発見した重要な事実(コードから読み取りづらい制約、外部仕様の挙動、設計の背景・理由、ハマりどころ等)は、そのセッションのうちに docs/ 以下の適切な箇所へ反映する。「後で書く」を残さない。判断の経緯は `.agent/decisions/` に書き、一過性の情報は記録しない(掲載基準は上記に従う)。
-- タスク単位の試行知見(失敗の経緯・次の試行への申し送り)は docs/ に書かず、該当タスクファイル本文末尾の `## 試行履歴` セクションへ書く(書式は `.agent/PROMPT.md`)。
+- タスク単位の試行知見(失敗の経緯・次の試行への申し送り)は docs/ に書かず、該当タスクファイル本文末尾の `## 試行履歴` セクションへ書く(書式は `lib/prompt/PROMPT.md`)。
 
 ## コミット運用ルール
 
 - コミットメッセージは日本語で記述する。
 - 意味ある一塊の単位で、随時自律的にコミットする。ユーザーの指示を待たない。
-- 以下の worktree 運用は対話セッション(人間が直接起動したセッション)にのみ適用する。Supervisor 起動セッションは既に専用 worktree 内で動いているため適用せず、「自律実行モード」節と `.agent/PROMPT.md` に従う(worktree の追加作成・ブランチ操作・main へのマージはしない)。
+- 以下の worktree 運用は対話セッション(人間が直接起動したセッション)にのみ適用する。`ccloop run` 起動セッションは既に専用 worktree 内で動いているため適用せず、「自律実行モード」節と `lib/prompt/PROMPT.md` に従う(worktree の追加作成・ブランチ操作・main へのマージはしない)。
   - 変更作業は基本的に git worktree 上で行う(EnterWorktree ツールを基本手段とする)。main ワーキングツリー上で直接編集・コミットしない。
   - ブランチ名に `agent/` プレフィックスは使わない(Supervisor が管理する名前空間のため)。
   - 作業が完了し機械的検証(tests / lint / typecheck のうち該当するもの)が通ったら、セッション自身が main へ `git merge --no-ff` で統合し、worktree とブランチを片付ける。コンフリクトした場合は解消してから統合する。
   - 例外: 軽微な変更(typo 修正、ドキュメントの小さな修正など、検証不要で 1 コミットで終わるもの)は main へ直接コミットしてよい。
 
-## 自律実行モード(Supervisor 起動セッション)
+## 自律実行モード(`ccloop run` 起動セッション)
 
-Supervisor(`.agent/supervisor/supervisor.ts`)から起動されたセッションは、`.agent/PROMPT.md` の共通ルールに従う。要点:
-
-- タスクセッションは専用 worktree(ブランチ `agent/<タスクID>`)で動き、main への統合は
-  Supervisor が自動マージで行う(ブランチ操作・push はしない)
-- 「コミット運用ルール」の worktree 運用(EnterWorktree・main への自律マージ)は適用しない(worktree の作成と main への統合は Supervisor が行う)
-- 人間への回答待ちで停止しない。AskUserQuestion は使わない(Hook でブロックされる)
-- 重要な判断は `.agent/decisions/` に記録する
-- 人間の確認が望ましい事項は `.agent/human-review/` に REVIEW として記録し、作業は続ける
-- BLOCK は対象タスクのみに限定し、他の実行可能な作業を止めない
-- 機械的検証(tests / lint / typecheck / build)なしで completed にしない
-- 既存のテスト・検証処理を削除・緩和して成功扱いにしない
-- セッション終了前に `.agent/tasks/` 等の永続状態を必ず更新し、次のセッションがファイルだけで作業を再開できるようにする
-- 実装完了時はメイン(指揮役)が reviewer サブエージェント(`.claude/agents/reviewer.md`)を起動してレビューを受ける
+`ccloop run` から起動されたセッションには `lib/prompt/PROMPT.md` が system prompt として注入され、
+そこに書かれた共通ルール(worktree・自動マージ・絶対ルール・Bash 実行の権限制約など)に従う。
+本ファイルの worktree 運用(EnterWorktree・main への自律マージ)はそのセッションには適用しない。
 
 ## Bash 実行の権限制約
 
-- 許可は `.agent/claude-settings.json` の `permissions.allow` のパターンが、サブコマンドに分解されないコマンド文字列全体にマッチするかで決まる。このファイルをセッション自身が編集して権限を広げてはならない。
-- `&&` `||` `;` `|` `>` `<<` を含む複合コマンドは、個々のコマンドが allow にあっても拒否される。1 回の Bash 呼び出しにつき 1 コマンドにする(独立なら同一メッセージで並列に呼ぶ)。
-- allow に無いコマンド(`head` `tail` `stat` `awk` `sed` `tr` `timeout` `python3` `git checkout` など、`npx` は `npx tsc*` のみ)は使わない。
-- `/home/node/.claude/` 配下への `cat` / `grep` も拒否される。
-- 読み出しは Read(offset/limit)、検索は Grep / Glob、退避・書き戻しは Write ツールを使う。出力を絞るときはコマンド自身のオプション(`git log --oneline -5` 等)を使う。
-- 検証は `npm test -- <path>` / `npm run lint` / `npm run typecheck` を使う(`npx vitest` は allow 外)。
-- 拒否されたら回避せず `.agent/PROMPT.md` の絶対ルール 6 に従い、より安全な代替へ切り替える。拒否の事実は Supervisor が `.agent/permission-denials.jsonl` に記録し `npm run agent:status` に要約が出るので、セッションが human-review へ報告する必要はない。その操作なしでタスクが成立しないときだけ BLOCK にする。
+`ccloop run` 起動セッションの Bash 権限は `lib/settings.template.json` の既定 permissions に従う。
+`.agent/claude-settings.json` があれば、そこに追記された allow/deny がツール既定に対する
+上書き差分として適用される(deny が allow に優先)。制約の詳細(複合コマンド不可・許可コマンド一覧など)は
+`lib/prompt/PROMPT.md` の「Bash 実行の権限制約」節を参照する。

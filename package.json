@@ -1,18 +1,12 @@
 {
   "name": "claude-code-loop",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
   },
   "scripts": {
-    "agent": "node .agent/supervisor/supervisor.ts run",
-    "agent:once": "node .agent/supervisor/supervisor.ts once",
-    "agent:add": "node .agent/supervisor/supervisor.ts add",
-    "agent:list": "node .agent/supervisor/supervisor.ts list",
-    "agent:status": "node .agent/supervisor/supervisor.ts status",
-    "agent:rotate": "node .agent/supervisor/supervisor.ts rotate",
-    "agent:watch": "watch -c -n1 'FORCE_COLOR=1 npm run --silent agent:status'",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "oxlint --deny-warnings",
     "test": "vitest run",

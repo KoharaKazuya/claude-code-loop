@@ -2,28 +2,22 @@
  * 自律実行 Supervisor
  *
  * Claude Code セッションを決定論的に起動・監視するループ。LLM 的な判断は持たない。
- * 状態はすべて .agent/ 以下のファイルに永続化される(このプロセスはステートレス)。
+ * このプロセスはステートレスで、状態はすべてファイルに永続化される。
+ * 人間と共有するデータは対象リポジトリの `.agent/` に、実行時状態はリポジトリ外の
+ * state ディレクトリに置く(paths.ts を参照)。
  *
- * 使い方:
- *   node .agent/supervisor/supervisor.ts run    # 常駐ループ(停止方法は下記)
- *   node .agent/supervisor/supervisor.ts once   # 1 タスク(なければ探索 1 回)だけ実行して終了
- *   node .agent/supervisor/supervisor.ts add "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002]
- *   npm run agent:add -- "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002]
- *     (npm 経由では `--` を必ず入れる。省略すると --desc が npm の description
- *      ショートハンドとして消費され、説明文が意図せず落ちることがある)
- *   node .agent/supervisor/supervisor.ts list   # タスク一覧
- *   node .agent/supervisor/supervisor.ts rotate # .agent/ 状態ファイルのローテーションを手動実行
+ * CLI のエントリポイントは cli.ts。サブコマンドの一覧はそちらを参照。
  *
- * 停止方法(run モード。再開はいずれも rm .agent/STOP && npm run agent):
- *   touch .agent/STOP            # 通常停止: 新規セッションを起動せず、実行中のセッションが
- *                                #   終わり次第停止する。git 差分(.agent/ 除く)が残っていれば
- *                                #   その旨をログに出したうえで差分を残して停止する
- *   echo session > .agent/STOP   # セッション境界停止: 実行中セッションが supervisor に
- *                                #   返ってきた時点で停止(作業途中の差分が残りうる)
- *   Ctrl+C                       # 段階停止: 1 回目で STOP(clean) を作成、2 回目で session に
- *                                #   更新、3 回目で緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で
- *                                #   即 SIGKILL。中断されたセッションの worktree とブランチは
- *                                #   そのまま残り、次回そのタスクを実行するときに再利用される
+ * 停止方法(run モード): 外部からの停止手段は Ctrl+C(SIGINT)だけで、停止指示は
+ * このプロセスのメモリ(currentStopMode)にしか存在しない。プロセスが終われば停止意思も消える
+ * ため、再開はいつでも `ccloop run` を実行するだけでよい。Ctrl+C は押すたびに段階が上がる:
+ *   1 回目 (clean)   新規セッションを起動せず、実行中のセッションが終わり次第停止する。
+ *                    git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する
+ *   2 回目 (session) 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
+ *   3 回目           緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で即 SIGKILL。中断された
+ *                    セッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
+ *                    再利用される
+ * SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
  *
  * タスクセッションは常に `claude -p --worktree <タスクID>` で起動され、リポジトリ本体の外側の
  * worktree(ブランチ `agent/<タスクID>`)で動く。成果は終了後に Supervisor が main へ自動マージし、
@@ -38,6 +32,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { styleText } from "node:util";
+import { normalizeConfig, type Config } from "./config.ts";
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
 import {
   basenameId,
@@ -46,9 +41,13 @@ import {
   type ConflictKind,
   type MergeOutcome,
 } from "./merge.ts";
+import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty } from "./rotate.ts";
-import { planLoopStep } from "./scheduler.ts";
+import { agentsArgs } from "./agents.ts";
+import { generateSystemPrompt } from "./prompt.ts";
+import { generateSettings } from "./settings.ts";
+import { planLoopStep, type StopMode } from "./scheduler.ts";
 import {
   buildTriagePrompt,
   hasFreeTextAnswer,
@@ -73,24 +72,42 @@ import {
   worktreePathFor,
 } from "./worktree.ts";
 
-const ROOT = path.resolve(import.meta.dirname, "../..");
-const AGENT_DIR = path.join(ROOT, ".agent");
-const CONFIG_PATH = path.join(AGENT_DIR, "config.json");
-const TASKS_DIR = path.join(AGENT_DIR, "tasks");
-const HR_DIR = path.join(AGENT_DIR, "human-review");
-const ARCHIVE_DIR = path.join(AGENT_DIR, "archive");
-const PROMPT_PATH = path.join(AGENT_DIR, "PROMPT.md");
-const STOP_PATH = path.join(AGENT_DIR, "STOP");
-const METRICS_PATH = path.join(AGENT_DIR, "metrics.jsonl");
+// ---------- 対象リポジトリのパス ----------
+//
+// ccloop はリポジトリの外にインストールされ、任意のリポジトリに対して実行される。
+// そのため対象リポジトリはモジュールのロード時ではなく実行時に決まる。CLI(cli.ts)が
+// 起動時に setRepoPaths で確定させ、以降はここから参照する。
+
+let currentPaths: Paths | null = null;
+
 /**
- * agentDir 配下の `.agent/permission-denials.jsonl`(git 管理外)。permission 拒否の追記型ログ。
- * テストから tmpdir を渡せるよう、statePathOf / patchesDirOf と同じパターンで agentDir を引数に取る。
+ * 対象リポジトリのパス一式。未確定なら cwd から解決する
+ * (テストや直接 import での利用を、CLI を経由せずとも動くようにするため)。
  */
-export function permissionDenialsPathOf(agentDir: string): string {
-  return path.join(agentDir, "permission-denials.jsonl");
+export function repoPaths(): Paths {
+  if (currentPaths === null) currentPaths = createPaths(resolveRepoRoot());
+  return currentPaths;
 }
-const OVERVIEW_PATH = path.join(AGENT_DIR, "OVERVIEW.md");
-const CLAUDE_SETTINGS_PATH = path.join(AGENT_DIR, "claude-settings.json");
+
+/** 対象リポジトリを確定させる(CLI の起動時、およびテストからの注入用) */
+export function setRepoPaths(p: Paths): void {
+  currentPaths = p;
+}
+
+/** 対象リポジトリを root で確定させ、確定した Paths を返す */
+export function useRepoRoot(root: string): Paths {
+  const p = createPaths(root);
+  setRepoPaths(p);
+  return p;
+}
+
+/**
+ * state ディレクトリ配下の `permission-denials.jsonl`(git 管理外)。permission 拒否の追記型ログ。
+ * テストから tmpdir を渡せるよう、stateDir を引数に取る。
+ */
+export function permissionDenialsPathOf(stateDir: string): string {
+  return path.join(stateDir, "permission-denials.jsonl");
+}
 // state.json と patches/ のパスは root を受け取る statePathOf / patchesDirOf で求める
 // (起動時復旧をフィクスチャのリポジトリに対しても実行できるようにするため)
 
@@ -123,81 +140,13 @@ export interface Task {
   body: string;
 }
 
-export interface Config {
-  claudeCommand: string;
-  model: string;
-  /** 同一タスクの失敗が afterRetries 回に達したら、以降の再試行を model で実行(model 空文字で無効) */
-  escalation: { model: string; afterRetries: number };
-  permissionMode: string;
-  maxRetries: number;
-  taskTimeoutMs: number;
-  maxTurns: number;
-  rateLimit: { backoffMs: number };
-  /** minIntervalMs: 探索の実行間隔。`npm run agent:once` の探索判定に使うほか、
-   * `npm run agent` の run モードでも直前の探索が空振り(新規タスク 0 件)だった場合の
-   * 再探索クールダウンとして使う(空振り探索の即時連鎖を防ぐ)。run モードで直前の探索が
-   * タスクを生んでいれば、従来どおり間隔を待たずに探索する */
-  explore: { enabled: boolean; minIntervalMs: number };
-  /** Human Review 回答の段階的処理(Stage 1: 決定論判定 / Stage 2: 軽量モデル判定)の設定。
-   * enabled=false なら Stage 1/2 を飛ばし、従来どおり毎回フル探索(Stage 3)へ回す */
-  triage: { enabled: boolean; model: string };
-  idlePollMs: number;
-  /** 並列セッション実行の設定 */
-  parallel: {
-    /** 同時タスクセッション数上限 */
-    maxSessions: number;
-    /** worktree 置き場のディレクトリ */
-    worktreeDir: string;
-    /** worktree へ symlink する gitignore 済みパス。
-     * 注意: 実運用の worktree 作成は WorktreeCreate hook(.agent/hooks/worktree-create.mjs)が
-     * 行い、そちらは node_modules 固定で symlink する。この設定は worktree.ts の
-     * linkSharedPaths(現状テスト用)にのみ効き、config.json で変えても hook 経路には影響しない */
-    linkPaths: string[];
-  };
-}
+// Config と normalizeConfig は WorktreeCreate hook からも使うため config.ts に置く。
+// 既存の import 元(supervisor.ts)を保つため、ここから再 export する。
+export { normalizeConfig };
+export type { Config };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-/** リポジトリルートから見た既定の worktree 置き場(`<ROOT の親>/<ROOT のディレクトリ名>-worktrees`) */
-function defaultWorktreeDir(root: string): string {
-  return path.join(path.dirname(root), `${path.basename(root)}-worktrees`);
-}
-
-/**
- * config.json の生の中身から Config を組み立てる。欠損・不正値は既定値で埋める。
- * 既存の .agent/config.json (parallel を持たない形式)もそのまま読み込める。
- */
-export function normalizeConfig(raw: unknown, root: string): Config {
-  const r = isPlainObject(raw) ? raw : {};
-
-  const escalation = isPlainObject(r.escalation)
-    ? (r.escalation as unknown as Config["escalation"])
-    : { model: "", afterRetries: Infinity };
-
-  const p = isPlainObject(r.parallel) ? r.parallel : {};
-  const maxSessionsRaw = p.maxSessions;
-  const maxSessions =
-    typeof maxSessionsRaw === "number" && Number.isFinite(maxSessionsRaw)
-      ? Math.min(8, Math.max(1, Math.trunc(maxSessionsRaw)))
-      : 1;
-  const worktreeDir =
-    typeof p.worktreeDir === "string" && p.worktreeDir !== "" ? p.worktreeDir : defaultWorktreeDir(root);
-  const linkPaths = Array.isArray(p.linkPaths) ? (p.linkPaths as string[]) : ["node_modules"];
-
-  const tr = isPlainObject(r.triage) ? r.triage : {};
-  const triage: Config["triage"] = {
-    enabled: typeof tr.enabled === "boolean" ? tr.enabled : true,
-    model: typeof tr.model === "string" && tr.model !== "" ? tr.model : "haiku",
-  };
-
-  return {
-    ...(r as unknown as Config),
-    escalation,
-    parallel: { maxSessions, worktreeDir, linkPaths },
-    triage,
-  };
 }
 
 /** 実行中の 1 セッション(タスク or 探索)の状態 */
@@ -238,11 +187,17 @@ interface State {
    * 場合は、次に変わった入力ハッシュへ対して改めて triage を試みる */
   triageAttemptedHash?: string | null;
   /**
-   * run 起動時点の .agent/supervisor/ ソースのハッシュ。現在のソースと異なれば、稼働中のプロセスは
+   * run 起動時点の ccloop 自身(CCLOOP_HOME)のソースのハッシュ。現在のソースと異なれば、稼働中のプロセスは
    * 古いコードのまま動いている(supervisor.ts 等の変更は再起動するまで反映されない)。
    */
   supervisorSourceHash?: string | null;
   rateLimit: { resumeAt: string | null };
+  /**
+   * 現在の停止指示(**表示専用**)。制御は run プロセスのメモリ(currentStopMode)だけで行い、
+   * ここは `ccloop status` / `ccloop watch` が「停止処理中」を出すための写しに過ぎない。
+   * run の起動時に "none" へリセットされるため、前回のプロセスの値が残ることはない。
+   */
+  stopMode?: StopMode;
   sessionCount: number;
   updatedAt: string | null;
 }
@@ -260,7 +215,7 @@ function writeJson(file: string, data: unknown): void {
 }
 
 function loadConfig(): Config {
-  return normalizeConfig(readJson<unknown>(CONFIG_PATH), ROOT);
+  return normalizeConfig(readJson<unknown>(repoPaths().configPath), repoPaths().root);
 }
 
 /** dir 直下の .md ファイル名一覧(ID 順)。ディレクトリがなければ空 */
@@ -327,23 +282,23 @@ function loadTasksFrom(dir: string, warn: boolean): Task[] {
   return tasks;
 }
 
-// タスク・state の読み書きは通常モジュールレベルの ROOT に対して行うが、起動時復旧
+// タスク・state の読み書きは通常、確定済みの対象リポジトリ(repoPaths())に対して行うが、起動時復旧
 // (recoverStartupIn)はフィクスチャのリポジトリを相手にテストできる必要があるため、
-// root を明示的に受け取る変種を用意し、ROOT 版はその薄いラッパーにしている。
+// root を明示的に受け取る変種を用意し、対象リポジトリ版はその薄いラッパーにしている。
 
 /** root 配下の `.agent/tasks` */
 function tasksDirOf(root: string): string {
   return path.join(root, ".agent", "tasks");
 }
 
-/** root 配下の `.agent/state.json` */
-function statePathOf(root: string): string {
-  return path.join(root, ".agent", "state.json");
+/** root に対応する state ディレクトリの `state.json`(リポジトリ外・git 管理外) */
+export function statePathOf(root: string): string {
+  return createPaths(root).statePath;
 }
 
-/** root 配下の `.agent/patches`(git 管理外) */
+/** root に対応する state ディレクトリの `patches/`(リポジトリ外・git 管理外) */
 function patchesDirOf(root: string): string {
-  return path.join(root, ".agent", "patches");
+  return createPaths(root).patchesDir;
 }
 
 function loadTasksIn(root: string): Task[] {
@@ -351,7 +306,7 @@ function loadTasksIn(root: string): Task[] {
 }
 
 function loadTasks(): Task[] {
-  return loadTasksIn(ROOT);
+  return loadTasksIn(repoPaths().root);
 }
 
 /** id のタスクを 1 件だけ読む。見つからなければ null */
@@ -360,7 +315,7 @@ function loadTaskIn(root: string, id: string): Task | null {
 }
 
 function loadTask(id: string): Task | null {
-  return loadTaskIn(ROOT, id);
+  return loadTaskIn(repoPaths().root, id);
 }
 
 /**
@@ -368,7 +323,7 @@ function loadTask(id: string): Task | null {
  * ID 採番・進捗集計・依存表示の母集団に含めるための参照専用。
  */
 function loadArchivedTasks(): Task[] {
-  return loadTasksFrom(path.join(ARCHIVE_DIR, "tasks"), false);
+  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false);
 }
 
 export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | undefined> {
@@ -395,7 +350,7 @@ function saveTaskIn(root: string, t: Task): void {
 }
 
 function saveTask(t: Task): void {
-  saveTaskIn(ROOT, t);
+  saveTaskIn(repoPaths().root, t);
 }
 
 /** state.json が無いフレッシュなクローン向けの初期状態 */
@@ -471,6 +426,7 @@ export function normalizeState(raw: unknown): State {
     state.triageAttemptedHash = r.triageAttemptedHash;
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
+  if (r.stopMode === "none" || r.stopMode === "clean" || r.stopMode === "session") state.stopMode = r.stopMode;
   return state;
 }
 
@@ -485,7 +441,7 @@ function loadStateIn(root: string): State {
 }
 
 function loadState(): State {
-  return loadStateIn(ROOT);
+  return loadStateIn(repoPaths().root);
 }
 
 function saveStateIn(root: string, state: State): void {
@@ -494,7 +450,7 @@ function saveStateIn(root: string, state: State): void {
 }
 
 function saveState(state: State): void {
-  saveStateIn(ROOT, state);
+  saveStateIn(repoPaths().root, state);
 }
 
 /**
@@ -568,8 +524,7 @@ const AGENT_CATEGORIES: { readonly match: (p: string) => boolean; readonly label
   { match: (p) => p.includes("/human-review/"), label: "レビュー" },
   { match: (p) => p.endsWith("/OVERVIEW.md"), label: "全体像" },
   { match: (p) => p.endsWith("/GOAL.md"), label: "目標" },
-  { match: (p) => p.endsWith("/PROMPT.md"), label: "手順書" },
-  { match: (p) => p.includes("/supervisor/"), label: "supervisor" },
+  { match: (p) => p.endsWith("/PROMPT.local.md"), label: "手順書" },
 ];
 
 /** カテゴリ未確定のファイルに使う総称 */
@@ -708,7 +663,7 @@ let warnedGitInProgress = false;
  * 定型コミットが履歴を埋めるのを避けるため)。呼び出し側が文脈を持っている場合
  * (復旧直後など)だけ明示的に渡す。
  */
-export function commitAgentDir(message?: string, root: string = ROOT): void {
+export function commitAgentDir(message?: string, root: string = repoPaths().root): void {
   if (gitOperationInProgress(root)) {
     if (!warnedGitInProgress) {
       warnedGitInProgress = true;
@@ -741,7 +696,7 @@ export function commitAgentDir(message?: string, root: string = ROOT): void {
 // ---------- .agent/ 状態ファイルのローテーション ----------
 
 /** 何かを移動した場合だけログ 1 行を出し、移動の要約文字列を返す(移動が無ければ null) */
-export function runRotate(agentDir: string = AGENT_DIR): string | null {
+export function runRotate(agentDir: string = repoPaths().agentDir): string | null {
   const result = rotate(agentDir);
   if (rotateResultIsEmpty(result)) return null;
   const parts: string[] = [];
@@ -787,12 +742,16 @@ export function patchesToPrune(names: string[], now: Date, keepDays: number): st
 }
 
 /**
- * `.agent/patches/` の古い退避パッチを削除し、削除件数を返す。
- * パッチは git 管理外(.gitignore 済み)のため、放置すると誰も見ないまま溜まり続ける。
+ * state ディレクトリの `patches/` から古い退避パッチを削除し、削除件数を返す。
+ * パッチはリポジトリ外にあり誰も見ないまま溜まり続けるため、期限を切って掃除する。
  * 試行履歴には退避先のパスが残るので、消えたことは後から辿れる。
  */
-export function prunePatches(agentDir: string = AGENT_DIR, now: Date = new Date(), keepDays: number = PATCH_KEEP_DAYS): number {
-  const dir = path.join(agentDir, "patches");
+export function prunePatches(
+  patchesDir: string = repoPaths().patchesDir,
+  now: Date = new Date(),
+  keepDays: number = PATCH_KEEP_DAYS,
+): number {
+  const dir = patchesDir;
   let names: string[];
   try {
     names = fs.readdirSync(dir);
@@ -814,23 +773,28 @@ export function prunePatches(agentDir: string = AGENT_DIR, now: Date = new Date(
 
 // ---------- 停止制御 ----------
 
-type StopMode = "session" | "clean";
+/**
+ * 現在の停止指示。**run プロセスのメモリだけに持ち、ファイルには永続化しない**。
+ * 停止指示は「この実行中プロセスを止めたい」という意思であって、リポジトリの状態ではない。
+ * ファイルに残すと、意思が消えたあとも残り続け、次回起動が起動直後に止まる罠になる。
+ * 更新するのはシグナルハンドラ(escalateStop)と、プロセス開始時のリセットだけ。
+ */
+let currentStopMode: StopMode = "none";
 
 /**
- * .agent/STOP による停止指示を読む。
- *   - ファイルなし: 停止しない(null)
- *   - 空 or "clean": セッション終了後、git 差分(.agent/ 除く)がない一区切りで停止(通常はこちら)
- *   - "session": 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
- * 未知の内容は「停止したい意図」を汲んで安全側(早く止まる session)に倒す。
+ * 停止指示を state.json へ写す(**表示専用**。制御には使わない)。
+ * `ccloop status` / `ccloop watch` が「停止処理中」を出せるようにするためだけの副産物なので、
+ * 書き込みに失敗しても停止処理は続ける。
  */
-function readStopMode(): StopMode | null {
-  if (!fs.existsSync(STOP_PATH)) return null;
-  const text = fs.readFileSync(STOP_PATH, "utf8").trim().toLowerCase();
-  if (text === "" || text === "clean") return "clean";
-  if (text !== "session") {
-    log(`STOP の内容 "${text}" は未知のため session として扱う`);
+function publishStopMode(mode: StopMode): void {
+  try {
+    const state = loadState();
+    if ((state.stopMode ?? "none") === mode) return;
+    state.stopMode = mode;
+    saveState(state);
+  } catch (err) {
+    log(`警告: 停止状態の表示用書き込みに失敗した(制御には影響しない): ${String(err)}`);
   }
-  return "session";
 }
 
 /**
@@ -841,9 +805,9 @@ function readStopMode(): StopMode | null {
  *
  * `.agent/` の未コミット差分は設計上ここでは無視する。mainLoop は `.agent/` を触った周回の
  * 待機直前とループ終了時にしかコミットしないため `.agent/` は常時 dirty になりうる。
- * この除外を外すと STOP(clean) が永久に成立しなくなる。
+ * この除外を外すと clean 停止が永久に成立しなくなる。
  */
-export function dirtyPathsOutsideAgent(root: string = ROOT): string[] {
+export function dirtyPathsOutsideAgent(root: string = repoPaths().root): string[] {
   try {
     const out = execSync("git status --porcelain -- . ':(exclude).agent'", { cwd: root }).toString();
     const paths = out
@@ -891,8 +855,8 @@ const FAST_CRASH_MS = 10_000;
  */
 let fastCrashStreak = 0;
 
-// sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で STOP を書いた直後に
-// アイドル待機・rate limit 待機を打ち切って STOP チェックへ即座に戻す。並列実行では
+// sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で停止指示を立てた直後に
+// アイドル待機・rate limit 待機を打ち切って停止判定へ即座に戻す。並列実行では
 // セッション完了時にも発火し、アイドル待機中の周回を即座に後始末へ進める)。
 const wakeEmitter = new EventEmitter();
 
@@ -937,41 +901,42 @@ function emergencyStop(signal: string): void {
 }
 
 /**
- * Ctrl+C 段階エスカレーションの次の一手を判定する。
- * 現在の .agent/STOP の状態(readStopMode の結果)を見て、まだ未作成なら clean を作成、
- * 既に clean なら session へ格上げ、既に session(=これ以上待たずに止めたい意図)なら
- * 緊急停止に進む。手動 touch/echo で作った STOP からもこのエスカレーションに合流する。
+ * 段階エスカレーションの次の一手を判定する(純粋)。
+ * 停止指示なし(none)なら clean を予約、既に clean なら session へ格上げ、
+ * 既に session(= これ以上待たずに止めたい意図)なら緊急停止に進む。
  */
-export type StopEscalation = { content: string } | "emergency";
-export function nextStopEscalation(mode: StopMode | null): StopEscalation {
-  if (mode === null) return { content: "" };
-  if (mode === "clean") return { content: "session" };
+export type StopEscalation = { mode: Exclude<StopMode, "none"> } | "emergency";
+export function nextStopEscalation(mode: StopMode): StopEscalation {
+  if (mode === "none") return { mode: "clean" };
+  if (mode === "clean") return { mode: "session" };
   return "emergency";
 }
 
 /**
- * run モードの SIGINT(Ctrl+C)ハンドラ。1 回目は STOP(clean) 作成、2 回目は session への
- * 更新に留め、セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を
- * 送信済み、またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean、2 回目は session へ格上げするに留め、
+ * セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、
+ * またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * 停止指示はメモリ上の currentStopMode にだけ書く(state.json への反映は表示専用で、
+ * メインループが「main を触るのはループ上だけ」の不変条件を守りながら行う)。
  */
-function handleSigint(): void {
+function escalateStop(signal: string): void {
   if (shuttingDown) {
-    emergencyStop("SIGINT");
+    emergencyStop(signal);
     return;
   }
-  const escalation = nextStopEscalation(readStopMode());
+  const escalation = nextStopEscalation(currentStopMode);
   if (escalation === "emergency") {
-    emergencyStop("SIGINT");
+    emergencyStop(signal);
     return;
   }
-  fs.writeFileSync(STOP_PATH, escalation.content);
-  if (escalation.content === "") {
+  currentStopMode = escalation.mode;
+  if (escalation.mode === "clean") {
     log(
-      "SIGINT 受信。.agent/STOP (clean) を作成し、git 差分のない一区切りでの停止を予約した。もう一度 Ctrl+C でセッション境界停止",
+      `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず、実行中が終わり次第停止する。もう一度 Ctrl+C でセッション境界停止`,
     );
   } else {
     log(
-      "SIGINT 受信。.agent/STOP を session に更新した。実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)",
+      `${signal} 受信。停止指示を session へ格上げした: 実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)`,
     );
   }
   wakeEmitter.emit("wake");
@@ -1233,7 +1198,7 @@ function recoverOrphanBranch(
 }
 
 /**
- * 起動時の復旧一式(root を明示的に受け取る本体)。ROOT 版は recoverStartup。
+ * 起動時の復旧一式(root を明示的に受け取る本体)。対象リポジトリ版は recoverStartup。
  * 手順の順序に意味がある: main のマージを片付けてからでないと agent ブランチのマージは
  * すべて blocked になるため、中断マージの巻き戻しが最初に来る。
  */
@@ -1292,7 +1257,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     state.runningSessions = [];
     stateChanged = true;
   }
-  const currentSourceHash = supervisorSourceHash(root);
+  const currentSourceHash = supervisorSourceHash();
   if (state.supervisorSourceHash !== currentSourceHash) {
     state.supervisorSourceHash = currentSourceHash;
     stateChanged = true;
@@ -1302,9 +1267,9 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
   return counts;
 }
 
-/** 起動時の復旧をリポジトリ本体(ROOT)に対して実行する */
+/** 起動時の復旧を対象リポジトリ本体に対して実行する */
 function recoverStartup(config: Config): StartupRecovery {
-  return recoverStartupIn(ROOT, config);
+  return recoverStartupIn(repoPaths().root, config);
 }
 
 // ---------- タスク選択 ----------
@@ -1384,7 +1349,7 @@ function formatDiffPathList(paths: string[]): string {
  * (### 未コミット差分(...))を使う。paths が空なら body をそのまま返す。
  *
  * タスクセッションは worktree 上で動き、worktree は終了後に削除されるため、退避しなければ
- * 差分は失われる。patchFile はリポジトリルートからの相対パスで渡す。
+ * 差分は失われる。patchFile は退避先の絶対パスで渡す(退避先はリポジトリの外にある)。
  */
 export function appendUncommittedDiffRecord(
   body: string,
@@ -1573,7 +1538,21 @@ export interface SessionResult {
  * タスクセッションの `--worktree <タスクID>` のように、セッション種別ごとに違うオプションを
  * 渡すためにも使う(こちらは上書きではなく追加)。
  */
-export function buildClaudeArgs(config: Config, prompt: string, model: string, extraArgs: string[] = []): string[] {
+export interface ClaudeArgsOptions {
+  /**
+   * 共通ルール(生成済み system prompt)を注入するか。既定は true。
+   * triage セッションだけ false にする(後述)。
+   */
+  commonRules?: boolean;
+}
+
+export function buildClaudeArgs(
+  config: Config,
+  prompt: string,
+  model: string,
+  extraArgs: string[] = [],
+  opts: ClaudeArgsOptions = {},
+): string[] {
   const args = [
     "-p",
     prompt,
@@ -1585,8 +1564,15 @@ export function buildClaudeArgs(config: Config, prompt: string, model: string, e
     config.permissionMode,
     // 自律実行専用の permissions / hooks(対話セッションには影響させない)
     "--settings",
-    CLAUDE_SETTINGS_PATH,
+    repoPaths().generatedSettingsPath,
   ];
+  if (opts.commonRules !== false) {
+    // 共通ルールは `-p` の本文ではなく system prompt へ置く(lib/prompt.ts の説明を参照)。
+    // ファイルの生成は run の起動時に 1 回(generateSystemPrompt)。
+    args.push("--append-system-prompt-file", repoPaths().generatedSystemPromptPath);
+    // サブエージェント(reviewer 等)は利用側の `.claude/agents/` ではなくツール本体が持つ
+    args.push(...agentsArgs());
+  }
   if (config.maxTurns > 0) args.push("--max-turns", String(config.maxTurns));
   args.push(...extraArgs);
   return args;
@@ -1601,16 +1587,24 @@ function runClaude(
   prompt: string,
   model: string,
   cwd: string,
-  opts: { extraArgs?: string[]; env?: Record<string, string> } = {},
+  opts: { extraArgs?: string[]; env?: Record<string, string>; commonRules?: boolean } = {},
 ): Promise<SessionResult> {
-  const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? []);
+  const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? [], { commonRules: opts.commonRules });
 
   return new Promise((resolve) => {
     const child = spawn(config.claudeCommand, args, {
       cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CLAUDE_AGENT_AUTONOMOUS: "1", ...opts.env },
+      // CCLOOP_HOME は生成 settings の hooks コマンド(`node "$CCLOOP_HOME/hooks/*.ts"`)が
+      // sh で展開する。ccloop はリポジトリ外にあるため、子プロセスへ明示的に渡す必要がある
+      env: {
+        ...process.env,
+        CLAUDE_AGENT_AUTONOMOUS: "1",
+        CCLOOP_HOME: ccloopHome(),
+        CCLOOP_REPO: repoPaths().root,
+        ...opts.env,
+      },
     });
     const pid = child.pid;
     if (pid !== undefined) childPids.add(pid);
@@ -1760,7 +1754,7 @@ export function partitionDeniedByRules(
 }
 
 /** claude-settings.json から permissions.deny を読む。欠落・パース不能・型不正なら警告ログのうえ空配列(=フィルタなし) */
-export function loadDenyRules(settingsPath: string = CLAUDE_SETTINGS_PATH): string[] {
+export function loadDenyRules(settingsPath: string = repoPaths().generatedSettingsPath): string[] {
   let settings: { permissions?: { deny?: unknown } };
   try {
     settings = readJson<{ permissions?: { deny?: unknown } }>(settingsPath);
@@ -1776,7 +1770,7 @@ export function loadDenyRules(settingsPath: string = CLAUDE_SETTINGS_PATH): stri
   return deny;
 }
 
-/** .agent/permission-denials.jsonl の 1 行(1 件の拒否)。追記型ログのレコード形式 */
+/** permission-denials.jsonl の 1 行(1 件の拒否)。追記型ログのレコード形式 */
 export interface PermissionDenialRecord {
   timestamp: string;
   session: string;
@@ -1796,8 +1790,8 @@ export function recordPermissionDenials(
   sessionLabel: string,
   res: SessionResult,
   sessionRoot: string,
-  agentDir: string = AGENT_DIR,
-  settingsPath: string = CLAUDE_SETTINGS_PATH,
+  stateDir: string = repoPaths().stateDir,
+  settingsPath: string = repoPaths().generatedSettingsPath,
 ): void {
   const json = parseResultJson(res);
   const denials = json?.permission_denials;
@@ -1836,7 +1830,7 @@ export function recordPermissionDenials(
 
   // ログのローテーション・prune は実装しない(年 1MB 未満の見込みで metrics.jsonl と同じ無制限運用)
   try {
-    fs.appendFileSync(permissionDenialsPathOf(agentDir), text);
+    fs.appendFileSync(permissionDenialsPathOf(stateDir), text);
   } catch (err) {
     log(`警告: permission 拒否ログの記録に失敗した: ${String(err)}`);
   }
@@ -1933,7 +1927,7 @@ export function collectSubagentStats(sessionDir: string): { subagentCount: numbe
 }
 
 /**
- * セッション終了のたびに呼び、コスト・トークン計測を .agent/metrics.jsonl へ 1 行追記する。
+ * セッション終了のたびに呼び、コスト・トークン計測を metrics.jsonl へ 1 行追記する。
  * 結果 JSON が得られない(タイムアウト強制 kill・パース不能)場合も、空セッションの原因を
  * 切り分けられるよう abnormal を付けて記録する。書き込み失敗はメトリクス欠落に留め、
  * supervisor 本体は止めない。
@@ -2003,7 +1997,7 @@ function recordMetrics(params: {
 }): void {
   const metrics = buildSessionMetrics(params);
   try {
-    fs.appendFileSync(METRICS_PATH, JSON.stringify(metrics) + "\n");
+    fs.appendFileSync(repoPaths().metricsPath, JSON.stringify(metrics) + "\n");
   } catch (err) {
     log(`警告: メトリクス記録に失敗した: ${String(err)}`);
   }
@@ -2038,24 +2032,45 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-/**
- * .agent/supervisor/ 直下の .ts ファイル(.test.ts を除く)から作るハッシュ。稼働中プロセスが
- * run 起動時点のソースからどれだけ乖離しているか(＝再起動しないと変更が反映されない状態か)を
- * 検出するために使う。ファイルの追加・削除・リネームも検出できるよう、ファイル名も内容に含める。
- */
-export function supervisorSourceHash(root: string): string {
-  const dir = path.join(root, ".agent", "supervisor");
-  let files: string[];
+/** supervisorSourceHash が対象にする拡張子(ツールの挙動を決めるコードとデータ) */
+const SOURCE_HASH_EXTENSIONS = [".ts", ".md", ".json"];
+
+/** dir 配下(再帰)のハッシュ対象ファイルを、dir からの相対パスで列挙する */
+function sourceHashFiles(dir: string, prefix = ""): string[] {
+  let entries: fs.Dirent[];
   try {
-    files = fs
-      .readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.endsWith(".ts") && !e.name.endsWith(".test.ts"))
-      .map((e) => e.name)
-      .sort();
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return "";
+    return [];
   }
-  const combined = files.map((f) => `${f}\0${fs.readFileSync(path.join(dir, f), "utf8")}`).join("\0");
+  const files: string[] = [];
+  for (const e of entries) {
+    const rel = prefix === "" ? e.name : `${prefix}/${e.name}`;
+    if (e.isDirectory()) files.push(...sourceHashFiles(path.join(dir, e.name), rel));
+    else if (
+      e.isFile() &&
+      SOURCE_HASH_EXTENSIONS.some((ext) => e.name.endsWith(ext)) &&
+      !e.name.endsWith(".test.ts")
+    ) {
+      files.push(rel);
+    }
+  }
+  return files;
+}
+
+/**
+ * ccloop 自身のインストール先(CCLOOP_HOME = lib/)配下のソース(.ts / .md / .json、
+ * ただし .test.ts を除く)から作るハッシュ。稼働中プロセスが run 起動時点のソースから
+ * どれだけ乖離しているか(＝再起動しないと変更が反映されない状態か)を検出するために使う。
+ * サブディレクトリ(prompt/ の共通ルール、agents/ のサブエージェント定義、hooks/、
+ * templates/)も対象にする。これらは起動時に 1 度だけ読まれるため、変更を反映するには
+ * 直下のソースと同じく再起動が要るため。
+ * ファイルの追加・削除・リネームも検出できるよう、パスも内容に含める。
+ */
+export function supervisorSourceHash(home: string = ccloopHome()): string {
+  if (!fs.existsSync(home)) return "";
+  const files = sourceHashFiles(home).sort();
+  const combined = files.map((f) => `${f}\0${fs.readFileSync(path.join(home, f), "utf8")}`).join("\0");
   return sha256(combined);
 }
 
@@ -2069,7 +2084,7 @@ export function isSupervisorSourceStale(recorded: string | null | undefined, cur
 }
 
 function readGoal(): string {
-  const goalPath = path.join(AGENT_DIR, "GOAL.md");
+  const goalPath = repoPaths().goalPath;
   return fs.existsSync(goalPath) ? fs.readFileSync(goalPath, "utf8") : "";
 }
 
@@ -2129,7 +2144,7 @@ export function diffInputs(
 
 /** 人間が方向性を記述する GOAL.md(存在すれば全セッションへ注入) */
 function goalSection(): string[] {
-  const goalPath = path.join(AGENT_DIR, "GOAL.md");
+  const goalPath = repoPaths().goalPath;
   if (!fs.existsSync(goalPath)) return [];
   return ["---", "# 人間が定めた方向性(.agent/GOAL.md)", fs.readFileSync(goalPath, "utf8")];
 }
@@ -2217,14 +2232,22 @@ function conflictResolutionSection(task: Task): string {
   ].join("\n");
 }
 
+/**
+ * 全セッションのプロンプト冒頭に置く一行。共通ルール本体(`lib/prompt/PROMPT.md`)は
+ * `--append-system-prompt-file` で system prompt として注入済みなので、ここでは
+ * 「どこにあるか」だけを伝え、本文は重複させない。
+ */
+const COMMON_RULES_NOTICE =
+  "自律実行セッションの共通ルールは system prompt として注入済み(改めて読み込む必要はない)。" +
+  "以下はこのセッション固有の指示である。";
+
 export function buildTaskPrompt(
   config: Config,
   task: Task,
   opts: { resuming?: boolean; startedAt?: string; deadline?: string } = {},
 ): string {
-  const common = fs.readFileSync(PROMPT_PATH, "utf8");
   return [
-    common,
+    COMMON_RULES_NOTICE,
     ...goalSection(),
     "---",
     `## 担当タスク(.agent/tasks/${task.id}.md)`,
@@ -2306,10 +2329,9 @@ function runningTasksSection(ctx: ExploreContext): string {
 }
 
 export function buildExplorePrompt(ctx: ExploreContext): string {
-  const common = fs.readFileSync(PROMPT_PATH, "utf8");
   const running = runningTasksSection(ctx);
   return [
-    common,
+    COMMON_RULES_NOTICE,
     ...goalSection(),
     "---",
     "## 探索セッション",
@@ -2338,8 +2360,8 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "   壊れているもの・未完了の TODO の修理タスクもここで登録してよい。",
       "5. 4. で突き合わせた GOAL とタスクの完了状況を踏まえて `.agent/OVERVIEW.md` を更新する。",
       "   GOAL に対する現在地(どこまで実装できたか)と、これから何をやれば完了に近づくかの見立てを",
-      "   本文に短くまとめる。frontmatter の `updatedAt`(ISO 8601)と、`npm run agent:status` の",
-      "   進捗バーが示す完了数・総数を `completed`/`total` として記録する(形式は `.agent/PROMPT.md` 参照)。",
+      "   本文に短くまとめる。frontmatter の `updatedAt`(ISO 8601)と、`ccloop status` の",
+      "   進捗バーが示す完了数・総数を `completed`/`total` として記録する(形式は共通ルール参照)。",
       "   内容に実質的な変化がなければファイルには触れない(無変更の書き直しは禁止)。ファイルが無ければ",
       "   新規作成する。",
       "6. 既存の ready タスクが GOAL.md の方向性と矛盾していないか確認する。矛盾するタスクは",
@@ -2351,7 +2373,7 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "open エントリがあれば重複して記録しない)。OVERVIEW.md にも見立てを捏造せず「方向性未設定」と",
       "だけ書くに留める。",
       "",
-      "タスクや記録の作成は PROMPT.md 記載のファイル形式(1 トピック 1 ファイル + YAML frontmatter)に従うこと。",
+      "タスクや記録の作成は共通ルール記載のファイル形式(1 トピック 1 ファイル + YAML frontmatter)に従うこと。",
       "このセッションでは調査とタスク登録のみを行い、実装はしないこと。",
       "登録すべき作業がなければ何も登録せず終了してよい。",
     ].join("\n"),
@@ -2380,7 +2402,7 @@ export interface TaskSessionContext {
 }
 
 /** `git status --porcelain -- .agent` に何か出るか(自動コミットで流し切れたかの確認) */
-function agentDirDirty(root: string = ROOT): boolean {
+function agentDirDirty(root: string = repoPaths().root): boolean {
   try {
     return execFileSync("git", ["status", "--porcelain", "--", ".agent"], { cwd: root }).toString().trim() !== "";
   } catch (err) {
@@ -2438,10 +2460,10 @@ function startTaskSession(
     `${styleText("cyan", "▶")} ${t.id} "${t.title}" を開始 (model=${model}${escalated ? " エスカレーション" : ""}${t.retries > 0 ? `, 再試行 ${t.retries} 回目` : ""}${resuming ? ", 衝突解消の継続" : ""}, branch=${branch})`,
   );
 
-  // cwd は ROOT のまま。CLI が --worktree の worktree へ移動する(worktree 自体は
+  // cwd はリポジトリ本体のまま。CLI が --worktree の worktree へ移動する(worktree 自体は
   // WorktreeCreate hook が作る / 既にあれば再利用する)
   const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
-  const result = runClaude(config, buildTaskPrompt(config, t, { resuming, startedAt, deadline }), model, ROOT, {
+  const result = runClaude(config, buildTaskPrompt(config, t, { resuming, startedAt, deadline }), model, repoPaths().root, {
     extraArgs: ["--worktree", t.id],
     env: {
       CLAUDE_AGENT_SESSION_KIND: "task",
@@ -2475,17 +2497,17 @@ async function runExploreSession(
   try {
     log(`${styleText("cyan", "▶")} 探索セッションを開始: ${reason}`);
     const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
-    const res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, ROOT, {
+    const res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, repoPaths().root, {
       env: { CLAUDE_AGENT_SESSION_KIND: "explore" },
     });
-    recordMetrics({ kind: "explore", model: config.model, res, sessionCwd: ROOT });
+    recordMetrics({ kind: "explore", model: config.model, res, sessionCwd: repoPaths().root });
     if (isSessionRateLimited(res)) {
       applyRateLimit(config);
       rateLimited = true;
     } else {
       // 探索が成功した = レートリミットは回復している
       clearRateLimit();
-      recordPermissionDenials("explore", res, ROOT);
+      recordPermissionDenials("explore", res, repoPaths().root);
       // このセッションが現在の入力(GOAL.md・answered な Review)を確認済みとして記録する。
       // レートリミット時は更新せず、復帰後に再度取り込ませる
       const st = loadState();
@@ -2544,7 +2566,7 @@ function reproduceMergeConflict(
   worktree: string,
   opts: { root?: string; renames?: Map<string, string> } = {},
 ): string[] {
-  const root = opts.root ?? ROOT;
+  const root = opts.root ?? repoPaths().root;
   try {
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root }).toString().trim();
     execFileSync("git", ["merge", head], { cwd: worktree, stdio: "ignore" });
@@ -2569,18 +2591,18 @@ function reproduceMergeConflict(
   return resolved;
 }
 
-/** worktree 上の未コミット差分を .agent/patches/ へ退避する。戻り値はリポジトリ相対のパッチパスと対象パス */
+/** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する。戻り値はパッチの絶対パスと対象パス */
 function salvageWorktreeDiff(
   taskId: string,
   worktree: string,
   at: Date,
-  root: string = ROOT,
+  root: string = repoPaths().root,
 ): { patchFile: string; paths: string[] } | null {
   try {
-    const name = patchFileName(taskId, at);
-    const paths = salvagePatch(worktree, path.join(patchesDirOf(root), name));
+    const patchFile = path.join(patchesDirOf(root), patchFileName(taskId, at));
+    const paths = salvagePatch(worktree, patchFile);
     if (paths === null) return null;
-    return { patchFile: `.agent/patches/${name}`, paths };
+    return { patchFile, paths };
   } catch (err) {
     log(`警告: ${taskId} の未コミット差分の退避に失敗した: ${String(err)}`);
     return null;
@@ -2602,9 +2624,9 @@ function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: 
     );
   }
   try {
-    removeWorktree(ROOT, worktree);
+    removeWorktree(repoPaths().root, worktree);
     const parked = parkedBranchNameFor(taskId, at);
-    renameBranch(ROOT, branch, parked);
+    renameBranch(repoPaths().root, branch, parked);
     lines.push(`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`);
     log(`${taskId}: worktree を削除し、ブランチを ${parked} へ退避した`);
   } catch (err) {
@@ -2675,7 +2697,7 @@ function describeMergeOutcome(outcome: MergeOutcome): string {
  * 失敗させる原因になりうるため(実際に本番でこの経路が発生し main が固まった)、
  * 書き込み側は必ずこれを先にチェックしてスキップする。
  */
-export function skipMainWriteIfGitBusy(taskId: string, root: string = ROOT): boolean {
+export function skipMainWriteIfGitBusy(taskId: string, root: string = repoPaths().root): boolean {
   if (!gitOperationInProgress(root)) return false;
   log(`警告: ${taskId}: main がマージ途中のため記録を書かない(復旧後の再試行で再評価される)`);
   return true;
@@ -2734,7 +2756,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
       commitAgentDir(undefined, worktree);
 
       // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる
-      taskFileChanged = taskFileChangedOnBranch(ROOT, branch, taskId);
+      taskFileChanged = taskFileChangedOnBranch(repoPaths().root, branch, taskId);
 
       // 3. 統合。マージ未完了のまま終わった衝突解消セッションは worktree をそのまま残す
       mergeStuck = mergeInProgress(worktree);
@@ -2742,7 +2764,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         mergeLabel = "unresolved";
         log(`${taskId}: 衝突解消が未完のままセッションが終了した。worktree を残す`);
       } else {
-        outcome = mergeAgentBranch(ROOT, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
+        outcome = mergeAgentBranch(repoPaths().root, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
         mergeLabel = outcome.result;
         log(`${taskId}: ${describeMergeOutcome(outcome)}`);
         if (outcome.result === "conflict") {
@@ -2757,8 +2779,8 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         } else if (outcome.result !== "blocked") {
           // blocked は main 側でマージを開始すらできていない状態。worktree に手を触れず次の試行へ回す
           leftovers = salvageWorktreeDiff(taskId, worktree, now);
-          removeWorktree(ROOT, worktree);
-          if (!deleteBranch(ROOT, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+          removeWorktree(repoPaths().root, worktree);
+          if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
         }
       }
     }
@@ -2871,7 +2893,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
 // ---------- メインループ ----------
 //
 // 並列実行の要となる不変条件:
-//   main のワーキングツリーに対する git 操作(commitAgentDir(ROOT) / mergeAgentBranch)と
+//   main のワーキングツリーに対する git 操作(commitAgentDir / mergeAgentBranch)と
 //   state.json の書き込みは、すべてメインループの「スレッド」上でだけ行う。
 //   すなわち起動の同期部分(launchTaskSession)と完了キューの掃き出し(drainCompletedSessions)
 //   だけが main を触り、セッション完了コールバックはキューへ積むだけで何も触らない。
@@ -2970,35 +2992,40 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function mainLoop(once: boolean): Promise<void> {
-  const loaded = loadConfig();
-  // once は 1 セッション実行して終わるモードなので、並列度を 1 に固定する
-  // (planLoopStep が空きスロット分まとめて launch を返すのを防ぐ)
-  const config: Config = once ? { ...loaded, parallel: { ...loaded.parallel, maxSessions: 1 } } : loaded;
-  // once は 1 セッションで終了するため、段階停止で STOP(clean) を作っても効き目が無いに等しく、
-  // 作られたファイルだけが残って次回 run が起動直後に停止する罠になる。
-  // そのため once では段階化せず即緊急停止にする。
-  process.on("SIGINT", once ? () => emergencyStop("SIGINT") : handleSigint);
-  process.on("SIGTERM", () => emergencyStop("SIGTERM"));
-  log(`supervisor start (mode=${once ? "once" : "run"})`);
+export async function mainLoop(): Promise<void> {
+  // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
+  // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
+  generateSettings(repoPaths());
+  // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
+  generateSystemPrompt(repoPaths());
+  const config = loadConfig();
+  // 停止指示はプロセスのメモリにしか無い。起動時に必ずリセットしておく
+  // (同一プロセス内で mainLoop を再実行した場合に前回の意思を引きずらないため)。
+  // state.json 側は表示専用の写しなので、前回プロセスが緊急停止で残した値をここで消す
+  currentStopMode = "none";
+  publishStopMode("none");
+  // SIGTERM も 1 回目の Ctrl+C と同じ段階停止として扱う。サービスマネージャからの停止でも
+  // 走っているセッションを取り込んでから止まるほうが成果を失わずに済む
+  // (待てない場合は 3 回送れば緊急停止に到達する)。
+  process.on("SIGINT", () => escalateStop("SIGINT"));
+  process.on("SIGTERM", () => escalateStop("SIGTERM"));
+  log("supervisor start");
   // 前回の終了時に積み残した .agent/ の差分もここで拾う。復旧が無かった周回で
   // 「中断していたタスクを復旧する」と名乗ると嘘になるため、件数で文言を出し分ける。
   const recovered = startupRecoveryTotal(recoverStartup(config));
   if (recovered > 0) commitAgentDir("docs(agent): 中断していたタスクを復旧する");
   else commitAgentDir();
 
-  /** このループで完了したセッション(タスク・探索)の数。once の終了判定に使う */
-  let completedCount = 0;
   // この周回までに main の `.agent/` を触ったか。アイドル・rate limit 待機の周回まで
   // コミットすると内容を語らない定型コミットが 1 分おきに積み上がるため、`.agent/` を
   // 触った場合だけ、次に待機へ入る直前とループ終了時にまとめてコミットする。
   let agentDirty = false;
-  // run モードの自動終了判定に使うプロセス内フラグ(永続化しない)。探索セッションが
+  // 自動終了判定に使うプロセス内フラグ(永続化しない)。探索セッションが
   // rate limit 以外の理由で完了したら true、タスクセッションが完了したら false に戻す。
   // 「探索したのに新しいタスクが生まれなかった」を検出するための唯一の判定材料。
   let exploreDone = false;
   // 直前に完了した探索セッションが新規タスクを 1 件も登録しなかったか(プロセス内フラグ、
-  // 永続化しない)。true の間は run モードでも exploreDue のクールダウンを課し、
+  // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
   let lastExploreYieldedNothing = false;
 
@@ -3010,7 +3037,8 @@ async function mainLoop(once: boolean): Promise<void> {
     if (worktreeDirError !== null) {
       log(`fatal: worktree 置き場 ${config.parallel.worktreeDir} に書き込めない: ${worktreeDirError}`);
       log(
-        `fatal: 復旧するには次を実行する: sudo mkdir -p ${config.parallel.worktreeDir} && sudo chown node: ${config.parallel.worktreeDir}`,
+        `fatal: 復旧するには ${config.parallel.worktreeDir} の親ディレクトリの書き込み権限を確認すること` +
+          "(既定では環境変数 XDG_STATE_HOME、またはホームディレクトリ配下 ~/.local/state の権限が原因になる)",
       );
       log("fatal: タスクセッションを 1 本も起動できないため停止する");
       return;
@@ -3026,7 +3054,6 @@ async function mainLoop(once: boolean): Promise<void> {
       // 1. 完了したセッションの後始末。並列に走ったセッションもここで 1 件ずつ直列に処理する
       const finished = drainCompletedSessions(config);
       if (finished > 0) {
-        completedCount += finished;
         agentDirty = true;
         // タスクセッションが完了して main の状態が変わったため、終了前にもう一度
         // 探索して GOAL と突き合わせ直す必要がある
@@ -3045,14 +3072,14 @@ async function mainLoop(once: boolean): Promise<void> {
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
         // 復旧を試みる。abortInterruptedAutoMerge 自体は失敗を投げずに false を返す設計だが、
         // 想定外の例外を投げても mainLoop を落とさないよう念のため try で囲む
-        if (gitOperationInProgress(ROOT)) {
+        if (gitOperationInProgress(repoPaths().root)) {
           log("警告: main で git 操作が進行中を検知。自己修復を試みる");
           try {
-            abortInterruptedAutoMerge(ROOT);
+            abortInterruptedAutoMerge(repoPaths().root);
           } catch (err) {
             log(`警告: 自己修復に失敗した: ${String(err)}`);
           }
-          if (gitOperationInProgress(ROOT)) {
+          if (gitOperationInProgress(repoPaths().root)) {
             log("fatal: 人間の git 操作が進行中、または巻き戻し不能。対処後に再起動すること");
             break;
           }
@@ -3062,8 +3089,14 @@ async function mainLoop(once: boolean): Promise<void> {
         prunePatches();
       }
 
-      const stopMode = readStopMode();
-      const dirtyPaths = stopMode === null ? [] : dirtyPathsOutsideAgent();
+      // 停止指示はシグナルハンドラがメモリ上で進めるだけなので、state.json への写し
+      // (status / watch の表示専用)はメインループ上でだけ書く(不変条件を守るため)
+      const stopMode = currentStopMode;
+      if ((state.stopMode ?? "none") !== stopMode) {
+        state.stopMode = stopMode;
+        saveState(state);
+      }
+      const dirtyPaths = stopMode === "none" ? [] : dirtyPathsOutsideAgent();
 
       // 解除時刻を過ぎた rate limit は判断材料を作る前に state から落とす
       let rateLimitedUntilMs: number | null = null;
@@ -3080,8 +3113,7 @@ async function mainLoop(once: boolean): Promise<void> {
       // 上位の判断で周回が確定する場合、下位の判断材料は集めない。hashInputs は state を、
       // selectRunnable はタスクファイルを書き換える副作用を持つため、その判断を実際に使う
       // 周回でだけ動かす(planLoopStep の優先度 1〜3 が成立する周回では使われない)。
-      const gathering =
-        stopMode === null && rateLimitedUntilMs === null && !(once && completedCount >= 1);
+      const gathering = stopMode === "none" && rateLimitedUntilMs === null;
 
       // 人間からの入力(GOAL.md・Human Review の回答)の変更検出。確認済みハッシュの更新は
       // runExploreSession 側(レートリミット時は更新されず再試行される)
@@ -3109,8 +3141,6 @@ async function mainLoop(once: boolean): Promise<void> {
 
       const action = planLoopStep({
         now: new Date(),
-        once,
-        completedCount,
         stopMode,
         mainDirtyOutsideAgent: dirtyPaths.length > 0,
         runningCount,
@@ -3134,7 +3164,7 @@ async function mainLoop(once: boolean): Promise<void> {
       if (action.type === "stop") {
         // planLoopStep は実行中セッションが 0 のときしか stop を返さないので通常は空だが、
         // 後始末を取りこぼさないよう最後にもう一度掃き出す
-        completedCount += drainCompletedSessions(config);
+        drainCompletedSessions(config);
         log(action.reason);
         if (dirtyPaths.length > 0) log(`残った差分: ${formatDiffPathList(dirtyPaths)}`);
         if (action.cause === "idle-exit") {
@@ -3144,10 +3174,10 @@ async function mainLoop(once: boolean): Promise<void> {
           const openBlockCount = classifyHumanReview(parseHumanReview()).openBlock.length;
           if (blockedCount + failedCount + openBlockCount > 0) {
             log(
-              `残件: blocked ${blockedCount} 件 / failed ${failedCount} 件 / human-review(BLOCK) ${openBlockCount} 件 — 詳細は npm run agent:status`,
+              `残件: blocked ${blockedCount} 件 / failed ${failedCount} 件 / human-review(BLOCK) ${openBlockCount} 件 — 詳細は ccloop status`,
             );
           }
-          log("対応後、再開するには npm run agent を実行する");
+          log("対応後、再開するには ccloop run を実行する");
         }
         break; // .agent/ の最終フラッシュは finally の commitAgentDir() が行う
       }
@@ -3162,7 +3192,6 @@ async function mainLoop(once: boolean): Promise<void> {
         const st = loadState();
         st.triageAttemptedHash = currentInputsHash;
         saveState(st);
-        completedCount += 1;
         continue;
       }
 
@@ -3196,7 +3225,6 @@ async function mainLoop(once: boolean): Promise<void> {
           exploreDone = true;
           lastExploreYieldedNothing = !yielded;
         }
-        completedCount += 1;
         continue;
       }
 
@@ -3214,12 +3242,7 @@ async function mainLoop(once: boolean): Promise<void> {
         }
         if (launched === 0) {
           // 1 件も起動できなかった(.agent をコミットできない等)場合、同じ条件で即座に
-          // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む。
-          // once は起動できないまま待ち続けても意味がないのでここで終了する。
-          if (once) {
-            log("タスクセッションを起動できなかった。終了");
-            break;
-          }
+          // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む
           await sleep(config.idlePollMs);
         }
         continue;
@@ -3239,9 +3262,12 @@ async function mainLoop(once: boolean): Promise<void> {
       await sleep(action.ms);
     }
   } finally {
-    // break・例外・once 終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は
+    // break・例外・正常終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は
     // break が効く前に走るため、抜け道は構造的に存在しない(break 側に手を入れる必要がない)。
     commitAgentDir();
+    // 表示用の停止指示もプロセスと一緒に畳む(緊急停止は process.exit するためここを通らないが、
+    // その場合は次回 run の起動時のリセットが拾う)
+    publishStopMode("none");
   }
   log("supervisor stop");
 }
@@ -3250,7 +3276,7 @@ async function mainLoop(once: boolean): Promise<void> {
 
 /** archive 済みタスクの ID も母集団に含め、ローテーション後の ID 再利用・衝突を防ぐ */
 function nextTaskId(): string {
-  const max = [...listMdFiles(TASKS_DIR), ...listMdFiles(path.join(ARCHIVE_DIR, "tasks"))]
+  const max = [...listMdFiles(repoPaths().tasksDir), ...listMdFiles(path.join(repoPaths().archiveDir, "tasks"))]
     .map((f) => Number(f.replace(/^T-/, "").replace(/\.md$/, "")))
     .filter((n) => Number.isFinite(n))
     .reduce((a, b) => Math.max(a, b), 0);
@@ -3278,7 +3304,7 @@ function positionalArgs(argv: string[]): string[] {
   return positional;
 }
 
-function cmdAdd(argv: string[]): void {
+export function cmdAdd(argv: string[]): void {
   const positional = positionalArgs(argv);
   const title = positional[0];
   if (!title) {
@@ -3377,7 +3403,7 @@ function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean): void {
   }
 }
 
-function cmdList(argv: string[]): void {
+export function cmdList(argv: string[]): void {
   const full = argv.includes("--full");
   const tasks = loadTasks();
   // 依存表示用の参照は archive 済みタスクも含める(rotate 後の依存先を (missing) ではなく
@@ -3401,7 +3427,7 @@ function cmdList(argv: string[]): void {
   if (!printedGroup) console.log("タスクなし");
 }
 
-// ---------- 人間向け: status / retry ----------
+// ---------- 人間向け: status ----------
 
 /**
  * 回答済み判定は `status` フィールド単体では行わない(チェックボックス方式では `status: open` の
@@ -3421,11 +3447,11 @@ interface HrEntry {
 
 /** .agent/human-review/ の各ファイルをエントリとして読む */
 function parseHumanReview(): HrEntry[] {
-  return listMdFiles(HR_DIR).map((fileName) => {
+  return listMdFiles(repoPaths().humanReviewDir).map((fileName) => {
     const id = fileName.replace(/\.md$/, "");
     let raw = "";
     try {
-      raw = fs.readFileSync(path.join(HR_DIR, fileName), "utf8");
+      raw = fs.readFileSync(path.join(repoPaths().humanReviewDir, fileName), "utf8");
     } catch {}
     const { data, body } = parseFrontmatter(raw);
     return {
@@ -3465,7 +3491,7 @@ export function classifyHumanReview(hr: HrEntry[]): {
  * note を省略すると本文は変更しない(Stage 1 の決定論クローズ用)。
  */
 function closeHumanReview(id: string, note?: string): void {
-  const file = path.join(HR_DIR, `${id}.md`);
+  const file = path.join(repoPaths().humanReviewDir, `${id}.md`);
   const { data, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
   data.status = "closed";
   const newBody = note === undefined ? body : `${body}\n\n対応: ${note}`;
@@ -3506,11 +3532,15 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
     }));
 
     log(`${styleText("cyan", "▶")} triage セッションを開始 (${stage2.length} 件, model=${config.triage.model})`);
-    const res = await runClaude(config, buildTriagePrompt(stage2, tasks), config.triage.model, ROOT, {
+    const res = await runClaude(config, buildTriagePrompt(stage2, tasks), config.triage.model, repoPaths().root, {
       extraArgs: ["--disallowed-tools", "Edit Write Task TodoWrite WebFetch WebSearch Bash", "--max-turns", "6"],
+      // triage は「回答を仕分けて JSON を返すだけ」の読み取り専用セッション。共通ルール
+      // (worktree 運用・記録ファイルの書き方・reviewer への委譲)はどれも実行できない
+      // 指示になるため注入しない。サブエージェントも Task が禁止されていて起動できない。
+      commonRules: false,
       env: { CLAUDE_AGENT_SESSION_KIND: "triage" },
     });
-    recordMetrics({ kind: "triage", model: config.triage.model, res, sessionCwd: ROOT });
+    recordMetrics({ kind: "triage", model: config.triage.model, res, sessionCwd: repoPaths().root });
 
     const json = parseResultJson(res);
     const text = typeof json?.result === "string" ? json.result : "";
@@ -3654,11 +3684,11 @@ export function runningSessionLines(
   return lines;
 }
 
-/** .agent/metrics.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
+/** metrics.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
 function loadMetrics(): SessionMetrics[] {
-  if (!fs.existsSync(METRICS_PATH)) return [];
+  if (!fs.existsSync(repoPaths().metricsPath)) return [];
   const lines = fs
-    .readFileSync(METRICS_PATH, "utf8")
+    .readFileSync(repoPaths().metricsPath, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "");
   const entries: SessionMetrics[] = [];
@@ -3693,7 +3723,7 @@ export function parseOverview(text: string): Overview | null {
 /** .agent/OVERVIEW.md を読む。存在しない・パース不能なら null(未生成扱い) */
 function loadOverview(): Overview | null {
   try {
-    return parseOverview(fs.readFileSync(OVERVIEW_PATH, "utf8"));
+    return parseOverview(fs.readFileSync(repoPaths().overviewPath, "utf8"));
   } catch {
     return null;
   }
@@ -3713,7 +3743,11 @@ export function overviewSectionLines(
   if (overview === null) {
     return { rest: "未生成(次回の探索セッションが作成する)", lines: [] };
   }
-  const when = overview.updatedAt !== "" ? overview.updatedAt : "不明";
+  // 雛形の OVERVIEW.md は updatedAt: 1970-01-01T00:00:00.000Z を初期値として持つ(init 直後、
+  // 探索セッションがまだ 1 度も更新していない状態)。これをそのまま表示すると
+  // 「1970-01-01... 時点」という紛らわしい表示になるため、未生成として扱う。
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+  const when = overview.updatedAt === EPOCH ? "(未生成)" : overview.updatedAt !== "" ? overview.updatedAt : "不明";
   const rest = `${when} 時点(完了 ${overview.completed}/${overview.total} → 現在 ${currentCompleted}/${currentTotal})`;
   const allLines = overview.body.split("\n");
   const lines =
@@ -3759,9 +3793,9 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   return { worktrees, parkedBranches };
 }
 
-/** .agent/permission-denials.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
-export function loadPermissionDenials(agentDir: string = AGENT_DIR): PermissionDenialRecord[] {
-  const p = permissionDenialsPathOf(agentDir);
+/** permission-denials.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
+export function loadPermissionDenials(stateDir: string = repoPaths().stateDir): PermissionDenialRecord[] {
+  const p = permissionDenialsPathOf(stateDir);
   if (!fs.existsSync(p)) return [];
   const lines = fs
     .readFileSync(p, "utf8")
@@ -3889,24 +3923,33 @@ export function permissionDenialLines(summary: PermissionDenialSummary): string[
   return lines;
 }
 
-function cmdStatus(): void {
+/**
+ * `ccloop status` の表示内容を 1 つの文字列として組み立てる。
+ * `status` は 1 回出力するだけだが、`watch` は同じ内容を毎秒描き直すため、
+ * 「出力」ではなく「文字列」を作る形にして両方から使えるようにしてある。
+ */
+export function formatStatus(): string {
+  const out: string[] = [];
+  const push = (line: string): void => {
+    out.push(line);
+  };
   const tasks = loadTasks();
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const state = loadState();
   const hr = parseHumanReview();
   const by = (s: TaskStatus): Task[] => tasks.filter((t) => t.status === s);
 
-  console.log("== 自律実行ステータス ==");
+  push("== 自律実行ステータス ==");
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
   // ローテーション後も「完了 X/N」が累積の実績を反映するようにする
   const archivedCompleted = loadArchivedTasks().filter((t) => t.status === "completed").length;
-  console.log(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
+  push(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
   const counts = STATUS_ORDER.map((s) => by(s).length)
     .map((n, i) => [STATUS_ORDER[i]!, n] as const)
     .filter(([, n]) => n > 0)
     .map(([s, n]) => `${statusLabel(s)} ${n}`)
     .join(" / ");
-  console.log(counts || "タスクなし");
+  push(counts || "タスクなし");
 
   const overview = loadOverview();
   const { rest: overviewRest, lines: overviewLines } = overviewSectionLines(
@@ -3914,8 +3957,8 @@ function cmdStatus(): void {
     by("completed").length + archivedCompleted,
     tasks.length + archivedCompleted,
   );
-  console.log(`\n${styledSectionLabel("概観", overviewRest)}`);
-  for (const l of overviewLines) console.log(`  ${l}`);
+  push(`\n${styledSectionLabel("概観", overviewRest)}`);
+  for (const l of overviewLines) push(`  ${l}`);
 
   const { openBlock, openReview, answered } = classifyHumanReview(hr);
   const failed = by("failed");
@@ -3929,7 +3972,7 @@ function cmdStatus(): void {
   // config は要対応セクション(worktree 置き場)と稼働状態の両方で使う
   let taskTimeoutMs = 2400000;
   let maxSessions = 1;
-  let worktreeDir = defaultWorktreeDir(ROOT);
+  let worktreeDir = repoPaths().worktreesDir;
   try {
     const c = loadConfig();
     taskTimeoutMs = c.taskTimeoutMs;
@@ -3938,17 +3981,17 @@ function cmdStatus(): void {
   } catch {
     // config が読めなければ既定値にフォールバック
   }
-  const pending = collectPendingConflicts(ROOT, worktreeDir);
+  const pending = collectPendingConflicts(repoPaths().root, worktreeDir);
 
   const section = (tag: string, rest: string, lines: string[]): void => {
     if (lines.length === 0) return;
-    console.log(`\n${styledSectionLabel(tag, rest)}`);
-    for (const l of lines) console.log(`  ${l}`);
+    push(`\n${styledSectionLabel(tag, rest)}`);
+    for (const l of lines) push(`  ${l}`);
   };
   section("要対応", "open な Human Review (BLOCK) — タスクが停止中:", openBlock.map(hrLine));
   section(
     "要対応",
-    "failed タスク — retry するか断念を判断:",
+    "failed タスク — タスクファイルの status を ready に戻して再挑戦するか、断念を判断:",
     failed.map((t) => `${t.id}: ${t.title}${t.note ? `\n      note: ${t.note}` : ""}`),
   );
   section(
@@ -3982,7 +4025,7 @@ function cmdStatus(): void {
       pending.parkedBranches.length ===
     0
   ) {
-    console.log("\n要対応事項なし");
+    push("\n要対応事項なし");
   }
 
   const denialSummary = summarizePermissionDenials(loadPermissionDenials(), new Date());
@@ -3992,56 +4035,62 @@ function cmdStatus(): void {
     permissionDenialLines(denialSummary),
   );
 
-  console.log("\n実行中のタスク");
+  push("\n実行中のタスク");
   const running = runningSessionLines(state.runningSessions, byId, new Date(), taskTimeoutMs, maxSessions);
   if (running.length === 0) {
-    console.log("  なし");
+    push("  なし");
   } else {
-    for (const l of running) console.log(`  ${l}`);
+    for (const l of running) push(`  ${l}`);
   }
 
   // 人間の入力(GOAL.md・answered な Human Review)が未取り込みなら、mainLoop は新規タスクを
   // 起動せず探索セッションを割り込ませる。表示もその実態に合わせる
   const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
   if (inputsChanged) {
-    console.log("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
-    console.log(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${maxSessions} 並列に戻ります`);
+    push("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
+    push(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${maxSessions} 並列に戻ります`);
   }
 
-  console.log(`\n${inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
+  push(`\n${inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
   const runningTaskIds = new Set(
     state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
   );
   const next = nextRunnableTasks(tasks, runningTaskIds, 3);
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
   if (next.length === 0) {
-    console.log(
+    push(
       snoozed.length > 0
         ? `  なし(スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil})`
         : "  なし(依存待ちの可能性)",
     );
   } else {
-    for (const t of next) console.log(`  ${t.id}  p${t.priority}  ${t.title}`);
+    for (const t of next) push(`  ${t.id}  p${t.priority}  ${t.title}`);
   }
 
-  console.log(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
+  push(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
   if (snoozed.length === 0) {
-    console.log("  なし");
+    push("  なし");
   } else {
     for (const t of snoozed) {
-      console.log(`  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`);
+      push(`  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`);
     }
-    console.log("  → 残っている間、run モードのループは自動終了(idle-exit)しない");
+    push("  → 残っている間、run モードのループは自動終了(idle-exit)しない");
   }
 
-  console.log("\n-- 稼働状態 --");
-  console.log(`セッション数: ${state.sessionCount} / 最終探索: ${state.lastExploreAt ?? "未実行"}`);
-  if (state.rateLimit.resumeAt !== null) {
-    console.log(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
+  push("\n-- 稼働状態 --");
+  push(`セッション数: ${state.sessionCount} / 最終探索: ${state.lastExploreAt ?? "未実行"}`);
+  // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
+  if (state.stopMode === "clean") {
+    push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");
+  } else if (state.stopMode === "session") {
+    push("停止処理中 (session): 実行中セッションが supervisor に返った時点で run が停止する");
   }
-  if (isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash(ROOT))) {
-    console.log(
-      "  ※ supervisor のコードが起動後に変更されている — 稼働中なら再起動(npm run agent を止めて起動し直す)しないと反映されない",
+  if (state.rateLimit.resumeAt !== null) {
+    push(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
+  }
+  if (isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash())) {
+    push(
+      "  ※ supervisor のコードが起動後に変更されている — 稼働中なら再起動(ccloop run を止めて起動し直す)しないと反映されない",
     );
   }
 
@@ -4050,75 +4099,15 @@ function cmdStatus(): void {
     const last = metrics[metrics.length - 1]!;
     const totalCost = metrics.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
     const fmtCost = (cost: number | undefined): string => (cost !== undefined ? `$${cost.toFixed(4)}` : "不明");
-    console.log(
+    push(
       `直近セッション: cost=${fmtCost(last.costUsd)} / turns=${last.numTurns ?? "不明"}${last.abnormal ? ` / 異常終了: ${last.abnormal}` : ""}`,
     );
-    console.log(`累計: cost=${fmtCost(totalCost)} / セッション数=${metrics.length}`);
+    push(`累計: cost=${fmtCost(totalCost)} / セッション数=${metrics.length}`);
   }
-  console.log("\n確認・介入の手順: README.md の「人間の関与」");
+  push("\n確認・介入の手順: README.md の「人間の関与」");
+  return out.join("\n");
 }
 
-function cmdRotate(): void {
-  const summary = runRotate();
-  if (summary !== null) {
-    // subject はステージ内容から生成させる(rotate 以外の未コミット差分が同時に載ることがあり、
-    // rotate の要約だけを名乗ると実際のコミット内容と食い違うため)
-    commitAgentDir();
-  }
-}
-
-function cmdRetry(argv: string[]): void {
-  const id = argv[0];
-  if (!id) {
-    console.error("使い方: supervisor.ts retry <task-id>");
-    process.exit(1);
-  }
-  const t = loadTask(id);
-  if (!t) {
-    console.error(`タスクが見つからない: ${id}`);
-    process.exit(1);
-  }
-  if (t.status !== "failed" && t.status !== "blocked") {
-    console.error(`retry は failed / blocked のタスクのみ対象(${id} は ${t.status})`);
-    process.exit(1);
-  }
-  const prev = t.status;
-  t.status = "ready";
-  t.retries = 0;
-  t.note = `人間の介入により ready へ戻す(元: ${prev}。${t.note ?? "-"})`;
-  saveTask(t);
-  console.log(`${id} を ready に戻した(retries をリセット)。失敗原因が残っていれば先に対処すること`);
-}
-
-// CLI ディスパッチ。テスト等からの import 時は実行しない
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === import.meta.filename) {
-  const cmd = process.argv[2];
-  switch (cmd) {
-    case "run":
-      await mainLoop(false);
-      break;
-    case "once":
-      await mainLoop(true);
-      break;
-    case "add":
-      cmdAdd(process.argv.slice(3));
-      break;
-    case "list":
-      cmdList(process.argv.slice(3));
-      break;
-    case "status":
-      cmdStatus();
-      break;
-    case "retry":
-      cmdRetry(process.argv.slice(3));
-      break;
-    case "rotate":
-      cmdRotate();
-      break;
-    default:
-      console.error(
-        "使い方: node .agent/supervisor/supervisor.ts <run|once|add|list|status|retry|rotate>",
-      );
-      process.exit(1);
-  }
+export function cmdStatus(): void {
+  console.log(formatStatus());
 }
