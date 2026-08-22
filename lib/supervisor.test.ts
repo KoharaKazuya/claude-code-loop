@@ -2621,6 +2621,9 @@ describe("dirtyPathsOutsideAgent", () => {
     execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
     execFileSync("git", ["config", "core.hooksPath", hooksDir], { cwd: dir });
     execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: dir });
+    // git 既定の normal では未追跡ディレクトリが `src/` に畳まれる。ローカルの ~/.gitconfig で
+    // `all` にしていると実装側の指定漏れを見逃すため、既定値を明示して CI と同じ条件にする
+    execFileSync("git", ["config", "status.showUntrackedFiles", "normal"], { cwd: dir });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: dir });
   });
 

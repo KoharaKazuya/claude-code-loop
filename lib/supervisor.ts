@@ -809,7 +809,7 @@ function publishStopMode(mode: StopMode): void {
  */
 export function dirtyPathsOutsideAgent(root: string = repoPaths().root): string[] {
   try {
-    const out = execSync("git status --porcelain -- . ':(exclude).agent'", { cwd: root }).toString();
+    const out = execSync("git status --porcelain --untracked-files=all -- . ':(exclude).agent'", { cwd: root }).toString();
     const paths = out
       .split("\n")
       .map((line) => line.trimEnd())
