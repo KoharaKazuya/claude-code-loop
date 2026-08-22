@@ -1,143 +1,159 @@
-# claude-code-loop
+# claude-code-loop (ccloop)
 
-Claude Code ベースの自律開発エージェント基盤(Supervisor)。特定のアプリケーションに依存しない
-汎用の仕組みとして抽出したもので、任意のリポジトリに `.agent/` / `.claude/` を持ち込み、
-`package.json` に `agent:*` スクリプトを足すだけでループエンジニアリングを始められる。
+Claude Code ベースの自律開発ループ CLI。任意のリポジトリで `ccloop run` を起動すると、
+`.agent/GOAL.md` に書かれた方向性をもとに Claude Code セッションが探索・タスク分解・実装・検証を
+繰り返し、人間はループの外から進捗を確認して必要なときだけ介入する。
 
 ## 考え方
 
-人間は `.agent/GOAL.md` で方向性(ミッション・優先順位・制約)だけを与える。Supervisor が
-Claude Code セッションを繰り返し起動し、GOAL.md をもとに探索・タスク分解・実装・検証を自律的に
-進める。人間はループの外から進捗を確認し、必要なときだけ介入する(判断が必要な事項は
-Human Review として記録され、人間の回答を待たずに他の作業は続く)。
+人間は `.agent/GOAL.md` で方向性(ミッション・優先順位・制約)だけを与える。ccloop が Claude Code
+セッションを繰り返し起動し、GOAL.md をもとに探索・タスク分解・実装・検証を自律的に進める。人間は
+ループの外から進捗を確認し、必要なときだけ介入する(判断が必要な事項は Human Review として記録され、
+人間の回答を待たずに他の作業は続く)。
 
-## 構成
-
-`.agent/` に自律実行の仕組みと状態のすべてが入る。
-
-- `supervisor/` — タスクキューを読み、`claude -p` を新セッションで起動し続ける Supervisor(依存ゼロ TypeScript、Node の型ストリップで直接実行)
-- `GOAL.md` — 人間が方向性を与える唯一の入口。**空なら新しい作業を発明しない**
-- `OVERVIEW.md` — GOAL に対する現在地と次の見立て(探索セッションが生成・維持する。初期状態では存在しない)
-- `PROMPT.md` — 全自律セッション共通ルール(記録ファイルの形式もここに定義)
-- `tasks/` / `decisions/` / `human-review/` — 1 トピック 1 ファイルの記録。終わったもの(completed タスク・closed な Review・古い判断)は Supervisor が `archive/` へ自動退避する
-- `permission-denials.jsonl` — セッションが permission により拒否された操作の記録(git 管理外。`npm run agent:status` に要約が出る)
-- `config.json` / `claude-settings.json` / `hooks/` — セッションの実行設定
-
-`.claude/CLAUDE.md` は対話セッション向けのエージェント運用ルール。`.claude/agents/reviewer.md` は
-実装完了後に独立レビューを行うレビュー担当エージェントの定義。
+ツール本体は DevContainer feature としてリポジトリの外にインストールされ、対象リポジトリに残すのは
+`.agent/` 配下の設定・記録だけである(理由は [docs/architecture.md](docs/architecture.md) を参照)。
 
 ## 前提
 
-- **Node.js 24 以上、または 22 系なら 22.18 以上**(devcontainer は 24)。`.ts` をビルドせず
-  Node の型ストリップで直接実行するため、型ストリップが既定で有効なバージョンが必要。
-- **Claude Code CLI**(`claude`)。devcontainer を使う場合は feature としてインストール済み。
+ccloop feature 自身は次を前提とし、インストールしない(ベースイメージや他の feature が満たす)。
 
-## 実行環境(worktree と並列実行)
+- git
+- Node.js 24 以上、または 22 系なら 22.18 以上(`.ts` を型ストリップで直接実行するため)
+- Claude Code CLI(`claude`)
 
-タスクセッションはリポジトリ本体ではなく、外側の `<repo>-worktrees/<タスクID>` に用意された
-専用ブランチ `agent/<タスクID>` の git worktree で動く。空きスロットがあれば独立した ready タスクを
-`parallel.maxSessions`(既定 4、`.agent/config.json`)まで同時に起動する。探索・triage セッションは
-リポジトリ本体で動き、Supervisor のメインループがその完了を await でブロックして待つため、実行中の
-タスクセッションを待たず(drain せず)並走する。main への git 操作(マージ等)はこの await のおかげで
-直列のまま保たれる。並走中は該当タスクの `.agent/tasks/<id>.md` を触らないよう探索プロンプトへ
-走行中タスクの一覧が注入される。
+## インストール
 
-- worktree には本体の `node_modules` がシンボリックリンクされる。それ以外は素の checkout から
-  始まるため、Git 管理外の生成物は worktree 間で共有されない。
-- セッション終了後、main への統合は Supervisor が `git merge --no-ff` で自動的に行う
-  (`Agent-Auto: supervisor-state` トレーラー付き)。並列セッションが同じ `D-`/`HR-` 番号を
-  採番して起きる衝突は、番号を振り直して機械的に解消する。
-- 内容が対立する実質的な衝突は worktree とブランチを残し、次の試行がその続きとして衝突解消を
-  試みる(作業をやり直さない)。リトライ上限に達すると `agent/conflict/<タスクID>-<時刻>` へ
-  退避される。
-- コミットしなかった変更は `.agent/patches/<タスクID>-<時刻>.patch` へ退避される(`git apply` で
-  復元可能。14 日で自動削除)。
+利用側リポジトリの `.devcontainer/devcontainer.json` に次の feature を追加する。
 
-## 実行と停止
-
-```sh
-npm run agent          # Supervisor をループ実行
-npm run agent:once     # 1 セッションだけ実行
-npm run agent:status   # 要対応事項(BLOCK / failed / open な Review / 衝突の残り)を一覧表示
-npm run agent:list     # タスク一覧を表示
-npm run agent:rotate   # .agent/ 状態ファイルのローテーションを手動実行
-npm run agent:watch    # agent:status を色付きで1秒ごとに再表示
+```jsonc
+{
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/koharakazuya/claude-code-loop/ccloop:1": {}
+  }
+}
 ```
 
-停止は `touch .agent/STOP` / `echo session > .agent/STOP` のどちらでも、新規セッションを起動せず
-実行中のセッション(並列実行時はすべて)が終わり次第停止する点で同じ。`clean` はさらに、`.agent/` 以外に
-未コミットの差分が残っていればそれを出力してから停止する(worktree 化により、実行中セッションの側で
-この差分を解消することはできないため)。Ctrl+C は段階停止で、1 回目で STOP(clean) を作成、2 回目で
-session に更新、3 回目で緊急停止(強制終了。中断タスクは次回起動時に自動復旧)という自然なエスカレーション
-になる。手動 `touch`/`echo` で作った STOP からも Ctrl+C で次の段階へ進められる。
-`npm run agent:once` では段階化されず、Ctrl+C 1 回で緊急停止する。
-再開は `rm .agent/STOP && npm run agent`。
+`installsAfter` により、上記 4 つの feature はこの順で(git → node → claude-code → ccloop)
+インストールされる。コンテナを再ビルドすると `/usr/local/bin/ccloop` が使えるようになる。
 
-`npm run agent` は、実行可能なタスクが無く・実行中セッションも無い状態で探索セッションを実行しても
-新しいタスクが生まれなかった時点で自動的に正常終了する(STOP ファイルは残らない)。スヌーズ中のタスクが
-残っている間は、時間が来て復帰するのを待つためすぐには終了しない。探索が新しいタスクを 1 件も生まなかった
-場合、次の探索は `.agent/config.json` の `explore.minIntervalMs`(既定 1 時間)が経過するまで行わない
-(タスクセッションが完了するたびに空振りの探索を繰り返さないため)。ただし GOAL.md の変更や Human Review
-への回答があれば、この間隔を待たずに即座に探索する。要対応事項(blocked / failed /
-open な Review)が残っていれば終了時にその件数を案内する。再開は改めて `npm run agent` を実行する
-(前回の探索結果は持ち越さず、起動のたびに一度は探索してから終了判定に入る)。
+## 使い方
+
+対象リポジトリのルートで任意のサブコマンドを実行する。`.agent/` が無ければ作成予定のファイル一覧を
+表示し、TTY なら確認のうえ雛形(`GOAL.md` / `OVERVIEW.md` / `config.json` / `tasks/` / `decisions/` /
+`human-review/`)を配置してから続行する(非 TTY では `ccloop init --yes` を案内して終了する。
+既存ファイルは上書きしない)。
+
+1. `ccloop init` (または任意のサブコマンドの初回実行)で `.agent/` を用意する
+2. `.agent/GOAL.md` にミッション・現在の目標・制約を書く(**空のままだと新しい作業を発明しない**)
+3. `ccloop run` でループを起動する。ready なタスクが無ければまず探索セッションが動き、GOAL.md から
+   タスクを導出する
+4. 別の端末から `ccloop watch`(既定 1 秒間隔、`--interval` で変更可)で進捗を眺める。1 回だけ見たい
+   ときは `ccloop status`、タスク一覧は `ccloop list`(`--full` で詳細)
+5. やりたい作業が明確なら `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--model ...]`
+   で直接タスクを積める
+
+### 停止
+
+`ccloop run` を実行している端末で Ctrl+C する。
+
+- 1 回目: 新規セッションの起動を止め、実行中のセッションが完了するのを待ってから終了する
+  (`.agent/` 以外に未コミットの差分が残っていれば警告する)
+- 2 回目: 実行中のセッションの完了を待って即終了する
+- 3 回目: 強制終了する
+
+STOP ファイルのような永続的な停止指示は無く、停止は Ctrl+C を受けたプロセスの中だけで完結する。
 
 ## 人間の関与
 
 このシステムは人間の回答を待たずに動き続ける。人間は非同期に確認し、必要なときだけ介入する。
 
 - **方向づけ**: `.agent/GOAL.md` を書く(全セッションに注入される)。**空なら新しい作業を発明しない**。
-  やりたい作業が明確なら `npm run agent:add -- "タイトル" --desc "..."` で直接タスクを積む方が速い。
-- **確認**: `npm run agent:status` で要対応事項(BLOCK / failed / open な Review)を見る。
-  進捗の概観(GOAL に対する現在地と次の見立て)も同じ出力に含まれる。
-  Supervisor が自動で解消しない衝突の残り(衝突解消待ちの worktree、退避された
-  `agent/conflict/*` ブランチ)も同じ要対応欄に並ぶ。permission により拒否された操作の
-  直近の要約も同じ出力に含まれる(対応不要。許可したい操作があれば
-  `.agent/claude-settings.json` の `permissions.allow` に追記する)。
-- **Review への回答**: `.agent/human-review/HR-*.md` の「## 回答」節にあるチェックボックスに
-  チェックを入れるだけでよい(status の書き換えは不要)。
+- **確認**: `ccloop status` で要対応事項(BLOCK / failed / open な Human Review)と、GOAL に対する
+  現在地・次の見立て(`.agent/OVERVIEW.md`)を見る。permission により拒否された操作の直近の要約も
+  同じ出力に含まれる(対応不要。許可したい操作があれば `.agent/claude-settings.json` の
+  `permissions.allow` に追記する)。
+- **Human Review への回答**: `.agent/human-review/HR-*.md` の「## 回答」節にあるチェックボックスに
+  チェックを入れるだけでよい(`status` の書き換えは不要)。
   - 対応不要なら `- [ ] 対応不要(このままクローズしてよい)` を `- [x]` にする。
   - 回答を書くなら `- [ ] 回答を下に書いた` を `- [x]` にしたうえで、その下に決定内容を書く。
-  Supervisor が変化を検出すると、次のタスクより先に 3 段階で取り込む(BLOCK は常に 3 段目のみ)。
-  1. **決定論判定**: 「対応不要」だけにチェックが入っている場合、機械的に closed にする。
-  2. **軽量モデル判定**: 1. で片付かなかった回答を軽量モデル(既定 haiku)が close / 新規タスク登録 /
-     判断困難(次段へ委ねる)に仕分ける。
-  3. **探索セッション**: 1./2. で判定できなかった回答と BLOCK エントリを取り込む(フルの探索モデル)。
-  回答対応が常に最優先になるわけではない。チェックを入れ忘れて本文だけ書いた場合は
-  `npm run agent:status` に注意喚起が出る。
-- **failed の再実行**: `node .agent/supervisor/supervisor.ts retry T-XXX`。失敗原因を放置すると
-  再び失敗するので、原因側の修正タスクを先に積むのが普通。
-- **巻き戻し**: 自律コミットは main に積まれるだけで push はされない。緊急時は停止して
-  `git log` / `git diff` で確認し、人間が `git revert` して経緯を `.agent/decisions/` に記録してから再開する。
-- **衝突解消待ちの後始末**: `agent/conflict/<タスクID>-<時刻>` へ退避されたブランチは
-  `git log agent/conflict/<...>` で内容を確認し、取り込むなら手動で `git merge`/`cherry-pick`、
-  不要なら `git branch -D` で破棄する。`.agent/patches/` へ退避されたパッチは
-  `git apply .agent/patches/<タスクID>-<時刻>.patch` で復元できる(14 日で自動削除される)。
-- **運用コミットの見分け方**: Supervisor が `.agent/` 配下だけを自動コミットする際は
-  `docs(agent):` 接頭辞 + `Agent-Auto: supervisor-state` trailer を付ける。人間が書いた変更を
-  含むコミットと機械的に区別でき、`git log --oneline --invert-grep --grep='Agent-Auto: supervisor-state'`
-  で運用コミットを除いた履歴だけを見られる。subject はステージした差分の内容から生成される
-  (例: `docs(agent): タスク 2 件と判断記録 1 件を更新する`)。
-- **設定変更**: `.agent/config.json`(モデル・リトライ・タイムアウト・並列数 `parallel.maxSessions`)は起動している supervisor
-  プロセスには反映されない(`run` ループの実行中は起動時点の設定を使い続ける)。反映するには
-  一度停止して起動し直すか、`npm run agent:once` で都度起動する。`.agent/claude-settings.json`
-  (権限)はセッションごとに読み直されるため、次に起動するセッションから反映される。
-- **supervisor 自身のコード変更**: `.agent/supervisor/` 配下を変更しても、稼働中の supervisor
-  プロセスには反映されない(ホットリロードは無い)。起動時点のソースと現在のソースが食い違うと
-  `npm run agent:status` の「稼働状態」に注意喚起が出るので、それを見て停止・再起動する。
+  次のセッション起動時にこの変化が検出され、3 段階(決定論判定 → 軽量モデル判定 → 探索セッション)で
+  取り込まれる(BLOCK は常に最終段のみ)。
+- **failed / blocked タスクの再実行**: 該当タスクファイル(`.agent/tasks/T-NNN.md`)の frontmatter を
+  `status: ready`、`retries: 0` に手で編集する。失敗原因を放置すると再び失敗するので、原因側の修正を
+  先に行うのが普通。古い completed / closed / 判断ファイルは `.agent/archive/` へ自動的に退避される
+  (ローテーションはループ内で自動)。
+- **巻き戻し**: 自律コミットは対象リポジトリの `git log` に積まれるだけで push はされない。緊急時は
+  `ccloop run` を停止し、`git log` / `git diff` で確認したうえで人間が `git revert` し、経緯を
+  `.agent/decisions/` に記録してから再開する。
+- **運用コミットの見分け方**: `.agent/` 配下だけを対象にした自律コミットには
+  `docs(agent):` 接頭辞 + `Agent-Auto: supervisor-state` トレーラーが付く。人間が書いた変更を含む
+  コミットと機械的に区別でき、
+  `git log --oneline --invert-grep --grep='Agent-Auto: supervisor-state'` で運用コミットを除いた履歴だけを
+  見られる。
 
-## 別のリポジトリへの導入
+## リポジトリに置くファイルと実行時状態の場所
 
-1. `.agent/`(`tasks/` / `decisions/` / `human-review/` は `.gitkeep` のみ)と `.claude/` をコピーする
-2. `package.json` に `agent:*` スクリプト(この README の「実行と停止」の一覧)を足す
-3. `.gitignore` に本リポジトリの「自律実行の実行時ファイル」節をコピーする
-4. `.agent/GOAL.md` にミッション・目標・制約を書く
-5. devcontainer を使うなら `.devcontainer/` も持ち込む(worktree 置き場の作成と
-   `node_modules` ボリュームの権限設定が `post-create.sh` に入っている)
-6. プロジェクトの検証コマンド(`typecheck` / `lint` / `test` 等)を整える
-   (セッションはこれらが通ってからタスクを completed にする)
+利用側リポジトリで git 管理するのは `.agent/` のみ。
 
-## 開発(この基盤自体の検証)
+- `GOAL.md` — 人間が方向性を与える唯一の入口
+- `OVERVIEW.md` — GOAL に対する現在地と次の見立て(探索セッションが生成・維持する)
+- `config.json` — モデル・リトライ・タイムアウト・並列数などの設定
+- `tasks/` / `decisions/` / `human-review/` — 1 トピック 1 ファイルの記録
+- `archive/` — completed タスク・closed な Review・古い判断の退避先
+- (任意)`claude-settings.json` — permissions の allow/deny への追記
+- (任意)`PROMPT.local.md` — 共通ルールへの追記
+
+`.claude/` を利用側リポジトリに置く必要はない。共通ルールは `claude -p` 起動時に
+`--append-system-prompt-file` で、reviewer サブエージェントは `--agents` で、permissions/hooks は
+ツールが生成する `--settings` で注入される。利用側リポジトリに `CLAUDE.md` があればそれも通常どおり
+読まれる。
+
+実行時状態(`state.json` / `metrics.jsonl` / `permission-denials.jsonl` / `patches/` / 生成された
+settings・system prompt / `worktrees/`)はリポジトリの外、
+`${XDG_STATE_HOME:-~/.local/state}/ccloop/<リポジトリ名>-<ハッシュ>/` に置かれる。タスクセッションの
+git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タスクID>`)に作られる。
+
+## 設定
+
+`.agent/config.json` の主なキー:
+
+| キー | 内容 |
+| --- | --- |
+| `schemaVersion` | このファイルのスキーマバージョン(現在 1) |
+| `model` / `escalation` | セッションに使うモデル、リトライ超過時のエスカレーション先 |
+| `permissionMode` | `claude -p` の permission mode |
+| `maxRetries` / `taskTimeoutMs` / `maxTurns` | タスクセッションのリトライ上限・タイムアウト・ターン上限 |
+| `rateLimit.backoffMs` | レート制限検出時のバックオフ |
+| `explore` | 探索セッションの有効/無効・最小間隔 |
+| `triage` | Human Review の軽量モデル判定の有効/無効・モデル |
+| `parallel.maxSessions` | 独立な ready タスクを同時に走らせる上限 |
+
+`.agent/claude-settings.json`(任意)は permissions の allow/deny への追記だけを書く。
+`.agent/PROMPT.local.md`(任意)はリポジトリ固有の追加ルールを書くと共通ルールの後ろに連結されて
+注入される。どちらもセッション起動時に読まれるため、次に起動するセッションから反映される。
+
+## バージョンアップ
+
+`.agent/config.json` の `schemaVersion` で ccloop 本体とのスキーマ互換性を管理する。
+
+- ツールが新しく `.agent/` のスキーマが古い場合: `ccloop init --upgrade` を実行する
+- `.agent/` のスキーマがツールより新しい場合: ツールを更新する(コンテナを再ビルドする。feature の
+  メジャータグ `:1` を固定して使うことを推奨)
+
+詳細は [docs/compatibility.md](docs/compatibility.md) を参照。
+
+## 診断
+
+`ccloop doctor` で git / Node.js / `claude` CLI の有無、`.agent/` の存在と `schemaVersion`、state
+ディレクトリへの書き込み可否を検査できる。
+
+## 開発(この基盤自体)
+
+このリポジトリ自身の開発は次で検証する。
 
 ```sh
 npm run typecheck
@@ -145,8 +161,18 @@ npm run lint
 npm test
 ```
 
-セッションが失敗した際は、Supervisor が出力するセッション ID を使い、claude-code-log で
-セッションログを確認できる。タスクセッションは worktree(`<repo>-worktrees/<タスクID>`)で動くため、
-ログは `~/.claude/projects/` 配下のそれに対応するプロジェクトディレクトリに記録される
-(探索セッションは本体リポジトリのプロジェクトディレクトリ)。セッションごとのコスト・トークンは
-`.agent/metrics.jsonl` に記録され、累計は `npm run agent:status` で見られる。
+`bin/ccloop` はこのリポジトリの checkout をそのまま実行できるランチャーなので、`.devcontainer/` で
+開発する場合は `ccloop` コマンドがこのリポジトリの `lib/` を指すようセットアップ済み(`post-create.sh`
+を参照)。feature 自体の動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと
+同じ手順)。
+
+リリースは `package.json` と `features/ccloop/devcontainer-feature.json` の `version` を同じ値に
+上げてコミットし、`vX.Y.Z` タグを push する。GitHub Actions(`.github/workflows/release.yml`)が
+タグバージョンと feature バージョンの一致を検証したうえで `lib/` と `bin/` を feature にバンドルし、
+GHCR へ publish する。
+
+## ドキュメント
+
+- [docs/architecture.md](docs/architecture.md) — 設計上の判断とその理由
+- [docs/compatibility.md](docs/compatibility.md) — 互換性の運用方針と既知の制約
+- [lib/prompt/PROMPT.md](lib/prompt/PROMPT.md) — 自律実行セッション共通ルール(system prompt として注入される本体)
