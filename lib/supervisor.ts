@@ -8,17 +8,16 @@
  *
  * CLI のエントリポイントは cli.ts。サブコマンドの一覧はそちらを参照。
  *
- * 停止方法(run モード。再開はいずれも STOP ファイルを消して `ccloop run`):
- *   touch <stateDir>/STOP        # 通常停止: 新規セッションを起動せず、実行中のセッションが
- *                                #   終わり次第停止する。git 差分(.agent/ 除く)が残っていれば
- *                                #   その旨をログに出したうえで差分を残して停止する
- *   echo session > <stateDir>/STOP
- *                                # セッション境界停止: 実行中セッションが supervisor に
- *                                #   返ってきた時点で停止(作業途中の差分が残りうる)
- *   Ctrl+C                       # 段階停止: 1 回目で STOP(clean) を作成、2 回目で session に
- *                                #   更新、3 回目で緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で
- *                                #   即 SIGKILL。中断されたセッションの worktree とブランチは
- *                                #   そのまま残り、次回そのタスクを実行するときに再利用される
+ * 停止方法(run モード): 外部からの停止手段は Ctrl+C(SIGINT)だけで、停止指示は
+ * このプロセスのメモリ(currentStopMode)にしか存在しない。プロセスが終われば停止意思も消える
+ * ため、再開はいつでも `ccloop run` を実行するだけでよい。Ctrl+C は押すたびに段階が上がる:
+ *   1 回目 (clean)   新規セッションを起動せず、実行中のセッションが終わり次第停止する。
+ *                    git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する
+ *   2 回目 (session) 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
+ *   3 回目           緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で即 SIGKILL。中断された
+ *                    セッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
+ *                    再利用される
+ * SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
  *
  * タスクセッションは常に `claude -p --worktree <タスクID>` で起動され、リポジトリ本体の外側の
  * worktree(ブランチ `agent/<タスクID>`)で動く。成果は終了後に Supervisor が main へ自動マージし、
@@ -46,7 +45,7 @@ import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts
 import { detectRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty } from "./rotate.ts";
 import { generateSettings } from "./settings.ts";
-import { planLoopStep } from "./scheduler.ts";
+import { planLoopStep, type StopMode } from "./scheduler.ts";
 import {
   buildTriagePrompt,
   hasFreeTextAnswer,
@@ -191,6 +190,12 @@ interface State {
    */
   supervisorSourceHash?: string | null;
   rateLimit: { resumeAt: string | null };
+  /**
+   * 現在の停止指示(**表示専用**)。制御は run プロセスのメモリ(currentStopMode)だけで行い、
+   * ここは `ccloop status` / `ccloop watch` が「停止処理中」を出すための写しに過ぎない。
+   * run の起動時に "none" へリセットされるため、前回のプロセスの値が残ることはない。
+   */
+  stopMode?: StopMode;
   sessionCount: number;
   updatedAt: string | null;
 }
@@ -419,6 +424,7 @@ export function normalizeState(raw: unknown): State {
     state.triageAttemptedHash = r.triageAttemptedHash;
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
+  if (r.stopMode === "none" || r.stopMode === "clean" || r.stopMode === "session") state.stopMode = r.stopMode;
   return state;
 }
 
@@ -517,7 +523,6 @@ const AGENT_CATEGORIES: { readonly match: (p: string) => boolean; readonly label
   { match: (p) => p.endsWith("/OVERVIEW.md"), label: "全体像" },
   { match: (p) => p.endsWith("/GOAL.md"), label: "目標" },
   { match: (p) => p.endsWith("/PROMPT.md"), label: "手順書" },
-  { match: (p) => p.includes("/supervisor/"), label: "supervisor" },
 ];
 
 /** カテゴリ未確定のファイルに使う総称 */
@@ -766,23 +771,28 @@ export function prunePatches(
 
 // ---------- 停止制御 ----------
 
-type StopMode = "session" | "clean";
+/**
+ * 現在の停止指示。**run プロセスのメモリだけに持ち、ファイルには永続化しない**。
+ * 停止指示は「この実行中プロセスを止めたい」という意思であって、リポジトリの状態ではない。
+ * ファイルに残すと、意思が消えたあとも残り続け、次回起動が起動直後に止まる罠になる。
+ * 更新するのはシグナルハンドラ(escalateStop)と、プロセス開始時のリセットだけ。
+ */
+let currentStopMode: StopMode = "none";
 
 /**
- * state ディレクトリの STOP ファイルによる停止指示を読む。
- *   - ファイルなし: 停止しない(null)
- *   - 空 or "clean": セッション終了後、git 差分(.agent/ 除く)がない一区切りで停止(通常はこちら)
- *   - "session": 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
- * 未知の内容は「停止したい意図」を汲んで安全側(早く止まる session)に倒す。
+ * 停止指示を state.json へ写す(**表示専用**。制御には使わない)。
+ * `ccloop status` / `ccloop watch` が「停止処理中」を出せるようにするためだけの副産物なので、
+ * 書き込みに失敗しても停止処理は続ける。
  */
-function readStopMode(): StopMode | null {
-  if (!fs.existsSync(repoPaths().stopPath)) return null;
-  const text = fs.readFileSync(repoPaths().stopPath, "utf8").trim().toLowerCase();
-  if (text === "" || text === "clean") return "clean";
-  if (text !== "session") {
-    log(`STOP の内容 "${text}" は未知のため session として扱う`);
+function publishStopMode(mode: StopMode): void {
+  try {
+    const state = loadState();
+    if ((state.stopMode ?? "none") === mode) return;
+    state.stopMode = mode;
+    saveState(state);
+  } catch (err) {
+    log(`警告: 停止状態の表示用書き込みに失敗した(制御には影響しない): ${String(err)}`);
   }
-  return "session";
 }
 
 /**
@@ -793,7 +803,7 @@ function readStopMode(): StopMode | null {
  *
  * `.agent/` の未コミット差分は設計上ここでは無視する。mainLoop は `.agent/` を触った周回の
  * 待機直前とループ終了時にしかコミットしないため `.agent/` は常時 dirty になりうる。
- * この除外を外すと STOP(clean) が永久に成立しなくなる。
+ * この除外を外すと clean 停止が永久に成立しなくなる。
  */
 export function dirtyPathsOutsideAgent(root: string = repoPaths().root): string[] {
   try {
@@ -843,8 +853,8 @@ const FAST_CRASH_MS = 10_000;
  */
 let fastCrashStreak = 0;
 
-// sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で STOP を書いた直後に
-// アイドル待機・rate limit 待機を打ち切って STOP チェックへ即座に戻す。並列実行では
+// sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で停止指示を立てた直後に
+// アイドル待機・rate limit 待機を打ち切って停止判定へ即座に戻す。並列実行では
 // セッション完了時にも発火し、アイドル待機中の周回を即座に後始末へ進める)。
 const wakeEmitter = new EventEmitter();
 
@@ -889,41 +899,42 @@ function emergencyStop(signal: string): void {
 }
 
 /**
- * Ctrl+C 段階エスカレーションの次の一手を判定する。
- * 現在の STOP ファイルの状態(readStopMode の結果)を見て、まだ未作成なら clean を作成、
- * 既に clean なら session へ格上げ、既に session(=これ以上待たずに止めたい意図)なら
- * 緊急停止に進む。手動 touch/echo で作った STOP からもこのエスカレーションに合流する。
+ * 段階エスカレーションの次の一手を判定する(純粋)。
+ * 停止指示なし(none)なら clean を予約、既に clean なら session へ格上げ、
+ * 既に session(= これ以上待たずに止めたい意図)なら緊急停止に進む。
  */
-export type StopEscalation = { content: string } | "emergency";
-export function nextStopEscalation(mode: StopMode | null): StopEscalation {
-  if (mode === null) return { content: "" };
-  if (mode === "clean") return { content: "session" };
+export type StopEscalation = { mode: Exclude<StopMode, "none"> } | "emergency";
+export function nextStopEscalation(mode: StopMode): StopEscalation {
+  if (mode === "none") return { mode: "clean" };
+  if (mode === "clean") return { mode: "session" };
   return "emergency";
 }
 
 /**
- * run モードの SIGINT(Ctrl+C)ハンドラ。1 回目は STOP(clean) 作成、2 回目は session への
- * 更新に留め、セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を
- * 送信済み、またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean、2 回目は session へ格上げするに留め、
+ * セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、
+ * またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * 停止指示はメモリ上の currentStopMode にだけ書く(state.json への反映は表示専用で、
+ * メインループが「main を触るのはループ上だけ」の不変条件を守りながら行う)。
  */
-function handleSigint(): void {
+function escalateStop(signal: string): void {
   if (shuttingDown) {
-    emergencyStop("SIGINT");
+    emergencyStop(signal);
     return;
   }
-  const escalation = nextStopEscalation(readStopMode());
+  const escalation = nextStopEscalation(currentStopMode);
   if (escalation === "emergency") {
-    emergencyStop("SIGINT");
+    emergencyStop(signal);
     return;
   }
-  fs.writeFileSync(repoPaths().stopPath, escalation.content);
-  if (escalation.content === "") {
+  currentStopMode = escalation.mode;
+  if (escalation.mode === "clean") {
     log(
-      `SIGINT 受信。${repoPaths().stopPath} (clean) を作成し、git 差分のない一区切りでの停止を予約した。もう一度 Ctrl+C でセッション境界停止`,
+      `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず、実行中が終わり次第停止する。もう一度 Ctrl+C でセッション境界停止`,
     );
   } else {
     log(
-      `SIGINT 受信。${repoPaths().stopPath} を session に更新した。実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)`,
+      `${signal} 受信。停止指示を session へ格上げした: 実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)`,
     );
   }
   wakeEmitter.emit("wake");
@@ -2938,38 +2949,38 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-export async function mainLoop(once: boolean): Promise<void> {
+export async function mainLoop(): Promise<void> {
   // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
   // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
   generateSettings(repoPaths());
-  const loaded = loadConfig();
-  // once は 1 セッション実行して終わるモードなので、並列度を 1 に固定する
-  // (planLoopStep が空きスロット分まとめて launch を返すのを防ぐ)
-  const config: Config = once ? { ...loaded, parallel: { ...loaded.parallel, maxSessions: 1 } } : loaded;
-  // once は 1 セッションで終了するため、段階停止で STOP(clean) を作っても効き目が無いに等しく、
-  // 作られたファイルだけが残って次回 run が起動直後に停止する罠になる。
-  // そのため once では段階化せず即緊急停止にする。
-  process.on("SIGINT", once ? () => emergencyStop("SIGINT") : handleSigint);
-  process.on("SIGTERM", () => emergencyStop("SIGTERM"));
-  log(`supervisor start (mode=${once ? "once" : "run"})`);
+  const config = loadConfig();
+  // 停止指示はプロセスのメモリにしか無い。起動時に必ずリセットしておく
+  // (同一プロセス内で mainLoop を再実行した場合に前回の意思を引きずらないため)。
+  // state.json 側は表示専用の写しなので、前回プロセスが緊急停止で残した値をここで消す
+  currentStopMode = "none";
+  publishStopMode("none");
+  // SIGTERM も 1 回目の Ctrl+C と同じ段階停止として扱う。サービスマネージャからの停止でも
+  // 走っているセッションを取り込んでから止まるほうが成果を失わずに済む
+  // (待てない場合は 3 回送れば緊急停止に到達する)。
+  process.on("SIGINT", () => escalateStop("SIGINT"));
+  process.on("SIGTERM", () => escalateStop("SIGTERM"));
+  log("supervisor start");
   // 前回の終了時に積み残した .agent/ の差分もここで拾う。復旧が無かった周回で
   // 「中断していたタスクを復旧する」と名乗ると嘘になるため、件数で文言を出し分ける。
   const recovered = startupRecoveryTotal(recoverStartup(config));
   if (recovered > 0) commitAgentDir("docs(agent): 中断していたタスクを復旧する");
   else commitAgentDir();
 
-  /** このループで完了したセッション(タスク・探索)の数。once の終了判定に使う */
-  let completedCount = 0;
   // この周回までに main の `.agent/` を触ったか。アイドル・rate limit 待機の周回まで
   // コミットすると内容を語らない定型コミットが 1 分おきに積み上がるため、`.agent/` を
   // 触った場合だけ、次に待機へ入る直前とループ終了時にまとめてコミットする。
   let agentDirty = false;
-  // run モードの自動終了判定に使うプロセス内フラグ(永続化しない)。探索セッションが
+  // 自動終了判定に使うプロセス内フラグ(永続化しない)。探索セッションが
   // rate limit 以外の理由で完了したら true、タスクセッションが完了したら false に戻す。
   // 「探索したのに新しいタスクが生まれなかった」を検出するための唯一の判定材料。
   let exploreDone = false;
   // 直前に完了した探索セッションが新規タスクを 1 件も登録しなかったか(プロセス内フラグ、
-  // 永続化しない)。true の間は run モードでも exploreDue のクールダウンを課し、
+  // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
   let lastExploreYieldedNothing = false;
 
@@ -2997,7 +3008,6 @@ export async function mainLoop(once: boolean): Promise<void> {
       // 1. 完了したセッションの後始末。並列に走ったセッションもここで 1 件ずつ直列に処理する
       const finished = drainCompletedSessions(config);
       if (finished > 0) {
-        completedCount += finished;
         agentDirty = true;
         // タスクセッションが完了して main の状態が変わったため、終了前にもう一度
         // 探索して GOAL と突き合わせ直す必要がある
@@ -3033,8 +3043,14 @@ export async function mainLoop(once: boolean): Promise<void> {
         prunePatches();
       }
 
-      const stopMode = readStopMode();
-      const dirtyPaths = stopMode === null ? [] : dirtyPathsOutsideAgent();
+      // 停止指示はシグナルハンドラがメモリ上で進めるだけなので、state.json への写し
+      // (status / watch の表示専用)はメインループ上でだけ書く(不変条件を守るため)
+      const stopMode = currentStopMode;
+      if ((state.stopMode ?? "none") !== stopMode) {
+        state.stopMode = stopMode;
+        saveState(state);
+      }
+      const dirtyPaths = stopMode === "none" ? [] : dirtyPathsOutsideAgent();
 
       // 解除時刻を過ぎた rate limit は判断材料を作る前に state から落とす
       let rateLimitedUntilMs: number | null = null;
@@ -3051,8 +3067,7 @@ export async function mainLoop(once: boolean): Promise<void> {
       // 上位の判断で周回が確定する場合、下位の判断材料は集めない。hashInputs は state を、
       // selectRunnable はタスクファイルを書き換える副作用を持つため、その判断を実際に使う
       // 周回でだけ動かす(planLoopStep の優先度 1〜3 が成立する周回では使われない)。
-      const gathering =
-        stopMode === null && rateLimitedUntilMs === null && !(once && completedCount >= 1);
+      const gathering = stopMode === "none" && rateLimitedUntilMs === null;
 
       // 人間からの入力(GOAL.md・Human Review の回答)の変更検出。確認済みハッシュの更新は
       // runExploreSession 側(レートリミット時は更新されず再試行される)
@@ -3080,8 +3095,6 @@ export async function mainLoop(once: boolean): Promise<void> {
 
       const action = planLoopStep({
         now: new Date(),
-        once,
-        completedCount,
         stopMode,
         mainDirtyOutsideAgent: dirtyPaths.length > 0,
         runningCount,
@@ -3105,7 +3118,7 @@ export async function mainLoop(once: boolean): Promise<void> {
       if (action.type === "stop") {
         // planLoopStep は実行中セッションが 0 のときしか stop を返さないので通常は空だが、
         // 後始末を取りこぼさないよう最後にもう一度掃き出す
-        completedCount += drainCompletedSessions(config);
+        drainCompletedSessions(config);
         log(action.reason);
         if (dirtyPaths.length > 0) log(`残った差分: ${formatDiffPathList(dirtyPaths)}`);
         if (action.cause === "idle-exit") {
@@ -3133,7 +3146,6 @@ export async function mainLoop(once: boolean): Promise<void> {
         const st = loadState();
         st.triageAttemptedHash = currentInputsHash;
         saveState(st);
-        completedCount += 1;
         continue;
       }
 
@@ -3167,7 +3179,6 @@ export async function mainLoop(once: boolean): Promise<void> {
           exploreDone = true;
           lastExploreYieldedNothing = !yielded;
         }
-        completedCount += 1;
         continue;
       }
 
@@ -3185,12 +3196,7 @@ export async function mainLoop(once: boolean): Promise<void> {
         }
         if (launched === 0) {
           // 1 件も起動できなかった(.agent をコミットできない等)場合、同じ条件で即座に
-          // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む。
-          // once は起動できないまま待ち続けても意味がないのでここで終了する。
-          if (once) {
-            log("タスクセッションを起動できなかった。終了");
-            break;
-          }
+          // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む
           await sleep(config.idlePollMs);
         }
         continue;
@@ -3210,9 +3216,12 @@ export async function mainLoop(once: boolean): Promise<void> {
       await sleep(action.ms);
     }
   } finally {
-    // break・例外・once 終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は
+    // break・例外・正常終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は
     // break が効く前に走るため、抜け道は構造的に存在しない(break 側に手を入れる必要がない)。
     commitAgentDir();
+    // 表示用の停止指示もプロセスと一緒に畳む(緊急停止は process.exit するためここを通らないが、
+    // その場合は次回 run の起動時のリセットが拾う)
+    publishStopMode("none");
   }
   log("supervisor stop");
 }
@@ -3372,7 +3381,7 @@ export function cmdList(argv: string[]): void {
   if (!printedGroup) console.log("タスクなし");
 }
 
-// ---------- 人間向け: status / retry ----------
+// ---------- 人間向け: status ----------
 
 /**
  * 回答済み判定は `status` フィールド単体では行わない(チェックボックス方式では `status: open` の
@@ -3860,24 +3869,33 @@ export function permissionDenialLines(summary: PermissionDenialSummary): string[
   return lines;
 }
 
-export function cmdStatus(): void {
+/**
+ * `ccloop status` の表示内容を 1 つの文字列として組み立てる。
+ * `status` は 1 回出力するだけだが、`watch` は同じ内容を毎秒描き直すため、
+ * 「出力」ではなく「文字列」を作る形にして両方から使えるようにしてある。
+ */
+export function formatStatus(): string {
+  const out: string[] = [];
+  const push = (line: string): void => {
+    out.push(line);
+  };
   const tasks = loadTasks();
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const state = loadState();
   const hr = parseHumanReview();
   const by = (s: TaskStatus): Task[] => tasks.filter((t) => t.status === s);
 
-  console.log("== 自律実行ステータス ==");
+  push("== 自律実行ステータス ==");
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
   // ローテーション後も「完了 X/N」が累積の実績を反映するようにする
   const archivedCompleted = loadArchivedTasks().filter((t) => t.status === "completed").length;
-  console.log(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
+  push(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
   const counts = STATUS_ORDER.map((s) => by(s).length)
     .map((n, i) => [STATUS_ORDER[i]!, n] as const)
     .filter(([, n]) => n > 0)
     .map(([s, n]) => `${statusLabel(s)} ${n}`)
     .join(" / ");
-  console.log(counts || "タスクなし");
+  push(counts || "タスクなし");
 
   const overview = loadOverview();
   const { rest: overviewRest, lines: overviewLines } = overviewSectionLines(
@@ -3885,8 +3903,8 @@ export function cmdStatus(): void {
     by("completed").length + archivedCompleted,
     tasks.length + archivedCompleted,
   );
-  console.log(`\n${styledSectionLabel("概観", overviewRest)}`);
-  for (const l of overviewLines) console.log(`  ${l}`);
+  push(`\n${styledSectionLabel("概観", overviewRest)}`);
+  for (const l of overviewLines) push(`  ${l}`);
 
   const { openBlock, openReview, answered } = classifyHumanReview(hr);
   const failed = by("failed");
@@ -3913,13 +3931,13 @@ export function cmdStatus(): void {
 
   const section = (tag: string, rest: string, lines: string[]): void => {
     if (lines.length === 0) return;
-    console.log(`\n${styledSectionLabel(tag, rest)}`);
-    for (const l of lines) console.log(`  ${l}`);
+    push(`\n${styledSectionLabel(tag, rest)}`);
+    for (const l of lines) push(`  ${l}`);
   };
   section("要対応", "open な Human Review (BLOCK) — タスクが停止中:", openBlock.map(hrLine));
   section(
     "要対応",
-    "failed タスク — retry するか断念を判断:",
+    "failed タスク — タスクファイルの status を ready に戻して再挑戦するか、断念を判断:",
     failed.map((t) => `${t.id}: ${t.title}${t.note ? `\n      note: ${t.note}` : ""}`),
   );
   section(
@@ -3953,7 +3971,7 @@ export function cmdStatus(): void {
       pending.parkedBranches.length ===
     0
   ) {
-    console.log("\n要対応事項なし");
+    push("\n要対応事項なし");
   }
 
   const denialSummary = summarizePermissionDenials(loadPermissionDenials(), new Date());
@@ -3963,55 +3981,61 @@ export function cmdStatus(): void {
     permissionDenialLines(denialSummary),
   );
 
-  console.log("\n実行中のタスク");
+  push("\n実行中のタスク");
   const running = runningSessionLines(state.runningSessions, byId, new Date(), taskTimeoutMs, maxSessions);
   if (running.length === 0) {
-    console.log("  なし");
+    push("  なし");
   } else {
-    for (const l of running) console.log(`  ${l}`);
+    for (const l of running) push(`  ${l}`);
   }
 
   // 人間の入力(GOAL.md・answered な Human Review)が未取り込みなら、mainLoop は新規タスクを
   // 起動せず探索セッションを割り込ませる。表示もその実態に合わせる
   const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
   if (inputsChanged) {
-    console.log("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
-    console.log(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${maxSessions} 並列に戻ります`);
+    push("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
+    push(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${maxSessions} 並列に戻ります`);
   }
 
-  console.log(`\n${inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
+  push(`\n${inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
   const runningTaskIds = new Set(
     state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
   );
   const next = nextRunnableTasks(tasks, runningTaskIds, 3);
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
   if (next.length === 0) {
-    console.log(
+    push(
       snoozed.length > 0
         ? `  なし(スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil})`
         : "  なし(依存待ちの可能性)",
     );
   } else {
-    for (const t of next) console.log(`  ${t.id}  p${t.priority}  ${t.title}`);
+    for (const t of next) push(`  ${t.id}  p${t.priority}  ${t.title}`);
   }
 
-  console.log(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
+  push(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
   if (snoozed.length === 0) {
-    console.log("  なし");
+    push("  なし");
   } else {
     for (const t of snoozed) {
-      console.log(`  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`);
+      push(`  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`);
     }
-    console.log("  → 残っている間、run モードのループは自動終了(idle-exit)しない");
+    push("  → 残っている間、run モードのループは自動終了(idle-exit)しない");
   }
 
-  console.log("\n-- 稼働状態 --");
-  console.log(`セッション数: ${state.sessionCount} / 最終探索: ${state.lastExploreAt ?? "未実行"}`);
+  push("\n-- 稼働状態 --");
+  push(`セッション数: ${state.sessionCount} / 最終探索: ${state.lastExploreAt ?? "未実行"}`);
+  // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
+  if (state.stopMode === "clean") {
+    push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");
+  } else if (state.stopMode === "session") {
+    push("停止処理中 (session): 実行中セッションが supervisor に返った時点で run が停止する");
+  }
   if (state.rateLimit.resumeAt !== null) {
-    console.log(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
+    push(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
   }
   if (isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash())) {
-    console.log(
+    push(
       "  ※ supervisor のコードが起動後に変更されている — 稼働中なら再起動(ccloop run を止めて起動し直す)しないと反映されない",
     );
   }
@@ -4021,42 +4045,15 @@ export function cmdStatus(): void {
     const last = metrics[metrics.length - 1]!;
     const totalCost = metrics.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
     const fmtCost = (cost: number | undefined): string => (cost !== undefined ? `$${cost.toFixed(4)}` : "不明");
-    console.log(
+    push(
       `直近セッション: cost=${fmtCost(last.costUsd)} / turns=${last.numTurns ?? "不明"}${last.abnormal ? ` / 異常終了: ${last.abnormal}` : ""}`,
     );
-    console.log(`累計: cost=${fmtCost(totalCost)} / セッション数=${metrics.length}`);
+    push(`累計: cost=${fmtCost(totalCost)} / セッション数=${metrics.length}`);
   }
-  console.log("\n確認・介入の手順: README.md の「人間の関与」");
+  push("\n確認・介入の手順: README.md の「人間の関与」");
+  return out.join("\n");
 }
 
-export function cmdRotate(): void {
-  const summary = runRotate();
-  if (summary !== null) {
-    // subject はステージ内容から生成させる(rotate 以外の未コミット差分が同時に載ることがあり、
-    // rotate の要約だけを名乗ると実際のコミット内容と食い違うため)
-    commitAgentDir();
-  }
-}
-
-export function cmdRetry(argv: string[]): void {
-  const id = argv[0];
-  if (!id) {
-    console.error("使い方: ccloop retry <task-id>");
-    process.exit(1);
-  }
-  const t = loadTask(id);
-  if (!t) {
-    console.error(`タスクが見つからない: ${id}`);
-    process.exit(1);
-  }
-  if (t.status !== "failed" && t.status !== "blocked") {
-    console.error(`retry は failed / blocked のタスクのみ対象(${id} は ${t.status})`);
-    process.exit(1);
-  }
-  const prev = t.status;
-  t.status = "ready";
-  t.retries = 0;
-  t.note = `人間の介入により ready へ戻す(元: ${prev}。${t.note ?? "-"})`;
-  saveTask(t);
-  console.log(`${id} を ready に戻した(retries をリセット)。失敗原因が残っていれば先に対処すること`);
+export function cmdStatus(): void {
+  console.log(formatStatus());
 }

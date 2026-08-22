@@ -5,13 +5,12 @@
  *   ccloop [--repo <path>] <サブコマンド> [引数...]
  *
  * サブコマンド:
- *   run     常駐ループ(自律実行)
- *   once    1 タスク(なければ探索 1 回)だけ実行して終了
- *   add     タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002] [--model m]
- *   list    タスク一覧
- *   status  稼働状況・進捗の要約
- *   retry   failed / blocked のタスクを ready へ戻す
- *   rotate  .agent/ の状態ファイルのローテーションを手動実行
+ *   run      常駐ループ(自律実行)。停止は Ctrl+C(押すたびに段階が上がる)
+ *   status   稼働状況・進捗の要約
+ *   watch    status を一定間隔で再描画し続ける: watch [--interval <秒>]
+ *   list     タスク一覧
+ *   add      タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002] [--model m]
+ *   version  ccloop 自身のバージョン
  *
  * グローバルオプション:
  *   --repo <path>  対象リポジトリのルート(既定: 環境変数 CCLOOP_REPO、無ければ cwd から上方探索)
@@ -20,19 +19,28 @@
  * (Node の型ストリップを使うため、ビルド成果物は無い)。
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
-import {
-  cmdAdd,
-  cmdList,
-  cmdRetry,
-  cmdRotate,
-  cmdStatus,
-  mainLoop,
-  useRepoRoot,
-} from "./supervisor.ts";
+import { cmdAdd, cmdList, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
+import { cmdWatch } from "./watch.ts";
 
-const USAGE = "使い方: ccloop [--repo <path>] <run|once|add|list|status|retry|rotate> [引数...]";
+const USAGE = "使い方: ccloop [--repo <path>] <run|status|watch|list|add|version> [引数...]";
+
+/**
+ * ccloop 自身のバージョン。インストール先にも `package.json` を同梱する前提で、
+ * `lib/` から見て 1 つ上の `package.json` を読む。
+ * バージョンを持たない開発中のチェックアウトでも落ちないよう、読めなければ "unknown" を返す。
+ */
+export function readVersion(libDir: string = import.meta.dirname): string {
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(path.join(libDir, "..", "package.json"), "utf8"));
+    const version = (raw as { version?: unknown }).version;
+    return typeof version === "string" && version !== "" ? version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Node の型ストリップ(.ts の直接実行)が使えるバージョンか検査する(純粋)。
@@ -101,6 +109,12 @@ export async function main(argv: string[]): Promise<void> {
     console.log(USAGE);
     return;
   }
+  // version はリポジトリに紐づかないため、ルート解決より前に返す
+  // (リポジトリ外から `ccloop version` を叩いても答えられるようにする)
+  if (cmd === "version" || cmd === "--version" || cmd === "-v") {
+    console.log(readVersion());
+    return;
+  }
 
   try {
     useRepoRoot(resolveRepoRoot({ repo: parsed.repo }));
@@ -112,25 +126,23 @@ export async function main(argv: string[]): Promise<void> {
   const args = parsed.rest.slice(1);
   switch (cmd) {
     case "run":
-      await mainLoop(false);
-      break;
-    case "once":
-      await mainLoop(true);
-      break;
-    case "add":
-      cmdAdd(args);
-      break;
-    case "list":
-      cmdList(args);
+      await mainLoop();
       break;
     case "status":
       cmdStatus();
       break;
-    case "retry":
-      cmdRetry(args);
+    case "watch":
+      try {
+        await cmdWatch(args);
+      } catch (err) {
+        die(String((err as Error).message));
+      }
       break;
-    case "rotate":
-      cmdRotate();
+    case "list":
+      cmdList(args);
+      break;
+    case "add":
+      cmdAdd(args);
       break;
     default:
       die(`未知のサブコマンド: ${cmd}\n${USAGE}`);

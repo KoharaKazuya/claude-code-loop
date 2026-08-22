@@ -151,8 +151,6 @@ export interface Paths {
   patchesDir: string;
   worktreesDir: string;
   generatedSettingsPath: string;
-  /** 停止指示ファイル。次フェーズで廃止予定のため、当面 stateDir 配下に置くだけ */
-  stopPath: string;
 }
 
 /**
@@ -181,7 +179,6 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
     patchesDir: path.join(stateDir, "patches"),
     worktreesDir: path.join(stateDir, "worktrees"),
     generatedSettingsPath: path.join(stateDir, "claude-settings.json"),
-    stopPath: path.join(stateDir, "STOP"),
   };
 }
 

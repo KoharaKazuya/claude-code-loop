@@ -154,7 +154,6 @@ describe("createPaths", () => {
       p.patchesDir,
       p.worktreesDir,
       p.generatedSettingsPath,
-      p.stopPath,
     ]) {
       expect(runtime.startsWith(p.stateDir + path.sep)).toBe(true);
     }

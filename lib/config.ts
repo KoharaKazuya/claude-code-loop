@@ -20,10 +20,8 @@ export interface Config {
   taskTimeoutMs: number;
   maxTurns: number;
   rateLimit: { backoffMs: number };
-  /** minIntervalMs: 探索の実行間隔。`ccloop once` の探索判定に使うほか、
-   * `ccloop run` でも直前の探索が空振り(新規タスク 0 件)だった場合の
-   * 再探索クールダウンとして使う(空振り探索の即時連鎖を防ぐ)。run モードで直前の探索が
-   * タスクを生んでいれば、従来どおり間隔を待たずに探索する */
+  /** minIntervalMs: 直前の探索が空振り(新規タスク 0 件)だった場合の再探索クールダウン
+   * (空振り探索の即時連鎖を防ぐ)。直前の探索がタスクを生んでいれば間隔を待たずに探索する */
   explore: { enabled: boolean; minIntervalMs: number };
   /** Human Review 回答の段階的処理(Stage 1: 決定論判定 / Stage 2: 軽量モデル判定)の設定。
    * enabled=false なら Stage 1/2 を飛ばし、従来どおり毎回フル探索(Stage 3)へ回す */

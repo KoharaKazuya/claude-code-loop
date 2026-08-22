@@ -392,16 +392,24 @@ describe("pickModel", () => {
 });
 
 describe("nextStopEscalation", () => {
-  it("STOP なしなら clean(空)を作成する", () => {
-    expect(nextStopEscalation(null)).toEqual({ content: "" });
+  it("停止指示なし(none)なら clean を予約する", () => {
+    expect(nextStopEscalation("none")).toEqual({ mode: "clean" });
   });
 
-  it("STOP(clean)なら session へ更新する", () => {
-    expect(nextStopEscalation("clean")).toEqual({ content: "session" });
+  it("clean なら session へ格上げする", () => {
+    expect(nextStopEscalation("clean")).toEqual({ mode: "session" });
   });
 
-  it("STOP(session)なら緊急停止へ進む", () => {
+  it("session なら緊急停止へ進む", () => {
     expect(nextStopEscalation("session")).toBe("emergency");
+  });
+
+  it("3 段階で緊急停止に到達し、ファイルを一切介さない", () => {
+    const first = nextStopEscalation("none");
+    expect(first).not.toBe("emergency");
+    const second = nextStopEscalation((first as { mode: "clean" | "session" }).mode);
+    expect(second).not.toBe("emergency");
+    expect(nextStopEscalation((second as { mode: "clean" | "session" }).mode)).toBe("emergency");
   });
 });
 
@@ -1797,7 +1805,7 @@ describe("summarizeAgentCommit", () => {
 
   it("ID を持たないファイルはカテゴリ名で表現する", () => {
     expect(summarizeAgentCommit([edit(".agent/OVERVIEW.md")])).toBe("docs(agent): 全体像を更新する");
-    expect(summarizeAgentCommit([edit(".agent/supervisor/config.json")])).toBe("docs(agent): supervisorを更新する");
+    expect(summarizeAgentCommit([edit(".agent/PROMPT.md")])).toBe("docs(agent): 手順書を更新する");
   });
 
   it("カテゴリ不明のファイルは「運用ファイル」として扱う", () => {
@@ -1830,7 +1838,6 @@ describe("summarizeAgentCommit", () => {
       [edit(".agent/OVERVIEW.md")],
       [edit(".agent/GOAL.md")],
       [edit(".agent/PROMPT.md")],
-      [edit(".agent/supervisor/supervisor.ts")],
       [edit(".agent/metrics.jsonl")],
       [edit(".agent/tasks/T-0\n01.md")],
       [edit(`.agent/tasks/T-${"0".repeat(80)}.md`)],

@@ -3,13 +3,11 @@ import { type LoopInput, planLoopStep, RATE_LIMIT_SLICE_MS, STOP_REASON } from "
 
 const NOW = new Date("2026-08-16T00:00:00.000Z");
 
-/** 何も起きない状態(run モード・停止指示なし・タスクなし・未探索)を基準にする */
+/** 何も起きない状態(停止指示なし・タスクなし・未探索)を基準にする */
 function input(over: Partial<LoopInput> = {}): LoopInput {
   return {
     now: NOW,
-    once: false,
-    completedCount: 0,
-    stopMode: null,
+    stopMode: "none",
     mainDirtyOutsideAgent: false,
     runningCount: 0,
     maxSessions: 1,
@@ -31,21 +29,21 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
 
 describe("planLoopStep", () => {
   describe("停止指示 (優先度 1)", () => {
-    it("STOP(session) かつセッションが走っていなければ停止する", () => {
+    it("停止指示 session かつセッションが走っていなければ停止する", () => {
       expect(planLoopStep(input({ stopMode: "session" }))).toEqual({
         type: "stop",
         reason: STOP_REASON.session,
       });
     });
 
-    it("STOP(clean) かつ差分なしならクリーン停止する", () => {
+    it("停止指示 clean かつ差分なしならクリーン停止する", () => {
       expect(planLoopStep(input({ stopMode: "clean" }))).toEqual({
         type: "stop",
         reason: STOP_REASON.clean,
       });
     });
 
-    it("STOP(clean) で .agent 以外に差分が残っていれば理由にそれを含めて停止する", () => {
+    it("停止指示 clean で .agent 以外に差分が残っていれば理由にそれを含めて停止する", () => {
       const action = planLoopStep(input({ stopMode: "clean", mainDirtyOutsideAgent: true }));
       expect(action).toEqual({ type: "stop", reason: STOP_REASON.cleanDirty });
       expect(STOP_REASON.cleanDirty).not.toBe(STOP_REASON.clean);
@@ -97,41 +95,9 @@ describe("planLoopStep", () => {
         why: "rate-limit",
       });
     });
-
-    it("once で 1 件完了済みなら rate limit を待たずに終了する", () => {
-      expect(planLoopStep(input({ once: true, completedCount: 1, rateLimitedUntilMs: 3_600_000 }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.onceDone,
-      });
-    });
-
-    it("once でもまだ何も完了していなければ rate limit を待つ", () => {
-      expect(planLoopStep(input({ once: true, completedCount: 0, rateLimitedUntilMs: 30_000 }))).toEqual({
-        type: "wait",
-        ms: 30_000,
-        why: "rate-limit",
-      });
-    });
   });
 
-  describe("once の終了 (優先度 3・9)", () => {
-    it("1 セッション完了したら実行可能タスクが残っていても終了する", () => {
-      expect(planLoopStep(input({ once: true, completedCount: 1, runnableTaskIds: ["T-001"] }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.onceDone,
-      });
-    });
-
-    it("実行できるものが何も無ければ終了する", () => {
-      expect(planLoopStep(input({ once: true }))).toEqual({ type: "stop", reason: STOP_REASON.onceIdle });
-    });
-
-    it("run モードでは同じ状況でもすぐには終了せず、未探索ならまず探索する", () => {
-      expect(planLoopStep(input({ once: false }))).toEqual({ type: "explore", trigger: "idle" });
-    });
-  });
-
-  describe("入力変化による割り込み (優先度 4)", () => {
+  describe("入力変化による割り込み (優先度 3)", () => {
     it("triage が無効ならアイドルで実行可能タスクより先に探索する", () => {
       expect(planLoopStep(input({ inputsChanged: true, runnableTaskIds: ["T-001"] }))).toEqual({
         type: "explore",
@@ -175,7 +141,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("瞬時クラッシュの連続によるバックオフ (優先度 5)", () => {
+  describe("瞬時クラッシュの連続によるバックオフ (優先度 4)", () => {
     it("streak が 3 以上かつ実行可能タスクと空きがあれば crash-backoff で待つ", () => {
       expect(
         planLoopStep(input({ fastCrashStreak: 3, runnableTaskIds: ["T-001"], idlePollMs: 5_000 })),
@@ -211,7 +177,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("タスク起動 (優先度 6)", () => {
+  describe("タスク起動 (優先度 5)", () => {
     it("空きスロット数だけ先頭から起動する", () => {
       expect(
         planLoopStep(input({ maxSessions: 2, runningCount: 0, runnableTaskIds: ["T-001", "T-002", "T-003"] })),
@@ -246,26 +212,19 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("探索 (優先度 7)", () => {
-    it("run: 未探索ならクールダウン(exploreDue)を待たずに探索する", () => {
+  describe("探索 (優先度 6)", () => {
+    it("未探索ならクールダウン(exploreDue)を待たずに探索する", () => {
       expect(planLoopStep(input({ exploreDone: false, exploreDue: false }))).toEqual({
         type: "explore",
         trigger: "idle",
       });
     });
 
-    it("run: 探索済みなら実行間隔が来ていても探索しない(定期探索は廃止した)", () => {
+    it("探索済みなら実行間隔が来ていても探索しない(定期探索は廃止した)", () => {
       expect(planLoopStep(input({ exploreDone: true, exploreDue: true }))).toEqual({
         type: "stop",
         reason: STOP_REASON.idleExit,
         cause: "idle-exit",
-      });
-    });
-
-    it("once: 実行間隔が来ていれば exploreDone に関わらず探索する(once の挙動は不変)", () => {
-      expect(planLoopStep(input({ once: true, exploreDue: true, exploreDone: true }))).toEqual({
-        type: "explore",
-        trigger: "idle",
       });
     });
 
@@ -276,7 +235,7 @@ describe("planLoopStep", () => {
       });
     });
 
-    it("run: 直前の探索が空振りかつクールダウン未経過なら再探索せず idle-exit する(空振り探索の連鎖抑制)", () => {
+    it("直前の探索が空振りかつクールダウン未経過なら再探索せず idle-exit する(空振り探索の連鎖抑制)", () => {
       expect(
         planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: true, exploreDue: false })),
       ).toEqual({
@@ -286,7 +245,7 @@ describe("planLoopStep", () => {
       });
     });
 
-    it("run: 直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
+    it("直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
       expect(
         planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: true, exploreDue: true })),
       ).toEqual({
@@ -295,7 +254,7 @@ describe("planLoopStep", () => {
       });
     });
 
-    it("run: 直前の探索がタスクを生んでいれば、クールダウン未経過でも従来どおり即座に再探索する", () => {
+    it("直前の探索がタスクを生んでいれば、クールダウン未経過でも従来どおり即座に再探索する", () => {
       expect(
         planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: false, exploreDue: false })),
       ).toEqual({
@@ -316,7 +275,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("完了待ち (優先度 8)", () => {
+  describe("完了待ち (優先度 7)", () => {
     it("探索済みで実行可能タスクも無くセッションだけ走っていれば slots-full で待つ", () => {
       expect(planLoopStep(input({ exploreDone: true, runningCount: 1, maxSessions: 2 }))).toEqual({
         type: "wait",
@@ -324,17 +283,9 @@ describe("planLoopStep", () => {
         why: "slots-full",
       });
     });
-
-    it("once でもセッションが走っている間は終了しない", () => {
-      expect(planLoopStep(input({ once: true, runningCount: 1, maxSessions: 2 }))).toEqual({
-        type: "wait",
-        ms: 60_000,
-        why: "slots-full",
-      });
-    });
   });
 
-  describe("アイドル終了 (優先度 10・11)", () => {
+  describe("アイドル終了 (優先度 8・9)", () => {
     it("探索済みで実行可能タスクも実行中セッションも無ければ終了する", () => {
       expect(planLoopStep(input({ exploreDone: true }))).toEqual({
         type: "stop",
@@ -381,7 +332,7 @@ describe("planLoopStep", () => {
       });
     });
 
-    it("STOP 指示があれば idle-exit ではなく通常の停止理由になる", () => {
+    it("停止指示があれば idle-exit ではなく通常の停止理由になる", () => {
       expect(planLoopStep(input({ exploreDone: true, stopMode: "clean" }))).toEqual({
         type: "stop",
         reason: STOP_REASON.clean,
@@ -393,13 +344,6 @@ describe("planLoopStep", () => {
         type: "wait",
         ms: 60_000,
         why: "idle",
-      });
-    });
-
-    it("once モードでは idle-exit を使わず従来どおり onceIdle で終了する", () => {
-      expect(planLoopStep(input({ once: true, exploreDone: true }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.onceIdle,
       });
     });
   });
