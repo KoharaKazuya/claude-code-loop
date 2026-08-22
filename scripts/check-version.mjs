@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * package.json / features/ccloop/devcontainer-feature.json / README.md の
- * ccloop feature 参照バージョンがすべて一致していることを検査する。
+ * package.json / features/ccloop/devcontainer-feature.json / README.md /
+ * .devcontainer/devcontainer.json の ccloop feature 参照バージョンがすべて一致していることを検査する。
  *
  * `--expect <version>` を渡すと、一致した値がその version とも一致することまで検査する
- * (release.yml がタグ名から `v` を除いた値を渡し、タグと 3 ファイルの一致を検証する)。
+ * (release.yml がタグ名から `v` を除いた値を渡し、タグと各ファイルの一致を検証する)。
  */
 
 import {
+  DEVCONTAINER_JSON_RELATIVE,
   FEATURE_JSON_RELATIVE,
   PACKAGE_JSON_RELATIVE,
   README_RELATIVE,
@@ -15,7 +16,7 @@ import {
 } from "./version-files.mjs";
 
 /**
- * root 配下の 3 箇所のバージョンを検査する。
+ * root 配下の各ファイルのバージョンを検査する。
  * 戻り値の ok が false の場合、message にエラー内容(複数行)が入る。
  * ok が true の場合、message に成功メッセージ(1 行)が入る。
  */
@@ -23,8 +24,9 @@ export function checkVersion(root, { expect } = {}) {
   let packageVersion;
   let featureVersion;
   let readmeVersions;
+  let devcontainerVersions;
   try {
-    ({ packageVersion, featureVersion, readmeVersions } = readAllVersions(root));
+    ({ packageVersion, featureVersion, readmeVersions, devcontainerVersions } = readAllVersions(root));
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
@@ -36,11 +38,19 @@ export function checkVersion(root, { expect } = {}) {
     };
   }
 
-  const allValues = [packageVersion, featureVersion, ...readmeVersions];
+  if (devcontainerVersions.length === 0) {
+    return {
+      ok: false,
+      message: `${DEVCONTAINER_JSON_RELATIVE}: ghcr.io/koharakazuya/claude-code-loop/ccloop:<version> の参照が見つかりません`,
+    };
+  }
+
+  const allValues = [packageVersion, featureVersion, ...readmeVersions, ...devcontainerVersions];
   const uniqueValues = [...new Set(allValues)];
 
   if (uniqueValues.length > 1) {
     const readmeSummary = [...new Set(readmeVersions)].join(", ");
+    const devcontainerSummary = [...new Set(devcontainerVersions)].join(", ");
     return {
       ok: false,
       message: [
@@ -48,6 +58,7 @@ export function checkVersion(root, { expect } = {}) {
         `  ${PACKAGE_JSON_RELATIVE}: ${packageVersion}`,
         `  ${FEATURE_JSON_RELATIVE}: ${featureVersion}`,
         `  ${README_RELATIVE}: ${readmeSummary}`,
+        `  ${DEVCONTAINER_JSON_RELATIVE}: ${devcontainerSummary}`,
       ].join("\n"),
     };
   }
@@ -62,6 +73,7 @@ export function checkVersion(root, { expect } = {}) {
         `  ${PACKAGE_JSON_RELATIVE}: ${packageVersion}`,
         `  ${FEATURE_JSON_RELATIVE}: ${featureVersion}`,
         `  ${README_RELATIVE}: ${[...new Set(readmeVersions)].join(", ")}`,
+        `  ${DEVCONTAINER_JSON_RELATIVE}: ${[...new Set(devcontainerVersions)].join(", ")}`,
       ].join("\n"),
     };
   }

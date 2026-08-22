@@ -17,13 +17,14 @@
 ## feature のタグ運用
 
 バージョンの真実は `package.json` の `version` 1 箇所とし、`features/ccloop/devcontainer-feature.json`
-の `version` と README.md の feature 参照(`ghcr.io/koharakazuya/claude-code-loop/ccloop:X.Y.Z`)は
-`scripts/sync-version.mjs` で機械的に同期する。`npm version <patch|minor|major>` の `version` フックが
-これを実行してからコミットと `vX.Y.Z` タグを作るため、通常の手順では 3 箇所がずれない。
+の `version`、README.md と `.devcontainer/devcontainer.json` の feature 参照
+(`ghcr.io/koharakazuya/claude-code-loop/ccloop:X.Y.Z`)は `scripts/sync-version.mjs` で機械的に同期する。
+`npm version <patch|minor|major>` の `version` フックがこれを実行してからコミットと `vX.Y.Z` タグを
+作るため、通常の手順ではこれらがずれない。
 
 ずれを検出する安全弁として `scripts/check-version.mjs` があり、CI(`.github/workflows/ci.yml`)が
-毎 push で 3 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)がタグ push 時に
-タグバージョンとの一致まで検証してから publish する。README の参照をタグと一致させる理由は、
+毎 push で package.json を含む 4 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)が
+タグ push 時にタグバージョンとの一致まで検証してから publish する。README の参照をタグと一致させる理由は、
 devcontainers/action が publish するタグは `X` / `X.Y` / `X.Y.Z` / `latest` であり、README に
 実在しないタグ(例: 0.x リリース時の `:1`)を載せてしまう事故を防ぐため。
 
