@@ -7,12 +7,15 @@
  *
  * パスは 2 系統に分かれる。
  *
- * - `.agent/` 配下(git 管理): GOAL.md / OVERVIEW.md / PROMPT.md / config.json /
- *   tasks/ / decisions/ / human-review/ / archive/。人間とエージェントが読み書きし、
- *   リポジトリの履歴に残すべきデータ。
+ * - `.agent/` 配下(git 管理): GOAL.md / OVERVIEW.md / config.json / tasks/ / decisions/ /
+ *   human-review/ / archive/(+ 任意で claude-settings.json / PROMPT.local.md)。
+ *   人間とエージェントが読み書きし、リポジトリの履歴に残すべきデータ。
+ *   自律実行セッションの共通ルールはツール本体が持つ(`lib/prompt/PROMPT.md`)ため
+ *   `.agent/` には置かない。利用側は `PROMPT.local.md` で追記だけできる。
  * - state ディレクトリ(git 管理外・リポジトリ外): state.json / metrics.jsonl /
- *   permission-denials.jsonl / patches/ / 生成した claude settings / worktrees/。
- *   ツールの実行時状態であり、利用者のリポジトリを汚さないよう XDG state ディレクトリへ置く。
+ *   permission-denials.jsonl / patches/ / 生成した claude settings / 生成した system prompt /
+ *   worktrees/。ツールの実行時状態であり、利用者のリポジトリを汚さないよう
+ *   XDG state ディレクトリへ置く。
  */
 
 import { createHash } from "node:crypto";
@@ -141,7 +144,8 @@ export interface Paths {
   archiveDir: string;
   goalPath: string;
   overviewPath: string;
-  promptPath: string;
+  /** 利用側リポジトリ固有の追加ルール(任意)。共通ルールの後ろへ連結される */
+  promptLocalPath: string;
 
   // ---- git 管理外(リポジトリ外の state ディレクトリ) ----
   stateDir: string;
@@ -151,6 +155,8 @@ export interface Paths {
   patchesDir: string;
   worktreesDir: string;
   generatedSettingsPath: string;
+  /** 共通ルール(+ PROMPT.local.md)を連結して生成する system prompt ファイル */
+  generatedSystemPromptPath: string;
 }
 
 /**
@@ -171,7 +177,7 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
     archiveDir: path.join(agentDir, "archive"),
     goalPath: path.join(agentDir, "GOAL.md"),
     overviewPath: path.join(agentDir, "OVERVIEW.md"),
-    promptPath: path.join(agentDir, "PROMPT.md"),
+    promptLocalPath: path.join(agentDir, "PROMPT.local.md"),
     stateDir,
     statePath: path.join(stateDir, "state.json"),
     metricsPath: path.join(stateDir, "metrics.jsonl"),
@@ -179,6 +185,7 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
     patchesDir: path.join(stateDir, "patches"),
     worktreesDir: path.join(stateDir, "worktrees"),
     generatedSettingsPath: path.join(stateDir, "claude-settings.json"),
+    generatedSystemPromptPath: path.join(stateDir, "system-prompt.md"),
   };
 }
 

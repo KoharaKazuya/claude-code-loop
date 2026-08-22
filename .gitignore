@@ -12,6 +12,7 @@ node_modules
 # (${XDG_STATE_HOME:-~/.local/state}/ccloop/<repo-id>)に置くため、ここには現れない
 .agent/**/*.tmp
 
-# CI/リリースワークフローがリポジトリの lib/ と bin/ をコピーして生成する成果物
+# CI/リリースワークフローがリポジトリの lib/ と bin/ と package.json をコピーして生成する成果物
 features/ccloop/lib
 features/ccloop/bin
+features/ccloop/package.json

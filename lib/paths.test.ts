@@ -144,7 +144,8 @@ describe("createPaths", () => {
     expect(p.archiveDir).toBe(path.join(dir, ".agent", "archive"));
     expect(p.goalPath).toBe(path.join(dir, ".agent", "GOAL.md"));
     expect(p.overviewPath).toBe(path.join(dir, ".agent", "OVERVIEW.md"));
-    expect(p.promptPath).toBe(path.join(dir, ".agent", "PROMPT.md"));
+    // 共通ルール本体はツール側(lib/prompt/PROMPT.md)が持つ。.agent/ にあるのは任意の追記分だけ
+    expect(p.promptLocalPath).toBe(path.join(dir, ".agent", "PROMPT.local.md"));
 
     expect(p.stateDir).toBe(stateDirFor(dir));
     for (const runtime of [
@@ -154,6 +155,7 @@ describe("createPaths", () => {
       p.patchesDir,
       p.worktreesDir,
       p.generatedSettingsPath,
+      p.generatedSystemPromptPath,
     ]) {
       expect(runtime.startsWith(p.stateDir + path.sep)).toBe(true);
     }

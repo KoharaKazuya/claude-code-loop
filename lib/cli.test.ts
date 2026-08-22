@@ -1,5 +1,7 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkNodeVersion, splitGlobalOptions } from "./cli.ts";
+import { checkNodeVersion, readVersion, splitGlobalOptions } from "./cli.ts";
 
 describe("splitGlobalOptions", () => {
   it("--repo <path> を取り除きサブコマンド以降を残す", () => {
@@ -51,5 +53,27 @@ describe("checkNodeVersion", () => {
 
   it("実行中の Node は要件を満たす(package.json の engines と整合する)", () => {
     expect(checkNodeVersion()).toBeNull();
+  });
+});
+
+describe("readVersion", () => {
+  it("lib/ の 1 つ上の package.json の version を返す", () => {
+    // 開発中のチェックアウトでは lib/../package.json がリポジトリの package.json。
+    // インストール先(/usr/local/share/ccloop/)でも同じ配置になるよう install.sh が同梱する
+    expect(readVersion()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("package.json が無い場所を渡しても落ちず unknown を返す", () => {
+    expect(readVersion(path.join(import.meta.dirname, "prompt"))).toBe("unknown");
+  });
+
+  it("devcontainer-feature.json の version と package.json の version が一致する", () => {
+    const root = path.join(import.meta.dirname, "..");
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { version: string };
+    const feature = JSON.parse(
+      fs.readFileSync(path.join(root, "features", "ccloop", "devcontainer-feature.json"), "utf8"),
+    ) as { version: string };
+
+    expect(feature.version).toBe(pkg.version);
   });
 });

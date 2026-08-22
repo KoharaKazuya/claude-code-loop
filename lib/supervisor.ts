@@ -44,6 +44,8 @@ import {
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty } from "./rotate.ts";
+import { agentsArgs } from "./agents.ts";
+import { generateSystemPrompt } from "./prompt.ts";
 import { generateSettings } from "./settings.ts";
 import { planLoopStep, type StopMode } from "./scheduler.ts";
 import {
@@ -522,7 +524,7 @@ const AGENT_CATEGORIES: { readonly match: (p: string) => boolean; readonly label
   { match: (p) => p.includes("/human-review/"), label: "レビュー" },
   { match: (p) => p.endsWith("/OVERVIEW.md"), label: "全体像" },
   { match: (p) => p.endsWith("/GOAL.md"), label: "目標" },
-  { match: (p) => p.endsWith("/PROMPT.md"), label: "手順書" },
+  { match: (p) => p.endsWith("/PROMPT.local.md"), label: "手順書" },
 ];
 
 /** カテゴリ未確定のファイルに使う総称 */
@@ -1536,7 +1538,21 @@ export interface SessionResult {
  * タスクセッションの `--worktree <タスクID>` のように、セッション種別ごとに違うオプションを
  * 渡すためにも使う(こちらは上書きではなく追加)。
  */
-export function buildClaudeArgs(config: Config, prompt: string, model: string, extraArgs: string[] = []): string[] {
+export interface ClaudeArgsOptions {
+  /**
+   * 共通ルール(生成済み system prompt)を注入するか。既定は true。
+   * triage セッションだけ false にする(後述)。
+   */
+  commonRules?: boolean;
+}
+
+export function buildClaudeArgs(
+  config: Config,
+  prompt: string,
+  model: string,
+  extraArgs: string[] = [],
+  opts: ClaudeArgsOptions = {},
+): string[] {
   const args = [
     "-p",
     prompt,
@@ -1550,6 +1566,13 @@ export function buildClaudeArgs(config: Config, prompt: string, model: string, e
     "--settings",
     repoPaths().generatedSettingsPath,
   ];
+  if (opts.commonRules !== false) {
+    // 共通ルールは `-p` の本文ではなく system prompt へ置く(lib/prompt.ts の説明を参照)。
+    // ファイルの生成は run の起動時に 1 回(generateSystemPrompt)。
+    args.push("--append-system-prompt-file", repoPaths().generatedSystemPromptPath);
+    // サブエージェント(reviewer 等)は利用側の `.claude/agents/` ではなくツール本体が持つ
+    args.push(...agentsArgs());
+  }
   if (config.maxTurns > 0) args.push("--max-turns", String(config.maxTurns));
   args.push(...extraArgs);
   return args;
@@ -1564,9 +1587,9 @@ function runClaude(
   prompt: string,
   model: string,
   cwd: string,
-  opts: { extraArgs?: string[]; env?: Record<string, string> } = {},
+  opts: { extraArgs?: string[]; env?: Record<string, string>; commonRules?: boolean } = {},
 ): Promise<SessionResult> {
-  const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? []);
+  const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? [], { commonRules: opts.commonRules });
 
   return new Promise((resolve) => {
     const child = spawn(config.claudeCommand, args, {
@@ -2012,28 +2035,41 @@ function sha256(text: string): string {
 /** supervisorSourceHash が対象にする拡張子(ツールの挙動を決めるコードとデータ) */
 const SOURCE_HASH_EXTENSIONS = [".ts", ".md", ".json"];
 
+/** dir 配下(再帰)のハッシュ対象ファイルを、dir からの相対パスで列挙する */
+function sourceHashFiles(dir: string, prefix = ""): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const e of entries) {
+    const rel = prefix === "" ? e.name : `${prefix}/${e.name}`;
+    if (e.isDirectory()) files.push(...sourceHashFiles(path.join(dir, e.name), rel));
+    else if (
+      e.isFile() &&
+      SOURCE_HASH_EXTENSIONS.some((ext) => e.name.endsWith(ext)) &&
+      !e.name.endsWith(".test.ts")
+    ) {
+      files.push(rel);
+    }
+  }
+  return files;
+}
+
 /**
- * ccloop 自身のインストール先(CCLOOP_HOME = lib/)直下のソース(.ts / .md / .json、
+ * ccloop 自身のインストール先(CCLOOP_HOME = lib/)配下のソース(.ts / .md / .json、
  * ただし .test.ts を除く)から作るハッシュ。稼働中プロセスが run 起動時点のソースから
  * どれだけ乖離しているか(＝再起動しないと変更が反映されない状態か)を検出するために使う。
- * ファイルの追加・削除・リネームも検出できるよう、ファイル名も内容に含める。
+ * サブディレクトリ(prompt/ の共通ルール、agents/ のサブエージェント定義、hooks/、
+ * templates/)も対象にする。これらは起動時に 1 度だけ読まれるため、変更を反映するには
+ * 直下のソースと同じく再起動が要るため。
+ * ファイルの追加・削除・リネームも検出できるよう、パスも内容に含める。
  */
 export function supervisorSourceHash(home: string = ccloopHome()): string {
-  let files: string[];
-  try {
-    files = fs
-      .readdirSync(home, { withFileTypes: true })
-      .filter(
-        (e) =>
-          e.isFile() &&
-          SOURCE_HASH_EXTENSIONS.some((ext) => e.name.endsWith(ext)) &&
-          !e.name.endsWith(".test.ts"),
-      )
-      .map((e) => e.name)
-      .sort();
-  } catch {
-    return "";
-  }
+  if (!fs.existsSync(home)) return "";
+  const files = sourceHashFiles(home).sort();
   const combined = files.map((f) => `${f}\0${fs.readFileSync(path.join(home, f), "utf8")}`).join("\0");
   return sha256(combined);
 }
@@ -2196,14 +2232,22 @@ function conflictResolutionSection(task: Task): string {
   ].join("\n");
 }
 
+/**
+ * 全セッションのプロンプト冒頭に置く一行。共通ルール本体(`lib/prompt/PROMPT.md`)は
+ * `--append-system-prompt-file` で system prompt として注入済みなので、ここでは
+ * 「どこにあるか」だけを伝え、本文は重複させない。
+ */
+const COMMON_RULES_NOTICE =
+  "自律実行セッションの共通ルールは system prompt として注入済み(改めて読み込む必要はない)。" +
+  "以下はこのセッション固有の指示である。";
+
 export function buildTaskPrompt(
   config: Config,
   task: Task,
   opts: { resuming?: boolean; startedAt?: string; deadline?: string } = {},
 ): string {
-  const common = fs.readFileSync(repoPaths().promptPath, "utf8");
   return [
-    common,
+    COMMON_RULES_NOTICE,
     ...goalSection(),
     "---",
     `## 担当タスク(.agent/tasks/${task.id}.md)`,
@@ -2285,10 +2329,9 @@ function runningTasksSection(ctx: ExploreContext): string {
 }
 
 export function buildExplorePrompt(ctx: ExploreContext): string {
-  const common = fs.readFileSync(repoPaths().promptPath, "utf8");
   const running = runningTasksSection(ctx);
   return [
-    common,
+    COMMON_RULES_NOTICE,
     ...goalSection(),
     "---",
     "## 探索セッション",
@@ -2318,7 +2361,7 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "5. 4. で突き合わせた GOAL とタスクの完了状況を踏まえて `.agent/OVERVIEW.md` を更新する。",
       "   GOAL に対する現在地(どこまで実装できたか)と、これから何をやれば完了に近づくかの見立てを",
       "   本文に短くまとめる。frontmatter の `updatedAt`(ISO 8601)と、`ccloop status` の",
-      "   進捗バーが示す完了数・総数を `completed`/`total` として記録する(形式は `.agent/PROMPT.md` 参照)。",
+      "   進捗バーが示す完了数・総数を `completed`/`total` として記録する(形式は共通ルール参照)。",
       "   内容に実質的な変化がなければファイルには触れない(無変更の書き直しは禁止)。ファイルが無ければ",
       "   新規作成する。",
       "6. 既存の ready タスクが GOAL.md の方向性と矛盾していないか確認する。矛盾するタスクは",
@@ -2330,7 +2373,7 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "open エントリがあれば重複して記録しない)。OVERVIEW.md にも見立てを捏造せず「方向性未設定」と",
       "だけ書くに留める。",
       "",
-      "タスクや記録の作成は PROMPT.md 記載のファイル形式(1 トピック 1 ファイル + YAML frontmatter)に従うこと。",
+      "タスクや記録の作成は共通ルール記載のファイル形式(1 トピック 1 ファイル + YAML frontmatter)に従うこと。",
       "このセッションでは調査とタスク登録のみを行い、実装はしないこと。",
       "登録すべき作業がなければ何も登録せず終了してよい。",
     ].join("\n"),
@@ -2953,6 +2996,8 @@ export async function mainLoop(): Promise<void> {
   // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
   // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
   generateSettings(repoPaths());
+  // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
+  generateSystemPrompt(repoPaths());
   const config = loadConfig();
   // 停止指示はプロセスのメモリにしか無い。起動時に必ずリセットしておく
   // (同一プロセス内で mainLoop を再実行した場合に前回の意思を引きずらないため)。
@@ -3488,6 +3533,10 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
     log(`${styleText("cyan", "▶")} triage セッションを開始 (${stage2.length} 件, model=${config.triage.model})`);
     const res = await runClaude(config, buildTriagePrompt(stage2, tasks), config.triage.model, repoPaths().root, {
       extraArgs: ["--disallowed-tools", "Edit Write Task TodoWrite WebFetch WebSearch Bash", "--max-turns", "6"],
+      // triage は「回答を仕分けて JSON を返すだけ」の読み取り専用セッション。共通ルール
+      // (worktree 運用・記録ファイルの書き方・reviewer への委譲)はどれも実行できない
+      // 指示になるため注入しない。サブエージェントも Task が禁止されていて起動できない。
+      commonRules: false,
       env: { CLAUDE_AGENT_SESSION_KIND: "triage" },
     });
     recordMetrics({ kind: "triage", model: config.triage.model, res, sessionCwd: repoPaths().root });

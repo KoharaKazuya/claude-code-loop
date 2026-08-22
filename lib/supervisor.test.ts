@@ -845,7 +845,7 @@ describe("buildTaskPrompt", () => {
     const startedAt = new Date().toISOString();
     const prompt = buildTaskPrompt(makeConfig(), makeTask({ id: "T-042" }), { startedAt });
 
-    // PROMPT.md 本文にも例示の ISO 時刻が載っているため、注入行だけを取り出して検証する
+    // 他のセクションにも ISO 時刻が現れうるため、注入行だけを取り出して検証する
     const line = prompt.split("\n").find((l) => l.includes("「現在時刻」の基準"));
     expect(line).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(line).toContain(startedAt);
@@ -1231,6 +1231,7 @@ describe("supervisorSourceHash", () => {
   let dir: string;
 
   function writeSrc(name: string, content: string): void {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), content);
   }
 
@@ -1265,6 +1266,20 @@ describe("supervisorSourceHash", () => {
     writeSrc("settings.template.json", "{\"permissions\": {}}\n");
 
     expect(supervisorSourceHash(dir)).not.toBe(before);
+  });
+
+  it("サブディレクトリの内容を変えてもハッシュが変わる(共通ルール・サブエージェント定義も対象)", () => {
+    writeSrc("supervisor.ts", "export const a = 1;\n");
+    writeSrc("prompt/PROMPT.md", "# 共通ルール\n");
+    writeSrc("agents/reviewer.md", "---\ndescription: d\n---\n\n本文\n");
+    const before = supervisorSourceHash(dir);
+
+    writeSrc("prompt/PROMPT.md", "# 共通ルール(改訂)\n");
+    const afterPrompt = supervisorSourceHash(dir);
+    expect(afterPrompt).not.toBe(before);
+
+    writeSrc("agents/reviewer.md", "---\ndescription: d2\n---\n\n本文\n");
+    expect(supervisorSourceHash(dir)).not.toBe(afterPrompt);
   });
 
   it(".test.ts の内容を変えてもハッシュは変わらない", () => {
@@ -1383,7 +1398,7 @@ describe("crashResultFromError", () => {
 });
 
 describe("buildClaudeArgs", () => {
-  it("プロンプト・model・permissionMode・settings を含む", () => {
+  it("プロンプト・model・permissionMode・settings・共通ルール・サブエージェントを含む", () => {
     const config = makeConfig({ permissionMode: "auto" });
     const args = buildClaudeArgs(config, "プロンプト本文", "haiku");
 
@@ -1398,7 +1413,33 @@ describe("buildClaudeArgs", () => {
       "auto",
       "--settings",
       expect.stringContaining("claude-settings.json"),
+      "--append-system-prompt-file",
+      expect.stringContaining("system-prompt.md"),
+      "--agents",
+      expect.any(String),
     ]);
+  });
+
+  it("--agents には lib/agents/ のサブエージェント定義(reviewer)が JSON で載る", () => {
+    const args = buildClaudeArgs(makeConfig(), "p", "opus");
+
+    const json = args[args.indexOf("--agents") + 1]!;
+    const parsed = JSON.parse(json) as Record<string, { description: string; prompt: string; tools: string[]; model: string }>;
+    expect(Object.keys(parsed)).toContain("reviewer");
+    expect(parsed.reviewer!.tools).toEqual(["Read", "Glob", "Grep", "Bash"]);
+    expect(parsed.reviewer!.model).toBe("sonnet");
+    expect(parsed.reviewer!.description).not.toBe("");
+    expect(parsed.reviewer!.prompt).toContain("独立したコードレビュアー");
+    // name は JSON のキーで表すため、フィールドとしては渡さない
+    expect(parsed.reviewer).not.toHaveProperty("name");
+  });
+
+  it("commonRules: false なら system prompt もサブエージェントも渡さない(triage セッション)", () => {
+    const args = buildClaudeArgs(makeConfig(), "p", "haiku", [], { commonRules: false });
+
+    expect(args).not.toContain("--append-system-prompt-file");
+    expect(args).not.toContain("--agents");
+    expect(args).toContain("--settings");
   });
 
   it("maxTurns > 0 なら --max-turns を付ける(既定値扱い)", () => {
@@ -1521,7 +1562,7 @@ describe("buildExplorePrompt", () => {
     const startedAt = new Date().toISOString();
     const prompt = buildExplorePrompt(ctx({ startedAt }));
 
-    // PROMPT.md 本文にも例示の ISO 時刻が載っているため、注入行だけを取り出して検証する
+    // 他のセクションにも ISO 時刻が現れうるため、注入行だけを取り出して検証する
     const line = prompt.split("\n").find((l) => l.includes("「現在時刻」の基準"));
     expect(line).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
     expect(line).toContain(startedAt);
@@ -1805,7 +1846,7 @@ describe("summarizeAgentCommit", () => {
 
   it("ID を持たないファイルはカテゴリ名で表現する", () => {
     expect(summarizeAgentCommit([edit(".agent/OVERVIEW.md")])).toBe("docs(agent): 全体像を更新する");
-    expect(summarizeAgentCommit([edit(".agent/PROMPT.md")])).toBe("docs(agent): 手順書を更新する");
+    expect(summarizeAgentCommit([edit(".agent/PROMPT.local.md")])).toBe("docs(agent): 手順書を更新する");
   });
 
   it("カテゴリ不明のファイルは「運用ファイル」として扱う", () => {
@@ -1837,7 +1878,7 @@ describe("summarizeAgentCommit", () => {
       [edit(".agent/decisions/D-1.md", "D")],
       [edit(".agent/OVERVIEW.md")],
       [edit(".agent/GOAL.md")],
-      [edit(".agent/PROMPT.md")],
+      [edit(".agent/PROMPT.local.md")],
       [edit(".agent/metrics.jsonl")],
       [edit(".agent/tasks/T-0\n01.md")],
       [edit(`.agent/tasks/T-${"0".repeat(80)}.md`)],

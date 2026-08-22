@@ -10,6 +10,8 @@
  *   watch    status を一定間隔で再描画し続ける: watch [--interval <秒>]
  *   list     タスク一覧
  *   add      タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps T-001,T-002] [--model m]
+ *   init     `.agent/` の雛形を配置する: init [--yes] [--upgrade]
+ *   doctor   実行環境の自己診断(副作用なし)
  *   version  ccloop 自身のバージョン
  *
  * グローバルオプション:
@@ -21,11 +23,21 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
+import { checkNodeVersion, cmdDoctor } from "./doctor.ts";
+import { checkSchemaVersion, cmdInit, ensureAgentDir } from "./init.ts";
+import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
 import { cmdAdd, cmdList, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
 import { cmdWatch } from "./watch.ts";
 
-const USAGE = "使い方: ccloop [--repo <path>] <run|status|watch|list|add|version> [引数...]";
+// checkNodeVersion の実体は doctor.ts(doctor の 1 項目でもあるため)。
+// 起動時チェックとしてここでも使うので、CLI の API としてそのまま再公開する。
+export { checkNodeVersion };
+
+const USAGE =
+  "使い方: ccloop [--repo <path>] <run|status|watch|list|add|init|doctor|version> [引数...]";
+
+/** `.agent/` が揃っていることを前提とするサブコマンド(init / doctor / version を除く) */
+export const REPO_COMMANDS: readonly string[] = ["run", "status", "watch", "list", "add"];
 
 /**
  * ccloop 自身のバージョン。インストール先にも `package.json` を同梱する前提で、
@@ -40,24 +52,6 @@ export function readVersion(libDir: string = import.meta.dirname): string {
   } catch {
     return "unknown";
   }
-}
-
-/**
- * Node の型ストリップ(.ts の直接実行)が使えるバージョンか検査する(純粋)。
- * 使えないなら案内メッセージ、問題なければ null。
- * 型ストリップが完全に無効な Node ではこのファイル自体を読み込めないため、この検査は
- * 「読み込めたが挙動が怪しいバージョン」への保険であり、最後の砦ではない。
- */
-export function checkNodeVersion(version: string = process.versions.node): string | null {
-  const parts = version.split(".").map((n) => Number.parseInt(n, 10));
-  const major = Number.isNaN(parts[0]) ? 0 : parts[0];
-  const minor = Number.isNaN(parts[1]) ? 0 : parts[1];
-  if (major >= 24) return null;
-  if (major === 22 && minor >= 18) return null;
-  return (
-    `ccloop は Node.js の型ストリップを使うため Node ^22.18.0 || >=24.0.0 が必要(現在 ${version})。` +
-    "Node をアップグレードすること"
-  );
 }
 
 /**
@@ -92,6 +86,25 @@ function die(message: string): never {
   process.exit(1);
 }
 
+/** doctor 用: リポジトリを特定できなくても診断を続けられるよう、失敗を値で返す */
+function tryResolvePaths(repo: string | undefined): { paths: Paths | null; error: string | null } {
+  try {
+    return { paths: createPaths(resolveRepoRoot({ repo })), error: null };
+  } catch (err) {
+    if (err instanceof RepoRootNotFoundError) return { paths: null, error: err.message };
+    return { paths: null, error: String((err as Error).message) };
+  }
+}
+
+/** `.agent/config.json` の生データ。読めなければ空オブジェクト(schemaVersion 0 扱い) */
+function readConfigRaw(paths: Paths): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as unknown;
+  } catch {
+    return {};
+  }
+}
+
 export async function main(argv: string[]): Promise<void> {
   const versionError = checkNodeVersion();
   if (versionError !== null) die(versionError);
@@ -116,14 +129,39 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  // doctor は「動かない環境を調べる」ためのコマンドなので、リポジトリを特定できなくても
+  // 診断結果を出し切る(ここで die すると一番知りたい情報が出ない)
+  if (cmd === "doctor") {
+    const resolved = tryResolvePaths(parsed.repo);
+    process.exit(cmdDoctor({ paths: resolved.paths, repoError: resolved.error }));
+  }
+
+  let paths: Paths;
   try {
-    useRepoRoot(resolveRepoRoot({ repo: parsed.repo }));
+    paths = useRepoRoot(resolveRepoRoot({ repo: parsed.repo }));
   } catch (err) {
     if (err instanceof RepoRootNotFoundError) die(err.message);
     throw err;
   }
 
   const args = parsed.rest.slice(1);
+
+  // init は `.agent/` を用意する側なので、未配置チェックより前に処理する
+  if (cmd === "init") {
+    process.exit(await cmdInit(paths, args));
+  }
+
+  // 打ち間違いに対して `.agent/` の配置を促すのは筋が悪いので、未配置チェックより前に弾く
+  if (!REPO_COMMANDS.includes(cmd)) die(`未知のサブコマンド: ${cmd}\n${USAGE}`);
+
+  // 他のコマンドは `.agent/` が揃っていることが前提。無ければ init と同じ案内を出す
+  if (!(await ensureAgentDir(paths))) process.exit(1);
+
+  // schemaVersion の整合。ツールが古ければ全コマンド停止、config が古ければ run だけ停止する
+  const schema = checkSchemaVersion(readConfigRaw(paths), cmd);
+  if (schema.message !== null) console.error(schema.message);
+  if (!schema.ok) process.exit(1);
+
   switch (cmd) {
     case "run":
       await mainLoop();
@@ -144,8 +182,6 @@ export async function main(argv: string[]): Promise<void> {
     case "add":
       cmdAdd(args);
       break;
-    default:
-      die(`未知のサブコマンド: ${cmd}\n${USAGE}`);
   }
 }
 

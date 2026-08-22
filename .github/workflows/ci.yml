@@ -34,10 +34,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Bundle lib/ and bin/ into the feature
+      - name: Bundle lib/, bin/ and package.json into the feature
         run: |
           cp -R lib features/ccloop/lib
           cp -R bin features/ccloop/bin
+          cp package.json features/ccloop/package.json
 
       - name: Link features/ as src/ for the devcontainer CLI test convention
         # `devcontainer features test` has no option equivalent to the publish

@@ -17,10 +17,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Bundle lib/ and bin/ into the feature
+      - name: Bundle lib/, bin/ and package.json into the feature
         run: |
           cp -R lib features/ccloop/lib
           cp -R bin features/ccloop/bin
+          cp package.json features/ccloop/package.json
 
       - name: Verify feature version matches tag
         if: github.ref_type == 'tag'
