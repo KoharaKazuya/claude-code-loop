@@ -9,6 +9,8 @@
 - 結果は構造化した要約で受け取る。メインのコンテキストでファイルを大量に読まない。
 - メインの読み込みは最小限にする。Grep で該当箇所を特定してから Read の offset/limit で部分読みし、大きいファイルの全文 Read や `cat`/`head` による複数ファイルの連結読みはしない(結果が以降全ターンの履歴に載り続け、コンテキストを恒久的に膨らませる)。まとまった読み込みが必要ならサブエージェントに読ませて要約で受け取る。
 - 検証方法は変更内容とリポジトリの実態に応じて選ぶ。未検証事項は推測で埋めず明示させ、メインが確認する。
+- 実装完了後のレビューは reviewer サブエージェント(`.claude/agents/reviewer.md` は `lib/agents/reviewer.md` への
+  シンボリックリンク)で行う。
 
 ## docs/ 運用ルール
 
@@ -40,7 +42,7 @@ docs/ は今後のエージェント・人間が作業時に参照するため�
 
 ## Bash 実行の権限制約
 
-このリポジトリの Bash 権限は `lib/settings.template.json` の既定 permissions に従う。
+`ccloop run` 起動セッションの Bash 権限は `lib/settings.template.json` の既定 permissions に従う。
 `.agent/claude-settings.json` があれば、そこに追記された allow/deny がツール既定に対する
 上書き差分として適用される(deny が allow に優先)。制約の詳細(複合コマンド不可・許可コマンド一覧など)は
 `lib/prompt/PROMPT.md` の「Bash 実行の権限制約」節を参照する。

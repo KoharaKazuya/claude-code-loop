@@ -38,6 +38,20 @@ describe("settings.template.json", () => {
     }
   });
 
+  it("`.agent/claude-settings.json` 自身への Write/Edit を拒否する(セッション自身による権限拡大を防ぐ)", () => {
+    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/x");
+
+    expect(s.permissions?.deny).toContain("Write(./.agent/claude-settings.json)");
+    expect(s.permissions?.deny).toContain("Edit(./.agent/claude-settings.json)");
+  });
+
+  it("hooks のコマンドは ExperimentalWarning を抑制する", () => {
+    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/x");
+    const commands = JSON.stringify(s.hooks);
+
+    expect(commands).toContain("node --no-warnings=ExperimentalWarning");
+  });
+
   it("テンプレートが参照する hook スクリプトが実在する", () => {
     for (const hook of ["deny-ask-user", "stop-check", "worktree-create"]) {
       expect(fs.existsSync(path.join(import.meta.dirname, "hooks", `${hook}.ts`))).toBe(true);
@@ -138,5 +152,27 @@ describe("generateSettings", () => {
 
   it("利用側の追記ファイルが無くても生成できる", () => {
     expect(() => generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" })).not.toThrow();
+  });
+
+  it("生成した settings 自身と system prompt への Write/Edit を deny に追加する(自己改変の禁止)", () => {
+    const s = read(generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" }));
+
+    expect(s.permissions?.deny).toContain(`Write(/${paths.generatedSettingsPath})`);
+    expect(s.permissions?.deny).toContain(`Edit(/${paths.generatedSettingsPath})`);
+    expect(s.permissions?.deny).toContain(`Write(/${paths.generatedSystemPromptPath})`);
+    expect(s.permissions?.deny).toContain(`Edit(/${paths.generatedSystemPromptPath})`);
+  });
+
+  it("利用側リポジトリが同じ deny エントリを追記しても重複しない", () => {
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(paths.agentDir, "claude-settings.json"),
+      JSON.stringify({ permissions: { deny: [`Write(/${paths.generatedSettingsPath})`] } }),
+    );
+
+    const s = read(generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" }));
+    const occurrences = (s.permissions?.deny ?? []).filter((d) => d === `Write(/${paths.generatedSettingsPath})`);
+
+    expect(occurrences).toHaveLength(1);
   });
 });

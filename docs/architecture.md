@@ -50,6 +50,12 @@ prompt / `worktrees/` は、利用側リポジトリの外、XDG state ディレ
 ディレクトリ名はリポジトリの realpath から作る `<basename>-<sha1 の先頭 8 文字>`。人間が見て分かる
 basename と、同名リポジトリ(別クローン)を取り違えないためのハッシュを組み合わせている。
 
+生成した claude settings(`claude-settings.json`)と system prompt もこの state ディレクトリ配下にあり、
+リポジトリの外にあるため git diff ではレビューされない。自律実行セッションがこれらを直接書き換えて
+自分の権限や制約を緩めることができてしまうと、`.agent/claude-settings.json` 側の deny だけでは
+防げない抜け道になるため、生成物自身の絶対パスを `permissions.deny` に動的に追加して自己改変を禁じている
+(`lib/settings.ts` の `generateSettings`)。
+
 ## 停止を Ctrl+C のみ・オンメモリにした理由
 
 `ccloop run` の停止は、実行しているプロセスへの Ctrl+C(SIGINT)の段階的なエスカレーション

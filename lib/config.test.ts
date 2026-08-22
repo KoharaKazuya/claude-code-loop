@@ -77,6 +77,13 @@ describe("normalizeConfig", () => {
     });
   });
 
+  it("worktreeDir が相対パスなら root 基準で正規化する(hook と本体で解決結果を一致させるため)", () => {
+    const config = normalizeConfig({ parallel: { worktreeDir: "../sibling-worktrees" } }, root);
+
+    expect(config.parallel.worktreeDir).toBe(path.resolve(root, "../sibling-worktrees"));
+    expect(path.isAbsolute(config.parallel.worktreeDir)).toBe(true);
+  });
+
   // 実ファイルを通す。config.json の書き間違い(parallel の位置ずれ・型違い)は
   // 既定値 1 に落ちて静かに並列実行が無効化されるため、ここで検出する
   it("実際の .agent/config.json から並列度を読み取れる", () => {

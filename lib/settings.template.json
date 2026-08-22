@@ -39,6 +39,8 @@
       "Read(/{{HOME}}/.claude/**)",
       "Read(./.env)",
       "Read(./.env.*)",
+      "Write(./.agent/claude-settings.json)",
+      "Edit(./.agent/claude-settings.json)",
       "Bash(git push*)",
       "Bash(sudo *)"
     ]
@@ -50,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CCLOOP_HOME/hooks/deny-ask-user.ts\""
+            "command": "node --no-warnings=ExperimentalWarning \"$CCLOOP_HOME/hooks/deny-ask-user.ts\""
           }
         ]
       }
@@ -60,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CCLOOP_HOME/hooks/stop-check.ts\""
+            "command": "node --no-warnings=ExperimentalWarning \"$CCLOOP_HOME/hooks/stop-check.ts\""
           }
         ]
       }
@@ -70,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CCLOOP_HOME/hooks/worktree-create.ts\""
+            "command": "node --no-warnings=ExperimentalWarning \"$CCLOOP_HOME/hooks/worktree-create.ts\""
           }
         ]
       }

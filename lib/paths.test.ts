@@ -177,11 +177,14 @@ describe("taskFileRelPath", () => {
 });
 
 describe("ccloopHome", () => {
-  it("CCLOOP_HOME が設定されていればそれを使う", () => {
-    expect(ccloopHome({ CCLOOP_HOME: "/opt/ccloop/lib" })).toBe("/opt/ccloop/lib");
-  });
-
-  it("未設定なら自分自身の置き場(lib/)を使う", () => {
-    expect(ccloopHome({})).toBe(import.meta.dirname);
+  it("常に自分自身の置き場(lib/)を返す。環境変数 CCLOOP_HOME は見ない", () => {
+    const prev = process.env.CCLOOP_HOME;
+    process.env.CCLOOP_HOME = "/opt/other/lib";
+    try {
+      expect(ccloopHome()).toBe(import.meta.dirname);
+    } finally {
+      if (prev === undefined) delete process.env.CCLOOP_HOME;
+      else process.env.CCLOOP_HOME = prev;
+    }
   });
 });

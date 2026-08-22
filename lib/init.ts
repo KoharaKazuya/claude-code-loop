@@ -88,8 +88,11 @@ function planGitignore(root: string, home: string): GitignorePlan {
   let existing: string[];
   try {
     existing = fs.readFileSync(path.join(root, ".gitignore"), "utf8").split("\n").map((l) => l.trim());
-  } catch {
-    return { action: "create", lines: required };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { action: "create", lines: required };
+    // ENOENT 以外(権限エラー等)は「読めないなら書かない」を優先し、既存内容を破壊しない側へ倒す
+    console.error(`.gitignore を読めないため触らない: ${String((err as Error).message)}`);
+    return { action: "none", lines: [] };
   }
   const missing = required.filter((l) => !existing.includes(l));
   return missing.length === 0 ? { action: "none", lines: [] } : { action: "append", lines: missing };
@@ -143,8 +146,14 @@ export function applyInit(paths: Paths, plan: InitPlan): void {
   const file = path.join(paths.root, ".gitignore");
   const block = plan.gitignore.lines.join("\n") + "\n";
   if (plan.gitignore.action === "create") {
-    fs.writeFileSync(file, block);
-    return;
+    try {
+      // wx: 計画時に無かった .gitignore が実行までの間にできていても、素の writeFileSync のように
+      // truncate して既存内容を破壊しない(既存ファイル保護の最後の砦)。できていた場合は追記へ回す。
+      fs.writeFileSync(file, block, { flag: "wx" });
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
   }
   const current = fs.readFileSync(file, "utf8");
   const separator = current === "" || current.endsWith("\n") ? "" : "\n";
@@ -219,8 +228,12 @@ async function runUpgrade(paths: Paths, yes: boolean): Promise<number> {
   let raw: unknown;
   try {
     raw = JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as unknown;
-  } catch {
-    console.error(`${AGENT_DIR_NAME}/config.json を読めない。先に \`ccloop init\` を実行すること`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`${AGENT_DIR_NAME}/config.json を読めない。先に \`ccloop init\` を実行すること`);
+    } else {
+      console.error(configReadErrorMessage(err));
+    }
     return 1;
   }
   const version = readSchemaVersion(raw);
@@ -274,6 +287,16 @@ export async function ensureAgentDir(paths: Paths, home: string = ccloopHome()):
   applyInit(paths, plan);
   console.error("配置した。処理を続行する");
   return true;
+}
+
+/**
+ * `.agent/config.json` を読めた・パースできたときの案内文(doctor / init --upgrade / cli.ts の
+ * 各サブコマンドで共通)。JSON パース失敗を握りつぶして既定値へ倒すと「schemaVersion 0 が古い →
+ * init --upgrade → やっぱり読めない → init → スキップ」という出口の無いループに陥るため、
+ * パース失敗は必ずここで人間に伝えて止める。
+ */
+export function configReadErrorMessage(err: unknown): string {
+  return `${AGENT_DIR_NAME}/config.json を読めない: ${String((err as Error)?.message ?? err)}。手で修正すること`;
 }
 
 /** ツールが古い(config のほうが新しい)ときの案内 */

@@ -69,8 +69,12 @@ export function normalizeConfig(raw: unknown, root: string, env: NodeJS.ProcessE
     typeof maxSessionsRaw === "number" && Number.isFinite(maxSessionsRaw)
       ? Math.min(8, Math.max(1, Math.trunc(maxSessionsRaw)))
       : 1;
+  // 相対パスは root 基準で正規化する。hook(WorktreeCreate)と Supervisor 本体が独立に
+  // この config を読むため、cwd 依存のまま相対解決すると両者で違うパスに解決されうる。
   const worktreeDir =
-    typeof p.worktreeDir === "string" && p.worktreeDir !== "" ? p.worktreeDir : defaultWorktreeDir(root, env);
+    typeof p.worktreeDir === "string" && p.worktreeDir !== ""
+      ? path.resolve(root, p.worktreeDir)
+      : defaultWorktreeDir(root, env);
   const linkPaths = Array.isArray(p.linkPaths) ? (p.linkPaths as string[]) : ["node_modules"];
 
   const tr = isPlainObject(r.triage) ? r.triage : {};

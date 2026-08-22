@@ -191,11 +191,13 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
 
 /**
  * ccloop 自身のインストール先(`lib/` の絶対パス)。
- * ランチャー `bin/ccloop` が `CCLOOP_HOME` を渡すが、テストや直接 node 実行では未設定なので
- * このモジュールの位置から求める。
+ *
+ * 環境変数 CCLOOP_HOME は見ない。このモジュール自身の置き場(`import.meta.dirname`)が
+ * 常に唯一の正であり、`bin/ccloop` が設定する CCLOOP_HOME もここから逆算した値でしかないため
+ * (`bin/ccloop` 参照)。子プロセス(Supervisor が起動する `claude` 等)へ生成 settings の hooks
+ * コマンドが参照する CCLOOP_HOME を渡す必要がある箇所は、`ccloopHome()` の戻り値を明示的に渡す
+ * (`lib/supervisor.ts` 参照)。
  */
-export function ccloopHome(env: NodeJS.ProcessEnv = process.env): string {
-  const fromEnv = env.CCLOOP_HOME;
-  if (fromEnv !== undefined && fromEnv !== "") return path.resolve(fromEnv);
+export function ccloopHome(): string {
   return import.meta.dirname;
 }

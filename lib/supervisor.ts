@@ -3037,7 +3037,8 @@ export async function mainLoop(): Promise<void> {
     if (worktreeDirError !== null) {
       log(`fatal: worktree 置き場 ${config.parallel.worktreeDir} に書き込めない: ${worktreeDirError}`);
       log(
-        `fatal: 復旧するには次を実行する: sudo mkdir -p ${config.parallel.worktreeDir} && sudo chown node: ${config.parallel.worktreeDir}`,
+        `fatal: 復旧するには ${config.parallel.worktreeDir} の親ディレクトリの書き込み権限を確認すること` +
+          "(既定では環境変数 XDG_STATE_HOME、またはホームディレクトリ配下 ~/.local/state の権限が原因になる)",
       );
       log("fatal: タスクセッションを 1 本も起動できないため停止する");
       return;
@@ -3742,7 +3743,11 @@ export function overviewSectionLines(
   if (overview === null) {
     return { rest: "未生成(次回の探索セッションが作成する)", lines: [] };
   }
-  const when = overview.updatedAt !== "" ? overview.updatedAt : "不明";
+  // 雛形の OVERVIEW.md は updatedAt: 1970-01-01T00:00:00.000Z を初期値として持つ(init 直後、
+  // 探索セッションがまだ 1 度も更新していない状態)。これをそのまま表示すると
+  // 「1970-01-01... 時点」という紛らわしい表示になるため、未生成として扱う。
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+  const when = overview.updatedAt === EPOCH ? "(未生成)" : overview.updatedAt !== "" ? overview.updatedAt : "不明";
   const rest = `${when} 時点(完了 ${overview.completed}/${overview.total} → 現在 ${currentCompleted}/${currentTotal})`;
   const allLines = overview.body.split("\n");
   const lines =

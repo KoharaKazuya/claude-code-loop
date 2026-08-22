@@ -5,14 +5,16 @@
  * インストール時に検査しない(feature の実行順やベースイメージ次第で、その時点では
  * 揃っていないことがあるため)。代わりに実行時にここでまとめて確認する。
  *
- * doctor は**副作用を持たない**。`.agent/` が無くても勝手に配置せず、✗ と `ccloop init`
- * の案内を出すだけにする(診断のつもりで実行してリポジトリが書き換わると困るため)。
+ * doctor は**利用側リポジトリに対して副作用を持たない**(state ディレクトリは作成する)。
+ * `.agent/` が無くても勝手に配置せず、✗ と `ccloop init` の案内を出すだけにする
+ * (診断のつもりで実行してリポジトリが書き換わると困るため)。
  */
 
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfigFrom } from "./config.ts";
+import { configReadErrorMessage } from "./init.ts";
 import { compareSchemaVersion, CURRENT_SCHEMA_VERSION, readSchemaVersion } from "./migrations.ts";
 import { AGENT_DIR_NAME, ccloopHome, type Paths } from "./paths.ts";
 
@@ -30,6 +32,15 @@ export interface CommandProbe {
   ok: boolean;
   /** 標準出力の 1 行目(トリム済み)。失敗時は理由 */
   output: string;
+  /**
+   * ok=false のときの失敗の種類。"not-found": コマンド自体が起動できなかった(ENOENT 等の spawn 失敗)。
+   * "exit": コマンドは起動できたが非ゼロ終了した(≒ 実行できたが失敗した)。
+   * 両者を区別せず一律「見つからない」と表示すると、実際には存在するが失敗しているだけのコマンドの
+   * 診断を誤らせるため分ける。
+   */
+  failure?: "not-found" | "exit";
+  /** failure が "exit" のときの終了コード */
+  exitCode?: number | null;
 }
 
 export type ProbeFn = (command: string, args: string[]) => CommandProbe;
@@ -37,10 +48,15 @@ export type ProbeFn = (command: string, args: string[]) => CommandProbe;
 /** `<command> <args>` を実行して 1 行目を取る。存在しない・失敗したら ok=false */
 export const probeCommand: ProbeFn = (command, args) => {
   const res = spawnSync(command, args, { encoding: "utf8" });
-  if (res.error !== undefined) return { ok: false, output: res.error.message };
+  if (res.error !== undefined) return { ok: false, output: res.error.message, failure: "not-found" };
   if (res.status !== 0) {
     const stderr = (res.stderr ?? "").trim().split("\n")[0] ?? "";
-    return { ok: false, output: stderr === "" ? `終了コード ${String(res.status)}` : stderr };
+    return {
+      ok: false,
+      output: stderr === "" ? `終了コード ${String(res.status)}` : stderr,
+      failure: "exit",
+      exitCode: res.status,
+    };
   }
   return { ok: true, output: ((res.stdout ?? "").trim().split("\n")[0] ?? "").trim() };
 };
@@ -87,7 +103,7 @@ function checkAgentDir(paths: Paths | null): CheckResult {
   try {
     raw = JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as unknown;
   } catch (err) {
-    return { name, ok: false, detail: `config.json を読めない: ${String((err as Error).message)}`, required: true };
+    return { name, ok: false, detail: configReadErrorMessage(err), required: true };
   }
   const version = readSchemaVersion(raw);
   switch (compareSchemaVersion(version)) {
@@ -156,7 +172,11 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
   results.push({
     name: `claude (${claudeCommand})`,
     ok: claude.ok,
-    detail: claude.ok ? claude.output : `見つからない: ${claude.output}`,
+    detail: claude.ok
+      ? claude.output
+      : claude.failure === "exit"
+        ? `実行できたが失敗した(exit ${String(claude.exitCode ?? "?")}): ${claude.output}`
+        : `見つからない: ${claude.output}`,
     required: true,
   });
   results.push(checkAgentDir(opts.paths));

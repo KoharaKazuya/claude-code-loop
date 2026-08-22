@@ -77,6 +77,23 @@ export function mergeSettings(base: Settings, overlay: unknown): Settings {
   };
 }
 
+/**
+ * 生成した settings 自身と生成した system prompt への自己改変を禁じる deny エントリ。
+ *
+ * これらはリポジトリの外(state ディレクトリ)にあるため git diff でレビューされない。
+ * `.agent/claude-settings.json` の deny だけでは、そこに書かれた permissions.deny 自体を
+ * 上書きする経路(生成 settings ファイルへの直接の Write/Edit)を塞げないため、絶対パスで
+ * 個別に拒否する。`//abs/path` はテンプレートの `Read(/{{HOME}}/...)` と同じ表記
+ * (claude の permission 記法における絶対パス接頭辞 `/` + 絶対パス)。
+ */
+function selfProtectDenyEntries(paths: Paths): string[] {
+  const entries: string[] = [];
+  for (const target of [paths.generatedSettingsPath, paths.generatedSystemPromptPath]) {
+    entries.push(`Write(/${target})`, `Edit(/${target})`);
+  }
+  return entries;
+}
+
 /** 利用側リポジトリの追記用 settings(`.agent/claude-settings.json`)。無ければ null */
 export function readRepoSettings(paths: Paths): unknown {
   const file = path.join(paths.agentDir, "claude-settings.json");
@@ -89,7 +106,7 @@ export function readRepoSettings(paths: Paths): unknown {
 
 /**
  * 自律実行セッション用の settings を生成し、`paths.generatedSettingsPath` へ書き出す。
- * 書き出したパスを返す。`ccloop run` / `once` の起動時に 1 回だけ呼べばよい。
+ * 書き出したパスを返す。`ccloop run` の起動時に 1 回だけ呼べばよい。
  */
 export function generateSettings(
   paths: Paths,
@@ -98,6 +115,10 @@ export function generateSettings(
   const templateText = fs.readFileSync(settingsTemplatePath(opts.home ?? ccloopHome()), "utf8");
   const base = renderSettingsTemplate(templateText, opts.homeDir ?? os.homedir());
   const merged = mergeSettings(base, readRepoSettings(paths));
+  merged.permissions = {
+    ...merged.permissions,
+    deny: appendUnique(stringList(merged.permissions?.deny), selfProtectDenyEntries(paths)),
+  };
   fs.mkdirSync(path.dirname(paths.generatedSettingsPath), { recursive: true });
   const tmp = `${paths.generatedSettingsPath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n");

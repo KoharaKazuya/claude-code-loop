@@ -15,7 +15,8 @@
  *   version  ccloop 自身のバージョン
  *
  * グローバルオプション:
- *   --repo <path>  対象リポジトリのルート(既定: 環境変数 CCLOOP_REPO、無ければ cwd から上方探索)
+ *   --repo <path>  対象リポジトリのルート(既定: 環境変数 CCLOOP_REPO、無ければ cwd から上方探索)。
+ *                  サブコマンドの前でも後ろでも指定できる(例: `ccloop status --repo <path>`)。
  *
  * ランチャーは bin/ccloop。`node "$CCLOOP_HOME/cli.ts"` としてこのファイルを直接実行する
  * (Node の型ストリップを使うため、ビルド成果物は無い)。
@@ -24,7 +25,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { checkNodeVersion, cmdDoctor } from "./doctor.ts";
-import { checkSchemaVersion, cmdInit, ensureAgentDir } from "./init.ts";
+import { checkSchemaVersion, cmdInit, configReadErrorMessage, ensureAgentDir } from "./init.ts";
 import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
 import { cmdAdd, cmdList, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
 import { cmdWatch } from "./watch.ts";
@@ -34,7 +35,8 @@ import { cmdWatch } from "./watch.ts";
 export { checkNodeVersion };
 
 const USAGE =
-  "使い方: ccloop [--repo <path>] <run|status|watch|list|add|init|doctor|version> [引数...]";
+  "使い方: ccloop [--repo <path>] <run|status|watch|list|add|init|doctor|version> [引数...]" +
+  "(--repo はサブコマンドの後ろでも指定可)";
 
 /** `.agent/` が揃っていることを前提とするサブコマンド(init / doctor / version を除く) */
 export const REPO_COMMANDS: readonly string[] = ["run", "status", "watch", "list", "add"];
@@ -55,13 +57,15 @@ export function readVersion(libDir: string = import.meta.dirname): string {
 }
 
 /**
- * グローバルオプション `--repo <path>` をサブコマンドより前から取り除く(純粋)。
- * サブコマンド以降の引数はサブコマンド自身が解釈するため、そのまま残す。
+ * グローバルオプション `--repo <path>` を argv 全体から取り除く(純粋)。
+ * サブコマンドが独自に `--repo` を使うことは無いため、サブコマンドの前でも後ろでも
+ * 受け付ける(`ccloop status --repo <path>` のように後置しても効く)。複数回指定されたら
+ * 最後の指定を使う。それ以外の引数は元の順序のままサブコマンドへ渡す。
  */
 export function splitGlobalOptions(argv: string[]): { repo?: string; rest: string[] } {
   let repo: string | undefined;
-  let i = 0;
-  for (; i < argv.length; i++) {
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--repo") {
       const value = argv[i + 1];
@@ -74,9 +78,8 @@ export function splitGlobalOptions(argv: string[]): { repo?: string; rest: strin
       repo = a.slice("--repo=".length);
       continue;
     }
-    break;
+    rest.push(a);
   }
-  const rest = argv.slice(i);
   return repo === undefined ? { rest } : { repo, rest };
 }
 
@@ -96,13 +99,15 @@ function tryResolvePaths(repo: string | undefined): { paths: Paths | null; error
   }
 }
 
-/** `.agent/config.json` の生データ。読めなければ空オブジェクト(schemaVersion 0 扱い) */
-function readConfigRaw(paths: Paths): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as unknown;
-  } catch {
-    return {};
-  }
+/**
+ * `.agent/config.json` の生データ。読めない・パースできなければ投げる(呼び出し側で
+ * `configReadErrorMessage` を使ってエラー終了させる)。
+ * 以前はここで失敗を空オブジェクトに倒していたが、それだと壊れた config.json が
+ * schemaVersion 0(古い)として扱われ、`init --upgrade` → 書き込めない → 変わらず古い
+ * という出口の無いループになっていた。
+ */
+export function readConfigRaw(paths: Paths): unknown {
+  return JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as unknown;
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -157,8 +162,16 @@ export async function main(argv: string[]): Promise<void> {
   // 他のコマンドは `.agent/` が揃っていることが前提。無ければ init と同じ案内を出す
   if (!(await ensureAgentDir(paths))) process.exit(1);
 
+  // config.json のパース失敗はここで確定させる(既定値に倒すと出口の無いループになるため)
+  let configRaw: unknown;
+  try {
+    configRaw = readConfigRaw(paths);
+  } catch (err) {
+    die(configReadErrorMessage(err));
+  }
+
   // schemaVersion の整合。ツールが古ければ全コマンド停止、config が古ければ run だけ停止する
-  const schema = checkSchemaVersion(readConfigRaw(paths), cmd);
+  const schema = checkSchemaVersion(configRaw, cmd);
   if (schema.message !== null) console.error(schema.message);
   if (!schema.ok) process.exit(1);
 

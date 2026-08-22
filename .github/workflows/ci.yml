@@ -35,8 +35,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Bundle lib/, bin/ and package.json into the feature
+        # Tests aren't part of the distributed tool, so exclude *.test.ts and the vitest
+        # setup file from the copy.
         run: |
-          cp -R lib features/ccloop/lib
+          rsync -a --exclude='*.test.ts' --exclude='test-setup.ts' lib/ features/ccloop/lib/
           cp -R bin features/ccloop/bin
           cp package.json features/ccloop/package.json
 

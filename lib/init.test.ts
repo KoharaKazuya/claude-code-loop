@@ -6,6 +6,7 @@ import {
   applyInit,
   checkSchemaVersion,
   cmdInit,
+  configReadErrorMessage,
   formatInitPlan,
   isAgentDirReady,
   isInitPlanEmpty,
@@ -93,6 +94,28 @@ describe("planInit / applyInit", () => {
     expect(fs.readFileSync(path.join(repo, ".gitignore"), "utf8")).toBe("node_modules\n.agent/**/*.tmp\n");
   });
 
+  it(".gitignore が ENOENT 以外の理由で読めない場合は触らない(既存内容の破壊を避ける)", () => {
+    // ディレクトリにして EISDIR を起こし、パーミッションエラー等の「ENOENT 以外」を模す
+    fs.mkdirSync(path.join(repo, ".gitignore"));
+
+    const plan = planInit(paths, HOME);
+
+    expect(plan.gitignore).toEqual({ action: "none", lines: [] });
+  });
+
+  it("計画時には無かった .gitignore が適用時にできていても、素の writeFileSync のように truncate せず追記へ回る", () => {
+    const plan = planInit(paths, HOME);
+    expect(plan.gitignore.action).toBe("create");
+    // 計画後、適用前に横から .gitignore ができたケースを模す
+    fs.writeFileSync(path.join(repo, ".gitignore"), "existing-line\n");
+
+    applyInit(paths, plan);
+
+    const text = fs.readFileSync(path.join(repo, ".gitignore"), "utf8");
+    expect(text).toContain("existing-line");
+    expect(text).toContain(".agent/**/*.tmp");
+  });
+
   it("2 回目の init は書くものが無い計画になる(冪等)", () => {
     applyInit(paths, planInit(paths, HOME));
 
@@ -171,6 +194,22 @@ describe("cmdInit", () => {
 
   it("--upgrade は config.json が無ければ 1 を返す", async () => {
     expect(await cmdInit(paths, ["--upgrade", "--yes"], HOME)).toBe(1);
+  });
+
+  it("--upgrade は config.json が壊れていれば「手で修正すること」の案内で 1 を返す", async () => {
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.writeFileSync(paths.configPath, "{ broken json");
+
+    expect(await cmdInit(paths, ["--upgrade", "--yes"], HOME)).toBe(1);
+  });
+});
+
+describe("configReadErrorMessage", () => {
+  it("エラー内容と手で修正する案内を含む", () => {
+    const message = configReadErrorMessage(new SyntaxError("Unexpected token"));
+    expect(message).toContain(".agent/config.json を読めない");
+    expect(message).toContain("Unexpected token");
+    expect(message).toContain("手で修正すること");
   });
 });
 

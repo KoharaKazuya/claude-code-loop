@@ -99,6 +99,8 @@ main への統合はセッション終了後に ccloop が自動マージで行�
   `head` `tail` `stat` `awk` `sed` `tr` `timeout` `python3`、`npx` の `tsc` 以外のサブコマンド
   (`npx vitest` 等)は許可されていない。
 - ツールの設定ディレクトリ(`~/.claude/` 配下)への読み出しも拒否される。
+- `.agent/claude-settings.json`、および生成された settings.json / system prompt(state ディレクトリ配下)への
+  Write / Edit も拒否される。これらはセッション自身が権限を広げる目的で書き換えてはならない自己改変対象のため。
 - 読み出しは Read(offset/limit)、検索は Grep / Glob、退避・書き戻しは Write ツールを優先する。
   出力を絞るときはコマンド自身のオプション(`git log --oneline -5` 等)を使う。
 - 検証は許可されているコマンドの範囲で行う。多くの場合 `npm run <script>` 経由でプロジェクト自身の

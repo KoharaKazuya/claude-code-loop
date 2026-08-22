@@ -2,7 +2,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type CheckResult, collectChecks, formatCheck, hasRequiredFailure, type ProbeFn } from "./doctor.ts";
+import {
+  type CheckResult,
+  collectChecks,
+  formatCheck,
+  hasRequiredFailure,
+  probeCommand,
+  type ProbeFn,
+} from "./doctor.ts";
 import { applyInit, planInit } from "./init.ts";
 import { createPaths, type Paths } from "./paths.ts";
 
@@ -53,6 +60,22 @@ describe("collectChecks", () => {
     expect(hasRequiredFailure(results)).toBe(true);
   });
 
+  it("claude が起動できるが非ゼロ終了なら「見つからない」ではなく実行失敗として表示する", () => {
+    applyInit(paths, planInit(paths, HOME));
+    const probe: ProbeFn = (command) =>
+      command === "git"
+        ? { ok: true, output: "git version 2.43.0" }
+        : { ok: false, output: "何か失敗した", failure: "exit", exitCode: 3 };
+
+    const results = collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe });
+
+    const claude = find(results, "claude");
+    expect(claude.ok).toBe(false);
+    expect(claude.detail).toContain("実行できたが失敗した(exit 3)");
+    expect(claude.detail).toContain("何か失敗した");
+    expect(claude.detail).not.toContain("見つからない");
+  });
+
   it("Node が古ければ ✗ になる", () => {
     applyInit(paths, planInit(paths, HOME));
 
@@ -79,6 +102,17 @@ describe("collectChecks", () => {
 
     expect(agent.ok).toBe(false);
     expect(agent.detail).toContain("ccloop を更新");
+  });
+
+  it("config.json が壊れていれば「手で修正すること」の案内を出す", () => {
+    applyInit(paths, planInit(paths, HOME));
+    fs.writeFileSync(paths.configPath, "{ broken json");
+
+    const agent = find(collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe }), ".agent/");
+
+    expect(agent.ok).toBe(false);
+    expect(agent.detail).toContain("読めない");
+    expect(agent.detail).toContain("手で修正すること");
   });
 
   it("schemaVersion が古ければ ✗ と --upgrade の案内を出す", () => {
@@ -142,6 +176,31 @@ describe("collectChecks", () => {
 
     expect(probed).toContain("my-claude");
     expect(find(results, "claude").name).toBe("claude (my-claude)");
+  });
+});
+
+describe("probeCommand", () => {
+  it("コマンド自体が存在しなければ failure: not-found", () => {
+    const result = probeCommand("ccloop-doctor-command-that-does-not-exist-xyz", []);
+
+    expect(result.ok).toBe(false);
+    expect(result.failure).toBe("not-found");
+  });
+
+  it("コマンドは起動できるが非ゼロ終了なら failure: exit と終了コードを返す", () => {
+    const result = probeCommand(process.execPath, ["-e", "process.stderr.write('boom\\n'); process.exit(3)"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.failure).toBe("exit");
+    expect(result.exitCode).toBe(3);
+    expect(result.output).toBe("boom");
+  });
+
+  it("正常終了なら ok: true", () => {
+    const result = probeCommand(process.execPath, ["-e", "console.log('1.0.0')"]);
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("1.0.0");
   });
 });
 

@@ -4,8 +4,14 @@
 //
 // タスクセッションは専用ブランチの worktree で動き、担当タスクの ID は
 // CLAUDE_AGENT_TASK_ID で渡される。「更新した」の判定は
-// 未コミットの変更、またはブランチが main から分岐して以降のコミットに
+// 未コミットの変更、またはブランチが本体の既定ブランチから分岐して以降のコミットに
 // `.agent/tasks/<ID>.md` が含まれるか、で行う。
+//
+// 「既定ブランチ」の決め方: ブランチ名を `main` に決め打ちすると、既定ブランチが `master` 等の
+// リポジトリでは常に merge-base が求まらず fail-open(hook が事実上無効)になってしまう。
+// そこで、hook には必ず渡ってくる環境変数 CCLOOP_REPO(本体ワークツリーのパス)で実際に
+// チェックアウトされているブランチ名を取得し、それを基準にする。取得できなければ upstream
+// (`@{u}`)へフォールバックし、それも失敗したときだけ従来どおり fail-open する。
 import { execFileSync } from "node:child_process";
 import { readStdinJson } from "./stdin.ts";
 import { taskFileRelPath } from "../paths.ts";
@@ -29,12 +35,33 @@ function git(args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
+/**
+ * merge-base の基準にする既定ブランチを決める(export はテスト用)。
+ * ① CCLOOP_REPO で実際にチェックアウトされているブランチ名(main / master 等を決め打ちしない)
+ * ② それが取れなければ upstream(@{u})
+ * のどちらかで merge-base を求める。両方失敗したら例外を投げ、呼び出し側で fail-open させる。
+ */
+export function resolveMergeBase(git: (args: string[]) => string, env: NodeJS.ProcessEnv = process.env): string {
+  const repo = env.CCLOOP_REPO;
+  if (typeof repo === "string" && repo !== "") {
+    try {
+      const branch = execFileSync("git", ["-C", repo, "symbolic-ref", "--short", "HEAD"], {
+        encoding: "utf8",
+      }).trim();
+      if (branch !== "") return git(["merge-base", "HEAD", branch]).trim();
+    } catch {
+      // CCLOOP_REPO が detached HEAD 等でブランチ名を取れない場合は upstream へフォールバック
+    }
+  }
+  return git(["merge-base", "HEAD", "@{u}"]).trim();
+}
+
 let changed: boolean;
 try {
   if (git(["status", "--porcelain", "--", taskPath]).trim() !== "") {
     changed = true;
   } else {
-    const base = git(["merge-base", "HEAD", "main"]).trim();
+    const base = resolveMergeBase(git);
     changed = git(["diff", "--name-only", `${base}..HEAD`, "--", taskPath]).trim() !== "";
   }
 } catch (err) {

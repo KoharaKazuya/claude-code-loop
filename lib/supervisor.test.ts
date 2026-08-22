@@ -967,6 +967,16 @@ describe("overviewSectionLines", () => {
     expect(rest).toContain("不明 時点");
   });
 
+  it("updatedAt が epoch(雛形の初期値)なら「(未生成)」と表示する", () => {
+    // lib/templates/agent/OVERVIEW.md の初期値。init 直後、探索セッションがまだ 1 度も
+    // 更新していない状態で「1970-01-01... 時点」と出るのを防ぐ。
+    const overview = { updatedAt: "1970-01-01T00:00:00.000Z", completed: 0, total: 0, body: "本文" };
+
+    const { rest } = overviewSectionLines(overview, 61, 82);
+
+    expect(rest).toContain("(未生成) 時点");
+  });
+
   it("本文が maxLines を超える場合は先頭 maxLines 行 + 省略メッセージにする", () => {
     const body = ["1行目", "2行目", "3行目", "4行目", "5行目", "6行目", "7行目", "8行目"].join("\n");
     const overview = { updatedAt: "2026-08-10T03:00:00.000Z", completed: 59, total: 82, body };
@@ -2540,9 +2550,12 @@ describe("permissionDenialLines", () => {
 });
 
 describe("appendUncommittedDiffRecord", () => {
+  // patchFile は実際には state ディレクトリ配下の絶対パス(lib/paths.ts の patchesDir 参照。
+  // `.agent/` 配下ではない)。フィクスチャもそれに合わせる。
+  const PATCH_FILE = "/home/node/.local/state/ccloop/repo-a1b2c3d4/patches/T-001-20260815T000000Z.patch";
   const rec = {
     at: "2026-08-15T00:00:00.000Z",
-    patchFile: ".agent/patches/T-001-20260815T000000Z.patch",
+    patchFile: PATCH_FILE,
     paths: ["src/a.ts", "src/b.ts"],
   };
 
@@ -2559,8 +2572,8 @@ describe("appendUncommittedDiffRecord", () => {
   it("退避先のパッチと復元コマンドを記載する", () => {
     const result = appendUncommittedDiffRecord("既存の本文", rec);
 
-    expect(result).toContain("`.agent/patches/T-001-20260815T000000Z.patch`");
-    expect(result).toContain("git apply .agent/patches/T-001-20260815T000000Z.patch");
+    expect(result).toContain(`\`${PATCH_FILE}\``);
+    expect(result).toContain(`git apply ${PATCH_FILE}`);
   });
 
   it("見出しが既にある本文にはエントリのみ末尾に追加し既存エントリを保持する", () => {
@@ -2647,10 +2660,10 @@ describe("dirtyPathsOutsideAgent", () => {
 });
 
 /** テスト用の git リポジトリを 1 つ作る(グローバルの hook / 署名設定から隔離する) */
-function initTestRepo(prefix: string): { dir: string; hooksDir: string } {
+function initTestRepo(prefix: string, branch = "main"): { dir: string; hooksDir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
   const hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-hooks-`));
-  execFileSync("git", ["init", "-b", "main"], { cwd: dir });
+  execFileSync("git", ["init", "-b", branch], { cwd: dir });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
   execFileSync("git", ["config", "core.hooksPath", hooksDir], { cwd: dir });
@@ -2723,24 +2736,31 @@ describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
   const script = path.resolve(import.meta.dirname, "hooks", "stop-check.ts");
   let dir: string;
   let hooksDir: string;
+  let wt: string;
 
   beforeEach(() => {
     ({ dir, hooksDir } = initTestRepo("supervisor-test-stop-check"));
     writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "ready" }, "本文"));
     execFileSync("git", ["add", "-A"], { cwd: dir });
     execFileSync("git", ["commit", "-m", "init"], { cwd: dir });
-    execFileSync("git", ["checkout", "-b", "agent/T-001"], { cwd: dir });
+    // 実際の Supervisor と同じく、タスクセッションは本体(dir, CCLOOP_REPO が指す先)とは
+    // 別の worktree で動く。本体側を main のままにしておかないと、既定ブランチの判定
+    // (CCLOOP_REPO の symbolic-ref)を正しく検査できない。
+    wt = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-stop-check-wt-"));
+    fs.rmdirSync(wt);
+    execFileSync("git", ["worktree", "add", "-b", "agent/T-001", wt, "main"], { cwd: dir });
   });
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.rmSync(wt, { recursive: true, force: true });
   });
 
   /** hook を子プロセスで実行する。env は Supervisor が渡す環境変数のみを明示的に与える */
   function runHook(
     env: Record<string, string>,
-    input: Record<string, unknown> = { cwd: dir },
+    input: Record<string, unknown> = { cwd: wt },
   ): { status: number | null; stderr: string } {
     const base = { ...process.env };
     delete base.CLAUDE_AGENT_SESSION_KIND;
@@ -2748,13 +2768,13 @@ describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
     const res = spawnSync(process.execPath, [script], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...base, ...env },
+      env: { ...base, CCLOOP_REPO: dir, ...env },
     });
     return { status: res.status, stderr: res.stderr };
   }
 
   it("stop_hook_active なら何もせず許可する", () => {
-    expect(runHook({ CLAUDE_AGENT_TASK_ID: "T-001" }, { cwd: dir, stop_hook_active: true }).status).toBe(0);
+    expect(runHook({ CLAUDE_AGENT_TASK_ID: "T-001" }, { cwd: wt, stop_hook_active: true }).status).toBe(0);
   });
 
   it("タスク ID が渡されていない(対話セッション)なら許可する", () => {
@@ -2774,14 +2794,14 @@ describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
   });
 
   it("タスクファイルに未コミットの変更があれば許可する", () => {
-    writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
+    writeTaskFile(wt, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
 
     expect(runHook({ CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" }).status).toBe(0);
   });
 
   it("ブランチ上でタスクファイルをコミット済みなら許可する", () => {
-    writeTaskFile(dir, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
-    execFileSync("git", ["commit", "-am", "タスクを完了する"], { cwd: dir });
+    writeTaskFile(wt, "T-001", serializeFrontmatter({ status: "completed" }, "本文"));
+    execFileSync("git", ["commit", "-am", "タスクを完了する"], { cwd: wt });
 
     expect(runHook({ CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" }).status).toBe(0);
   });
@@ -2789,10 +2809,37 @@ describe("stop-check hook (lib/hooks/stop-check.ts)", () => {
   it("git で判定できない場所では終了を許可する(fail-open)", () => {
     const res = runHook(
       { CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-001" },
-      { cwd: path.join(dir, "does-not-exist") },
+      { cwd: path.join(wt, "does-not-exist") },
     );
 
     expect(res.status).toBe(0);
+  });
+
+  it("既定ブランチが master のリポジトリでも判定できる(main を決め打ちしない)", () => {
+    const { dir: masterDir, hooksDir: masterHooksDir } = initTestRepo("supervisor-test-stop-check-master", "master");
+    writeTaskFile(masterDir, "T-002", serializeFrontmatter({ status: "ready" }, "本文"));
+    execFileSync("git", ["add", "-A"], { cwd: masterDir });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: masterDir });
+    const masterWt = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-stop-check-master-wt-"));
+    fs.rmdirSync(masterWt);
+    execFileSync("git", ["worktree", "add", "-b", "agent/T-002", masterWt, "master"], { cwd: masterDir });
+
+    try {
+      const base = { ...process.env };
+      delete base.CLAUDE_AGENT_SESSION_KIND;
+      delete base.CLAUDE_AGENT_TASK_ID;
+      const res = spawnSync(process.execPath, [script], {
+        input: JSON.stringify({ cwd: masterWt }),
+        encoding: "utf8",
+        env: { ...base, CCLOOP_REPO: masterDir, CLAUDE_AGENT_SESSION_KIND: "task", CLAUDE_AGENT_TASK_ID: "T-002" },
+      });
+
+      expect(res.status).toBe(2);
+    } finally {
+      fs.rmSync(masterDir, { recursive: true, force: true });
+      fs.rmSync(masterHooksDir, { recursive: true, force: true });
+      fs.rmSync(masterWt, { recursive: true, force: true });
+    }
   });
 });
 
