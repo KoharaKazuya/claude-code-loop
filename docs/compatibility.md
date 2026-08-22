@@ -9,21 +9,27 @@
 - **ツールが新しく `.agent/` のスキーマが古い場合**: `ccloop init --upgrade` を実行すると、
   既存の値を保ったまま新しいキーを補って `schemaVersion` を上げる。
 - **`.agent/` のスキーマがツールより新しい場合**(古い feature バージョンを使っているコンテナで、
-  新しいスキーマの `.agent/` を持つリポジトリを開いた場合など): ツールを更新する。feature の
-  メジャータグ(例: `ghcr.io/koharakazuya/claude-code-loop/ccloop:1`)を固定して使うことを推奨する。
-  メジャーバージョン内では `.agent/` のスキーマに互換性のない変更を入れない方針とすることで、
-  同じメジャータグを指している限り `.agent/` を書き換えずに追従できるようにする。
+  新しいスキーマの `.agent/` を持つリポジトリを開いた場合など): ツールを更新する(`devcontainer.json`
+  の feature 参照バージョンを上げてコンテナを再ビルドする)。メジャーバージョン内では `.agent/` の
+  スキーマに互換性のない変更を入れない方針とすることで、メジャータグ(例: `ccloop:0`)で固定している
+  利用側は `.agent/` を書き換えずに追従できる。
 
 ## feature のタグ運用
 
-`features/ccloop/devcontainer-feature.json` の `version` は `package.json` と同じ値に保ち、
-`vX.Y.Z` タグの push をトリガーに GitHub Actions(`.github/workflows/release.yml`)が publish する。
-リリースワークフローはタグのバージョンと feature の `version` が一致することを検証してから
-publish するため、この 2 箇所がずれた状態ではリリースが失敗する(ずれを検出する安全弁であり、
-手動で同期を保つ必要がある)。
+バージョンの真実は `package.json` の `version` 1 箇所とし、`features/ccloop/devcontainer-feature.json`
+の `version` と README.md の feature 参照(`ghcr.io/koharakazuya/claude-code-loop/ccloop:X.Y.Z`)は
+`scripts/sync-version.mjs` で機械的に同期する。`npm version <patch|minor|major>` の `version` フックが
+これを実行してからコミットと `vX.Y.Z` タグを作るため、通常の手順では 3 箇所がずれない。
 
-利用側は `:1` のようなメジャータグで固定して参照することを推奨する。メジャーバージョンを上げるのは
-`.agent/` のスキーマに互換性のない変更が入るときに限定する。
+ずれを検出する安全弁として `scripts/check-version.mjs` があり、CI(`.github/workflows/ci.yml`)が
+毎 push で 3 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)がタグ push 時に
+タグバージョンとの一致まで検証してから publish する。README の参照をタグと一致させる理由は、
+devcontainers/action が publish するタグは `X` / `X.Y` / `X.Y.Z` / `latest` であり、README に
+実在しないタグ(例: 0.x リリース時の `:1`)を載せてしまう事故を防ぐため。
+
+README の例は最新リリースの厳密なバージョンを示す。利用側がメジャータグ(例: `ccloop:0`)で固定して
+自動追従させることもでき、メジャーバージョンを上げるのは `.agent/` のスキーマに互換性のない変更が
+入るときに限定する。
 
 ## state.json / タスク frontmatter の後方互換方針
 

@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "oxlint --deny-warnings",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:version": "node scripts/check-version.mjs",
+    "version": "node scripts/sync-version.mjs && git add features/ccloop/devcontainer-feature.json README.md"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

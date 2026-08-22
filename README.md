@@ -32,7 +32,7 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/koharakazuya/claude-code-loop/ccloop:1": {}
+    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.1.0": {}
   }
 }
 ```
@@ -144,8 +144,8 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 `.agent/config.json` の `schemaVersion` で ccloop 本体とのスキーマ互換性を管理する。
 
 - ツールが新しく `.agent/` のスキーマが古い場合: `ccloop init --upgrade` を実行する
-- `.agent/` のスキーマがツールより新しい場合: ツールを更新する(コンテナを再ビルドする。feature の
-  メジャータグ `:1` を固定して使うことを推奨)
+- `.agent/` のスキーマがツールより新しい場合: ツールを更新する(`devcontainer.json` の feature 参照バージョンを最新リリースに上げて
+  コンテナを再ビルドする)
 
 詳細は [docs/compatibility.md](docs/compatibility.md) を参照。
 
@@ -169,10 +169,15 @@ npm test
 を参照)。feature 自体の動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと
 同じ手順)。
 
-リリースは `package.json` と `features/ccloop/devcontainer-feature.json` の `version` を同じ値に
-上げてコミットし、`vX.Y.Z` タグを push する。GitHub Actions(`.github/workflows/release.yml`)が
-タグバージョンと feature バージョンの一致を検証したうえで `lib/` と `bin/` を feature にバンドルし、
-GHCR へ publish する。
+リリースは `npm version <patch|minor|major>` を実行する。`package.json` の `version` が更新された
+あと、`version` フック(`scripts/sync-version.mjs`)が `features/ccloop/devcontainer-feature.json` の
+`version` と README.md 中の ccloop feature 参照バージョンを同期し、コミットと `vX.Y.Z` タグの作成まで
+1 コマンドで完結する。あとは `git push --follow-tags` するだけでよい。3 ファイルを手で編集しては
+いけない(`scripts/sync-version.mjs` が上書きする)。
+
+`scripts/check-version.mjs` が 3 箇所のバージョン一致を検証する。CI(`.github/workflows/ci.yml`)は
+push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は `vX.Y.Z` タグ push 時に
+タグバージョンとの一致まで検証したうえで `lib/` と `bin/` を feature にバンドルし、GHCR へ publish する。
 
 ## ドキュメント
 

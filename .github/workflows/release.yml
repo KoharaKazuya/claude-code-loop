@@ -26,16 +26,11 @@ jobs:
           cp package.json features/ccloop/package.json
 
       - name: Verify tag, feature and package versions all match
+        # scripts/check-version.mjs はルートの package.json / features/ccloop/devcontainer-feature.json に
+        # 加えて README.md の ccloop feature 参照バージョンも検査する(前段の Bundle ステップで
+        # features/ccloop/package.json がコピーされるが、これはルートの package.json とは無関係)。
         if: github.ref_type == 'tag'
-        run: |
-          tag_version="${GITHUB_REF_NAME#v}"
-          feature_version="$(node -e "console.log(require('./features/ccloop/devcontainer-feature.json').version)")"
-          package_version="$(node -e "console.log(require('./package.json').version)")"
-          if [ "${tag_version}" != "${feature_version}" ] || [ "${tag_version}" != "${package_version}" ]; then
-            echo "error: version mismatch - tag (${tag_version}), features/ccloop/devcontainer-feature.json (${feature_version}), package.json (${package_version})" >&2
-            exit 1
-          fi
-          echo "version OK: ${tag_version}"
+        run: node scripts/check-version.mjs --expect "${GITHUB_REF_NAME#v}"
 
       - name: Publish feature
         uses: devcontainers/action@v1
