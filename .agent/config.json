@@ -1,0 +1,27 @@
+{
+  "claudeCommand": "claude",
+  "model": "opus",
+  "escalation": {
+    "model": "claude-fable-5",
+    "afterRetries": 2
+  },
+  "permissionMode": "auto",
+  "maxRetries": 3,
+  "taskTimeoutMs": 2400000,
+  "maxTurns": 150,
+  "rateLimit": {
+    "backoffMs": 300000
+  },
+  "explore": {
+    "enabled": true,
+    "minIntervalMs": 3600000
+  },
+  "triage": {
+    "enabled": true,
+    "model": "haiku"
+  },
+  "idlePollMs": 60000,
+  "parallel": {
+    "maxSessions": 4
+  }
+}
