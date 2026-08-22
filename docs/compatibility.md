@@ -32,6 +32,13 @@ README の例は最新リリースの厳密なバージョンを示す。利用�
 自動追従させることもでき、メジャーバージョンを上げるのは `.agent/` のスキーマに互換性のない変更が
 入るときに限定する。
 
+## `.agent/` 記録ファイルの ID 形式の互換方針
+
+`.agent/tasks/` `.agent/decisions/` `.agent/human-review/` の ID(= ファイル名)は連番と
+日時 + slug(`<prefix>-<YYYYMMDD>-<HHMM>-<slug>`)の 2 形式が混在しうる。両形式とも読み続けられ、
+新規作成されるファイルは常に新形式になる。形式の混在自体はスキーマの変更ではないため
+`schemaVersion` は上げない。
+
 ## state.json / タスク frontmatter の後方互換方針
 
 `state.json`(実行時状態、リポジトリ外)とタスク/決定/Human Review の frontmatter

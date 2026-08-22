@@ -20,9 +20,6 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 - コミットは従来どおり行う。メッセージは日本語、push はしない。
 - ブランチ操作(`git checkout` / `git switch` / `git merge` / `git branch`)はしない。ccloop の
   担当であり、勝手に動かすと自動マージが壊れる。
-- 新規に作る `D-`(decisions)/ `HR-`(human-review)の ID は、マージ時に main 側の既存 ID と衝突すると
-  機械的に改番されることがある。本文から ID を参照するのは同一セッション内で自分が作ったファイルに留めること
-  (改番時は参照ごと機械的に書き換えられるため整合が保たれる)。
 - worktree はセッション終了後に削除される。コミットしなかった変更は状態ディレクトリにパッチとして
   退避され、退避先のパスがタスクの `## 試行履歴` に記録される。**成果を残したいなら必ずコミットすること。**
 - マージがコンフリクトしたときは worktree とブランチが残され、次の試行が「衝突解消セッション」として
@@ -149,7 +146,7 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 3. 実装が完了したら **reviewer サブエージェント**(ツールが定義し `--agents` で注入済み。
    `subagent_type: reviewer` で起動できる)にレビューさせ、指摘に対応する
 4. 終了前に必ず:
-   - 担当タスクファイル(`.agent/tasks/T-NNN.md`)の `status` を更新する(`completed` / `blocked` / `failed` /
+   - 担当タスクファイル(`.agent/tasks/<ID>.md`)の `status` を更新する(`completed` / `blocked` / `failed` /
      未完了で続きがあるなら `ready` に戻して `note` に進捗を書く)
    - 人間の入力待ちで何もできずに終わるセッションは、`status` を `ready` に戻すだけでなく
      `snoozeUntil`(目安は数時間後)も設定してから終える。理由と復帰条件は `## 試行履歴` に書く
@@ -181,22 +178,35 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 ## 記録ファイルの形式(1 トピック 1 ファイル)
 
 tasks / decisions / human-review は `.agent/<種類>/<ID>.md` に 1 件 1 ファイルで記録する。
-ファイル名(拡張子除く)が ID そのもの。ID は既存ファイル(`.agent/archive/` 内も含む)の
-最大番号 + 1 で採番する(タスクは `T-NNN`、判断は `D-YYYYMMDD-NN`、Review は `HR-YYYYMMDD-NN`、
-NN は 2 桁ゼロ埋め)。frontmatter はフラットな `key: value` とインライン配列 `[a, b]` のみで、
-複数行の値は使わない(詳細は本文に書く)。日本語や記号を含む文字列は二重引用符で囲む。
+ファイル名(拡張子除く)が ID そのもの。ID の形式は `<prefix>-<YYYYMMDD>-<HHMM>-<slug>`(タスクは
+`T-`、判断は `D-`、Review は `HR-`)。
+
+- `YYYYMMDD-HHMM` は作成時刻(UTC)。`createdAt` に書く ISO 8601 文字列の日付部分のハイフンと時刻部分の
+  コロンを除き、区切りの `T` を `-` にしたもの(秒以下は切り捨てる)。例:
+  `2026-01-01T00:00:00.000Z` → `20260101-0000`(`node -e "console.log(new Date().toISOString())"` で
+  取得した実測値を使う)。
+- slug は内容を表す英語の名詞句(3〜5 語目安、`^[a-z0-9]+(?:-[a-z0-9]+)*$`、最大 40 文字)。状態や結果は
+  含めない(status で表す)。日本語・記号は使わない(ブランチ名 `agent/<taskId>` や grep での扱いやすさの
+  ため)。一度付けた slug は変更しない(本文からの参照が壊れるため)。
+- `ls` の辞書順がそのまま作成順になる(decisions の直近 10 件ローテーションはこの前提で動く)。ただし
+  これは新形式の ID 同士に限る。旧形式(`D-YYYYMMDD-NN` のような連番)のファイルが同じ日の新形式
+  ファイルと混在する場合、辞書順は厳密な時系列と一致しないことがある。
+- 同一 ID のファイルが既にある場合(`.agent/archive/` 内も含む)は末尾に `-2`, `-3`… を付ける。
+
+frontmatter はフラットな `key: value` とインライン配列 `[a, b]` のみで、複数行の値は使わない
+(詳細は本文に書く)。日本語や記号を含む文字列は二重引用符で囲む。
 
 既存ファイルを見直した結果、内容に実質的な変更がなければファイルには一切触れない(Edit/Write で
 書き直さない)。値が変わらない書き直しは Git 履歴上ただのノイズになる。
 
-タスク `.agent/tasks/T-NNN.md`:
+タスク `.agent/tasks/T-20260101-0000-short-slug.md`:
 
 ```markdown
 ---
 title: "短いタイトル"
 status: ready
 priority: 3
-dependencies: [T-000]
+dependencies: [T-20260101-0000-other-task]
 retries: 0
 model: claude-fable-5
 note: "(任意)1 行の進捗・結果・ブロック理由"
@@ -252,14 +262,14 @@ docs/、判断の経緯は `.agent/decisions/`(従来どおり)。ここには�
 - `## 試行履歴` は本文の最後のセクションとして維持する(ccloop が末尾に機械追記するため、
   後ろに別のセクションを書かない)
 
-判断 `.agent/decisions/D-YYYYMMDD-NN.md`:
+判断 `.agent/decisions/D-20260101-0000-short-slug.md`:
 
 ```markdown
 ---
 title: "判断の短いタイトル"
 reversibility: high
-review: HR-YYYYMMDD-NN
-tasks: [T-000]
+review: HR-20260101-0000-short-slug
+tasks: [T-20260101-0000-other-task]
 createdAt: 2026-01-01T00:00:00.000Z
 ---
 
@@ -275,14 +285,14 @@ createdAt: 2026-01-01T00:00:00.000Z
 発見した場合、自分で受容してよい判断なら理由とともに decision として記録し、人間の判断が
 必要なら human-review に書く。
 
-Human Review `.agent/human-review/HR-YYYYMMDD-NN.md`:
+Human Review `.agent/human-review/HR-20260101-0000-short-slug.md`:
 
 ```markdown
 ---
 title: "確認事項の短いタイトル"
 status: open
 importance: REVIEW
-tasks: [T-000]
+tasks: [T-20260101-0000-other-task]
 createdAt: 2026-01-01T00:00:00.000Z
 ---
 

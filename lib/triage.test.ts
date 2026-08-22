@@ -296,6 +296,12 @@ describe("buildTriagePrompt", () => {
     expect(prompt).toContain('"decisions"');
   });
 
+  it("task の応答項目として slug を説明する", () => {
+    const prompt = buildTriagePrompt([], []);
+    expect(prompt).toContain("`slug`");
+    expect(prompt).toContain('"slug"');
+  });
+
   it("操作用チェックボックス行はノイズとしてプロンプトに含めない", () => {
     const body = ["## 回答", "", "- [ ] 対応不要(このままクローズしてよい)", "- [x] 回答を下に書いた", "", "詳細な回答内容。"].join(
       "\n",
@@ -327,17 +333,41 @@ describe("parseTriageResponse", () => {
   it("task の判定を返し、priority をクランプする", () => {
     const text =
       '```json\n{"decisions":[{"id":"HR-20260818-01","action":"task","reason":"新規対応が必要",' +
-      '"title":"新規タスク","priority":99,"body":"詳細"}]}\n```';
+      '"title":"新規タスク","slug":"add-retry-limit","priority":99,"body":"詳細"}]}\n```';
     expect(parseTriageResponse(text, validIds)).toEqual([
       {
         id: "HR-20260818-01",
         action: "task",
         reason: "新規対応が必要",
         title: "新規タスク",
+        slug: "add-retry-limit",
         priority: 5,
         body: "詳細",
       },
     ]);
+  });
+
+  it("slug が欠落していればタイトルから生成する", () => {
+    const text =
+      '{"decisions":[{"id":"HR-20260818-01","action":"task","reason":"r","title":"Fix login retry"}]}';
+    expect(asTaskDecision(parseTriageResponse(text, validIds)[0]).slug).toBe("fix-login-retry");
+  });
+
+  it("slug もタイトルも slug 化できなければ既定の task にする", () => {
+    const text = '{"decisions":[{"id":"HR-20260818-01","action":"task","reason":"r","title":"日本語のタイトル"}]}';
+    expect(asTaskDecision(parseTriageResponse(text, validIds)[0]).slug).toBe("task");
+  });
+
+  it("slug が不正な形でも正規化して活かす", () => {
+    const text =
+      '{"decisions":[{"id":"HR-20260818-01","action":"task","reason":"r","title":"t","slug":"Fix Login Retry!"}]}';
+    expect(asTaskDecision(parseTriageResponse(text, validIds)[0]).slug).toBe("fix-login-retry");
+  });
+
+  it("slug が文字列でなければタイトルから生成する", () => {
+    const text =
+      '{"decisions":[{"id":"HR-20260818-01","action":"task","reason":"r","title":"Add cache layer","slug":42}]}';
+    expect(asTaskDecision(parseTriageResponse(text, validIds)[0]).slug).toBe("add-cache-layer");
   });
 
   it("priority が下限未満でも 1 にクランプする", () => {

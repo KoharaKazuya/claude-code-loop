@@ -20,7 +20,6 @@ import {
   crashResultFromError,
   denialMatchesRule,
   depSatisfied,
-  describePreResolvedRenames,
   diffInputs,
   dirtyPathsOutsideAgent,
   ensureWritableDir,
@@ -30,6 +29,7 @@ import {
   isSupervisorSourceStale,
   loadDenyRules,
   loadPermissionDenials,
+  newTaskId,
   nextStopEscalation,
   normalizeState,
   overviewSectionLines,
@@ -48,11 +48,14 @@ import {
   recordFailure,
   recordPermissionDenials,
   recoverStartupIn,
+  repoPaths,
+  resolveTaskSlug,
   retryContextSection,
   type RunningSessionState,
   runningSessionLines,
   runRotate,
   sessionDeadline,
+  setRepoPaths,
   skipMainWriteIfGitBusy,
   startupRecoveryTotal,
   statePathOf,
@@ -65,6 +68,7 @@ import {
   taskFileChangedOnBranch,
   taskFromFile,
   taskFrontmatter,
+  useRepoRoot,
   withTrailer,
 } from "./supervisor.ts";
 import {
@@ -791,12 +795,13 @@ describe("buildTaskPrompt", () => {
     expect(prompt).toContain("3 回目の試行");
   });
 
-  it("worktree の説明は常に含まれ、ブランチ名とマージ時の ID 改番に触れる", () => {
+  it("worktree の説明は常に含まれ、ブランチ名に触れる", () => {
     const prompt = buildTaskPrompt(makeConfig(), makeTask({ id: "T-042" }));
 
     expect(prompt).toContain("## 実行環境(Supervisor による機械的情報)");
     expect(prompt).toContain("agent/T-042");
-    expect(prompt).toContain("改番");
+    // ID は作成時刻 + slug で採番するため衝突せず、マージ時の改番は行わない
+    expect(prompt).not.toContain("改番");
     expect(prompt).not.toContain("## 衝突解消セッション");
   });
 
@@ -2918,29 +2923,6 @@ describe("prunePatches", () => {
   });
 });
 
-describe("describePreResolvedRenames", () => {
-  it("計画(renames)が無ければ空文字列", () => {
-    expect(describePreResolvedRenames(undefined, 0)).toBe("");
-    expect(describePreResolvedRenames(new Map(), 5)).toBe("");
-  });
-
-  it("計画があり実際に解決できていれば解決済みの文言になる", () => {
-    const renames = new Map([["D-20260816-01", "D-20260816-02"]]);
-
-    const result = describePreResolvedRenames(renames, 1);
-
-    expect(result).toBe("ID 採番衝突 1 件は先に解決済み(D-20260816-01 -> D-20260816-02)");
-  });
-
-  it("計画はあるが実際には 0 件しか解決できていなければ失敗の文言になる(実測が優先される)", () => {
-    const renames = new Map([["D-20260816-01", "D-20260816-02"]]);
-
-    const result = describePreResolvedRenames(renames, 0);
-
-    expect(result).toBe("ID 採番衝突の先行解決に失敗した(D-20260816-01 の衝突マーカーが残っている)");
-  });
-});
-
 describe("recoverStartupIn", () => {
   let dir: string;
   let hooksDir: string;
@@ -3239,5 +3221,74 @@ describe("recoverStartupIn", () => {
     const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { supervisorSourceHash?: string };
     expect(state.supervisorSourceHash).toBe(supervisorSourceHash());
     expect(state.supervisorSourceHash).not.toBe("");
+  });
+});
+
+describe("newTaskId", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    // useRepoRoot はモジュール内で共有される currentPaths を書き換えるため、他のテストへ
+    // 影響を残さないよう元の値を退避し、afterEach で必ず復元する
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-taskid-"));
+    // newTaskId は repoPaths() 経由で対象リポジトリを見るため、テスト用の一時リポジトリを注入する
+    useRepoRoot(dir);
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeTask = (relDir: string, id: string): void => {
+    const d = path.join(dir, ".agent", relDir);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, `${id}.md`), serializeFrontmatter({ status: "ready" }, "本文"));
+  };
+
+  it("日時プレフィックスと slug を繋いだ ID を作る", () => {
+    expect(newTaskId("fix-login-retry", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-fix-login-retry");
+  });
+
+  it("同じ ID のタスクが既にあれば -2 を付ける", () => {
+    writeTask("tasks", "T-20260822-0905-fix-login-retry");
+    expect(newTaskId("fix-login-retry", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-fix-login-retry-2");
+  });
+
+  it("archive 済みのタスクとも衝突させない(ローテーション後の ID 再利用を防ぐ)", () => {
+    writeTask("archive/tasks", "T-20260822-0905-fix-login-retry");
+    expect(newTaskId("fix-login-retry", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-fix-login-retry-2");
+  });
+
+  it("サフィックス付きも埋まっていれば次の番号まで進める", () => {
+    writeTask("tasks", "T-20260822-0905-fix-login-retry");
+    writeTask("archive/tasks", "T-20260822-0905-fix-login-retry-2");
+    expect(newTaskId("fix-login-retry", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-fix-login-retry-3");
+  });
+
+  it("旧形式のタスクが残っていても新形式で採番する", () => {
+    writeTask("tasks", "T-001");
+    writeTask("archive/tasks", "T-042");
+    expect(newTaskId("drop-serial-ids", "2026-08-22T09:05:31.123Z")).toBe("T-20260822-0905-drop-serial-ids");
+  });
+});
+
+describe("resolveTaskSlug", () => {
+  it("有効な --slug 指定があればそのまま使う", () => {
+    expect(resolveTaskSlug("タイトルは無視される", "fix-login-retry")).toBe("fix-login-retry");
+  });
+
+  it("不正な --slug 指定は throw する", () => {
+    expect(() => resolveTaskSlug("タイトル", "Fix Login")).toThrow(/--slug/);
+  });
+
+  it("--slug 未指定なら title から生成する", () => {
+    expect(resolveTaskSlug("Fix login retry", undefined)).toBe("fix-login-retry");
+  });
+
+  it("--slug 未指定かつ日本語だけの title なら既定値 task にフォールバックする", () => {
+    expect(resolveTaskSlug("タスクの整理", undefined)).toBe("task");
   });
 });
