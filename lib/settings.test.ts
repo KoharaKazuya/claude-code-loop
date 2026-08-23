@@ -3,34 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPaths, type Paths } from "./paths.ts";
-import {
-  generateSettings,
-  mergeSettings,
-  renderSettingsTemplate,
-  settingsTemplatePath,
-  type Settings,
-} from "./settings.ts";
+import { generateSettings, mergeSettings, settingsTemplatePath, type Settings } from "./settings.ts";
 
 const TEMPLATE_TEXT = fs.readFileSync(settingsTemplatePath(import.meta.dirname), "utf8");
 
-describe("renderSettingsTemplate", () => {
-  it("{{HOME}} をホームディレクトリで置き換える(絶対パス接頭辞 // になる)", () => {
-    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/someone");
-
-    expect(s.permissions?.deny).toContain("Read(//home/someone/.claude/**)");
-    expect(JSON.stringify(s)).not.toContain("{{HOME}}");
-  });
-
-  it("JSON として壊れる文字を含むホームでもパースできる", () => {
-    const s = renderSettingsTemplate(TEMPLATE_TEXT, '/home/a"b\\c');
-
-    expect(s.permissions?.deny).toContain('Read(//home/a"b\\c/.claude/**)');
-  });
-});
-
 describe("settings.template.json", () => {
   it("hooks のコマンドは $CCLOOP_HOME 配下の .ts を指す(リポジトリ外のツールを実行するため)", () => {
-    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/x");
+    const s = JSON.parse(TEMPLATE_TEXT) as Settings;
     const commands = JSON.stringify(s.hooks);
 
     for (const hook of ["deny-ask-user", "stop-check", "worktree-create"]) {
@@ -38,15 +17,14 @@ describe("settings.template.json", () => {
     }
   });
 
-  it("`.agent/claude-settings.json` 自身への Write/Edit を拒否する(セッション自身による権限拡大を防ぐ)", () => {
-    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/x");
+  it("`.agent/claude-settings.json` 自身への Edit を拒否する(セッション自身による権限拡大を防ぐ)", () => {
+    const s = JSON.parse(TEMPLATE_TEXT) as Settings;
 
-    expect(s.permissions?.deny).toContain("Write(./.agent/claude-settings.json)");
     expect(s.permissions?.deny).toContain("Edit(./.agent/claude-settings.json)");
   });
 
   it("hooks のコマンドは ExperimentalWarning を抑制する", () => {
-    const s = renderSettingsTemplate(TEMPLATE_TEXT, "/home/x");
+    const s = JSON.parse(TEMPLATE_TEXT) as Settings;
     const commands = JSON.stringify(s.hooks);
 
     expect(commands).toContain("node --no-warnings=ExperimentalWarning");
@@ -125,10 +103,10 @@ describe("generateSettings", () => {
   }
 
   it("state ディレクトリへ書き出し、そのパスを返す", () => {
-    const out = generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" });
+    const out = generateSettings(paths, { home: import.meta.dirname });
 
     expect(out).toBe(paths.generatedSettingsPath);
-    expect(read(out).permissions?.deny).toContain("Read(//home/x/.claude/**)");
+    expect(read(out).permissions?.deny).toContain("Read(~/.claude/**)");
   });
 
   it("利用側リポジトリの .agent/claude-settings.json の allow / deny を追記する", () => {
@@ -141,7 +119,7 @@ describe("generateSettings", () => {
       }),
     );
 
-    const s = read(generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" }));
+    const s = read(generateSettings(paths, { home: import.meta.dirname }));
 
     expect(s.permissions?.allow).toContain("Bash(cargo *)");
     expect(s.permissions?.deny).toContain("Bash(curl *)");
@@ -151,15 +129,13 @@ describe("generateSettings", () => {
   });
 
   it("利用側の追記ファイルが無くても生成できる", () => {
-    expect(() => generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" })).not.toThrow();
+    expect(() => generateSettings(paths, { home: import.meta.dirname })).not.toThrow();
   });
 
-  it("生成した settings 自身と system prompt への Write/Edit を deny に追加する(自己改変の禁止)", () => {
-    const s = read(generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" }));
+  it("生成した settings 自身と system prompt への Edit を deny に追加する(自己改変の禁止)", () => {
+    const s = read(generateSettings(paths, { home: import.meta.dirname }));
 
-    expect(s.permissions?.deny).toContain(`Write(/${paths.generatedSettingsPath})`);
     expect(s.permissions?.deny).toContain(`Edit(/${paths.generatedSettingsPath})`);
-    expect(s.permissions?.deny).toContain(`Write(/${paths.generatedSystemPromptPath})`);
     expect(s.permissions?.deny).toContain(`Edit(/${paths.generatedSystemPromptPath})`);
   });
 
@@ -167,11 +143,11 @@ describe("generateSettings", () => {
     fs.mkdirSync(paths.agentDir, { recursive: true });
     fs.writeFileSync(
       path.join(paths.agentDir, "claude-settings.json"),
-      JSON.stringify({ permissions: { deny: [`Write(/${paths.generatedSettingsPath})`] } }),
+      JSON.stringify({ permissions: { deny: [`Edit(/${paths.generatedSettingsPath})`] } }),
     );
 
-    const s = read(generateSettings(paths, { home: import.meta.dirname, homeDir: "/home/x" }));
-    const occurrences = (s.permissions?.deny ?? []).filter((d) => d === `Write(/${paths.generatedSettingsPath})`);
+    const s = read(generateSettings(paths, { home: import.meta.dirname }));
+    const occurrences = (s.permissions?.deny ?? []).filter((d) => d === `Edit(/${paths.generatedSettingsPath})`);
 
     expect(occurrences).toHaveLength(1);
   });
