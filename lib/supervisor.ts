@@ -3119,9 +3119,12 @@ export async function mainLoop(): Promise<void> {
 
       // clean 停止中でも、衝突解消待ちの worktree を抱えたタスクだけは例外的に起動する
       // (衝突解消はセッションを起動しないと進まないため)。selectRunnable は副作用を持つので
-      // ここでは使わず、副作用のない selectConflictResumable で選ぶ。
+      // ここでは使わず、副作用のない selectConflictResumable で選ぶ。rate limit 中は
+      // planLoopStep がどのみち起動しないため、worktree ごとの git 呼び出しも省く。
       const conflictResumable =
-        stopMode === "clean" && runningCount === 0 ? selectConflictResumable(config, conflictResumeLaunched) : [];
+        stopMode === "clean" && runningCount === 0 && rateLimitedUntilMs === null
+          ? selectConflictResumable(config, conflictResumeLaunched)
+          : [];
 
       const action = planLoopStep({
         now: new Date(),
@@ -3229,18 +3232,23 @@ export async function mainLoop(): Promise<void> {
         for (const taskId of action.taskIds) {
           const task = byId.get(taskId);
           if (task === undefined) continue; // 判断材料と実行の間でタスクが消えた場合の保険
+          // 起動の成否に関わらず記録する(起動できない状態で同じタスクを選び続けないため)
+          if (action.conflictResume === true) conflictResumeLaunched.add(taskId);
+          agentDirty = true; // 起動処理自体が main の .agent/ をコミットするため先に立てる
+          const ok = launchTaskSession(config, task);
+          if (ok) launched += 1;
+          // 起動できなかった 1 件は次の周回で選び直す(startTaskSession 側でログ済み)。
+          // ただし停止中の衝突解消は 1 回きりなので、次の周回では選び直さず停止へ進む
           if (action.conflictResume === true) {
-            // 起動の成否に関わらず記録する(起動できない状態で同じタスクを選び続けないため)
-            conflictResumeLaunched.add(taskId);
             log(
-              `停止指示 (clean) 中だが衝突解消待ちの worktree があるため、衝突解消セッションを 1 本起動してから停止する (${taskId})。即停止するにはもう一度 Ctrl+C`,
+              ok
+                ? `停止指示 (clean) 中だが衝突解消待ちの worktree があるため、衝突解消セッションを起動した (${taskId})。完了後に停止する。即停止するにはもう一度 Ctrl+C`
+                : `停止指示 (clean) 中の衝突解消セッションの起動に失敗した (${taskId})。このタスクは再試行せず停止に進む`,
             );
           }
-          agentDirty = true; // 起動処理自体が main の .agent/ をコミットするため先に立てる
-          if (launchTaskSession(config, task)) launched += 1;
-          // 起動できなかった 1 件は次の周回で選び直す(startTaskSession 側でログ済み)
         }
-        if (launched === 0) {
+        // 停止中の衝突解消は起動に失敗しても次の周回で即 stop が確定するため、待つ意味がない
+        if (launched === 0 && action.conflictResume !== true) {
           // 1 件も起動できなかった(.agent をコミットできない等)場合、同じ条件で即座に
           // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む
           await sleep(config.idlePollMs);

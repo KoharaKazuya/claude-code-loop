@@ -71,6 +71,9 @@ export type LoopAction =
 /** rate limit 待機の 1 スライス。長時間待ちでも定期的に停止指示を拾い直すため上限を設ける */
 export const RATE_LIMIT_SLICE_MS = 60_000;
 
+/** 「起動直後の異常終了」が何回続いたら系統的な故障とみなすか */
+export const FAST_CRASH_STREAK_LIMIT = 3;
+
 export const STOP_REASON = {
   clean: "停止指示 (clean): 一区切りとして停止する(再開: ccloop run)",
   cleanDirty:
@@ -87,6 +90,11 @@ export const STOP_REASON = {
  *    あれば、その先頭 1 件だけを起動してから停止へ向かう。衝突解消はセッションを起動しないと
  *    進まず、放置すると MERGE_HEAD 付きの worktree が次回 run まで宙に浮くため。
  *    複数同時に起動すると解消セッション同士が再び衝突しうるので必ず 1 本ずつ。
+ *    ただし起動しても確実に失敗する状況では起動しない:
+ *      - rate limit 中 → 通常の rate limit 待機に回す(解除は時間で来るので、解除後に
+ *        解消セッションを起動してから停止できる)
+ *      - 瞬時クラッシュが連続している → 諦めて停止する(停止中は他に起動するセッションが無く
+ *        fastCrashStreak を解消する機会が無いため、待っても待ち続けるだけになる)
  * 2. rate limit 中(rateLimitedUntilMs > 0)
  *    最大 RATE_LIMIT_SLICE_MS のスライスで待つ。待機中も周回ごとに停止指示を拾い直せる。
  * 3. 人間からの入力が変化した → 既存タスクより先に割り込ませる。triage が有効かつこの入力
@@ -119,7 +127,14 @@ export function planLoopStep(input: LoopInput): LoopAction {
     if (input.runningCount > 0) return drain;
     // 衝突解消だけは停止前に片付ける(1 本ずつ。上限は呼び出し側が conflictResumeTaskIds で担保する)
     if (input.stopMode === "clean" && input.conflictResumeTaskIds.length > 0) {
-      return { type: "launch", taskIds: [input.conflictResumeTaskIds[0]!], conflictResume: true };
+      // rate limit 中の起動は確実に失敗し、待機の延長と 1 回きりの起動枠の空費になる
+      if (input.rateLimitedUntilMs !== null && input.rateLimitedUntilMs > 0) {
+        return { type: "wait", ms: Math.min(input.rateLimitedUntilMs, RATE_LIMIT_SLICE_MS), why: "rate-limit" };
+      }
+      // 系統的な故障が疑われるときは起動を諦めて停止する(残った worktree は次回 run が再開する)
+      if (input.fastCrashStreak < FAST_CRASH_STREAK_LIMIT) {
+        return { type: "launch", taskIds: [input.conflictResumeTaskIds[0]!], conflictResume: true };
+      }
     }
     return {
       type: "stop",
@@ -141,7 +156,7 @@ export function planLoopStep(input: LoopInput): LoopAction {
   const free = input.maxSessions - input.runningCount;
 
   // 4. 瞬時クラッシュの連続によるバックオフ
-  if (input.fastCrashStreak >= 3 && input.runnableTaskIds.length > 0 && free > 0) {
+  if (input.fastCrashStreak >= FAST_CRASH_STREAK_LIMIT && input.runnableTaskIds.length > 0 && free > 0) {
     return { type: "wait", ms: input.idlePollMs, why: "crash-backoff" };
   }
 
