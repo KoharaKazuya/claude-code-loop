@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkNodeVersion, readConfigRaw, readVersion, splitGlobalOptions } from "./cli.ts";
+import { SUBCOMMAND_HELP, TOP_LEVEL_HELP } from "./help.ts";
 import { createPaths, type Paths } from "./paths.ts";
 
 describe("splitGlobalOptions", () => {
@@ -183,5 +184,171 @@ describe("main: 壊れた config.json の扱い(子プロセスで検証)", () =
     const result = run(["init", "--upgrade", "--yes"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("手で修正すること");
+  });
+});
+
+describe("--help / -h(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  // リポジトリの外(git 管理外・.agent/ 無し)からでも --help が答えられることを確認するため、
+  // cwd を空の一時ディレクトリに固定して実行する
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-help-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, ...args], {
+      encoding: "utf8",
+      cwd,
+    });
+    return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+  }
+
+  it.each(["--help", "-h", "help"])("ccloop %s はトップレベルのヘルプを表示して exit 0", (flag) => {
+    const result = run([flag]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${TOP_LEVEL_HELP}\n`);
+  });
+
+  it("トップレベルのヘルプは全サブコマンドと --repo を含む", () => {
+    for (const cmd of ["run", "status", "watch", "list", "add", "init", "doctor", "version"]) {
+      expect(TOP_LEVEL_HELP).toContain(cmd);
+    }
+    expect(TOP_LEVEL_HELP).toContain("--repo");
+  });
+
+  const SUBCOMMANDS = ["run", "status", "watch", "list", "add", "init", "doctor", "version"] as const;
+
+  it.each(SUBCOMMANDS)("ccloop %s --help はサブコマンドのヘルプを表示して exit 0(リポジトリが無くても動く)", (cmd) => {
+    const result = run([cmd, "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${SUBCOMMAND_HELP[cmd]}\n`);
+    expect(result.stderr).toBe("");
+  });
+
+  it.each(SUBCOMMANDS)("ccloop %s -h も同じ内容を表示する", (cmd) => {
+    const result = run([cmd, "-h"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${SUBCOMMAND_HELP[cmd]}\n`);
+  });
+
+  it("add --help はオプション --desc/--priority/--deps/--model/--slug を含む", () => {
+    const result = run(["add", "--help"]);
+    for (const opt of ["--desc", "--priority", "--deps", "--model", "--slug"]) {
+      expect(result.stdout).toContain(opt);
+    }
+  });
+
+  it("init --help はオプション --yes/--upgrade を含む", () => {
+    const result = run(["init", "--help"]);
+    expect(result.stdout).toContain("--yes");
+    expect(result.stdout).toContain("--upgrade");
+  });
+
+  it("watch --help はオプション --interval を含む", () => {
+    const result = run(["watch", "--help"]);
+    expect(result.stdout).toContain("--interval");
+  });
+
+  it("list --help はオプション --full を含む", () => {
+    const result = run(["list", "--help"]);
+    expect(result.stdout).toContain("--full");
+  });
+});
+
+describe("status --json / list --json(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-json-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    execFileSync(process.execPath, [
+      "--no-warnings=ExperimentalWarning",
+      CLI_ENTRY,
+      "--repo",
+      repo,
+      "add",
+      "サンプルタスク",
+      "--desc",
+      "説明",
+      "--priority",
+      "2",
+    ]);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, ...args], {
+      encoding: "utf8",
+    });
+    return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+  }
+
+  it("status --json は parse 可能な JSON を 1 オブジェクトで出力する", () => {
+    const result = run(["status", "--json"]);
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const data = JSON.parse(lines[0]!) as Record<string, unknown>;
+    for (const key of [
+      "tasks",
+      "archivedCompletedCount",
+      "state",
+      "humanReview",
+      "overview",
+      "pendingConflicts",
+      "permissionDenials",
+      "nextRunnableTasks",
+      "snoozedTasks",
+      "metrics",
+      "inputsChanged",
+      "taskTimeoutMs",
+      "maxSessions",
+      "supervisorSourceStale",
+    ]) {
+      expect(data).toHaveProperty(key);
+    }
+    const tasks = data.tasks as { title: string; status: string; priority: number }[];
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ title: "サンプルタスク", status: "ready", priority: 2 });
+  });
+
+  it("status --json は既存のテキスト出力(--json 無し)に影響しない", () => {
+    const text = run(["status"]).stdout;
+    expect(text).toContain("== 自律実行ステータス ==");
+    expect(() => JSON.parse(text)).toThrow();
+  });
+
+  it("list --json は parse 可能な JSON でタスクの全フィールドを含む", () => {
+    const result = run(["list", "--json"]);
+    expect(result.status).toBe(0);
+    const data = JSON.parse(result.stdout.trim()) as { tasks: Record<string, unknown>[] };
+    expect(data.tasks).toHaveLength(1);
+    expect(data.tasks[0]).toMatchObject({ title: "サンプルタスク", status: "ready", priority: 2, body: "説明" });
+    expect(data.tasks[0]).toHaveProperty("id");
+    expect(data.tasks[0]).toHaveProperty("createdAt");
+  });
+
+  it("list --json --full は list --json と同じ出力になる(併用してもエラーにならない)", () => {
+    const withFull = run(["list", "--json", "--full"]);
+    const withoutFull = run(["list", "--json"]);
+    expect(withFull.status).toBe(0);
+    expect(withFull.stdout).toBe(withoutFull.stdout);
+  });
+
+  it("list --json は既存のテキスト出力(--json 無し)に影響しない", () => {
+    const text = run(["list"]).stdout;
+    expect(text).toContain("サンプルタスク");
+    expect(() => JSON.parse(text)).toThrow();
   });
 });

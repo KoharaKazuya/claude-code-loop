@@ -3447,6 +3447,12 @@ function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean, idWidth:
 export function cmdList(argv: string[]): void {
   const full = argv.includes("--full");
   const tasks = loadTasks();
+  if (argv.includes("--json")) {
+    // タスクは frontmatter のフィールドをそのまま持つので、--full の有無に関わらず全フィールドを
+    // 出す(整形出力のような省略・切り詰めをしない)。JSON.stringify して 1 行で出す
+    console.log(JSON.stringify({ tasks }));
+    return;
+  }
   // 依存表示用の参照は archive 済みタスクも含める(rotate 後の依存先を (missing) ではなく
   // ✔ 完了として表示するため)。同一 ID はアクティブ側を優先
   const byId = new Map([...loadArchivedTasks(), ...tasks].map((t) => [t.id, t]));
@@ -3968,50 +3974,44 @@ export function permissionDenialLines(summary: PermissionDenialSummary): string[
 }
 
 /**
- * `ccloop status` の表示内容を 1 つの文字列として組み立てる。
- * `status` は 1 回出力するだけだが、`watch` は同じ内容を毎秒描き直すため、
- * 「出力」ではなく「文字列」を作る形にして両方から使えるようにしてある。
+ * `ccloop status` が扱う生データ一式(表示に依存しない)。
+ * `formatStatus`(人間向けテキスト)と `statusDataToJson`(`--json`)の両方がここから作る
+ * ことで、データ取得と整形表示を分離する。値は内部の型(Task / State 等)をそのまま持つ。
  */
-export function formatStatus(): string {
-  const out: string[] = [];
-  const push = (line: string): void => {
-    out.push(line);
-  };
+interface StatusData {
+  tasks: Task[];
+  /** archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う) */
+  archivedCompletedCount: number;
+  state: State;
+  humanReview: { openBlock: HrEntry[]; openReview: HrEntry[]; answered: HrEntry[] };
+  overview: Overview | null;
+  pendingConflicts: PendingConflicts;
+  permissionDenials: PermissionDenialSummary;
+  nextRunnableTasks: Task[];
+  snoozedTasks: Task[];
+  metrics: SessionMetrics[];
+  /** 人間の入力(GOAL.md / answered な Human Review)が未取り込みか */
+  inputsChanged: boolean;
+  taskTimeoutMs: number;
+  maxSessions: number;
+  /** 起動中の supervisor のソースが、現在のソースと異なるか(再起動が必要か) */
+  supervisorSourceStale: boolean;
+}
+
+/**
+ * `ccloop status` / `ccloop status --json` の元になるデータを 1 回の走査で集める(純粋読み取り。
+ * ファイルへの書き込みは行わない)。config.json が読めない場合は既定値へフォールバックする
+ * (status は状況を見るためのものなので、他コマンドのように止めない)。
+ */
+function collectStatusData(now: Date): StatusData {
   const tasks = loadTasks();
-  const byId = new Map(tasks.map((t) => [t.id, t]));
   const state = loadState();
   const hr = parseHumanReview();
-  const by = (s: TaskStatus): Task[] => tasks.filter((t) => t.status === s);
-
-  push("== 自律実行ステータス ==");
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
   // ローテーション後も「完了 X/N」が累積の実績を反映するようにする
-  const archivedCompleted = loadArchivedTasks().filter((t) => t.status === "completed").length;
-  push(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
-  const counts = STATUS_ORDER.map((s) => by(s).length)
-    .map((n, i) => [STATUS_ORDER[i]!, n] as const)
-    .filter(([, n]) => n > 0)
-    .map(([s, n]) => `${statusLabel(s)} ${n}`)
-    .join(" / ");
-  push(counts || "タスクなし");
-
+  const archivedCompletedCount = loadArchivedTasks().filter((t) => t.status === "completed").length;
   const overview = loadOverview();
-  const { rest: overviewRest, lines: overviewLines } = overviewSectionLines(
-    overview,
-    by("completed").length + archivedCompleted,
-    tasks.length + archivedCompleted,
-  );
-  push(`\n${styledSectionLabel("概観", overviewRest)}`);
-  for (const l of overviewLines) push(`  ${l}`);
-
-  const { openBlock, openReview, answered } = classifyHumanReview(hr);
-  const failed = by("failed");
-  const blocked = by("blocked");
-  /** open 行の表示用ラベル。回答本文はあるがチェック忘れの場合に注意喚起を付ける */
-  const hrLine = (h: HrEntry): string =>
-    hasFreeTextAnswer(h.body)
-      ? `${h.id}: ${h.title}\n      回答本文あり — [ ] を [x] にすると取り込まれます`
-      : `${h.id}: ${h.title}`;
+  const humanReview = classifyHumanReview(hr);
 
   // config は要対応セクション(worktree 置き場)と稼働状態の両方で使う
   let taskTimeoutMs = 2400000;
@@ -4025,7 +4025,80 @@ export function formatStatus(): string {
   } catch {
     // config が読めなければ既定値にフォールバック
   }
-  const pending = collectPendingConflicts(repoPaths().root, worktreeDir);
+  const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
+  const permissionDenials = summarizePermissionDenials(loadPermissionDenials(), now);
+
+  const runningTaskIds = new Set(
+    state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
+  );
+  const next = nextRunnableTasks(tasks, runningTaskIds, 3);
+  const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
+  const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
+  const metrics = loadMetrics();
+  const supervisorSourceStale = isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash());
+
+  return {
+    tasks,
+    archivedCompletedCount,
+    state,
+    humanReview,
+    overview,
+    pendingConflicts,
+    permissionDenials,
+    nextRunnableTasks: next,
+    snoozedTasks: snoozed,
+    metrics,
+    inputsChanged,
+    taskTimeoutMs,
+    maxSessions,
+    supervisorSourceStale,
+  };
+}
+
+/**
+ * `ccloop status` の表示内容を 1 つの文字列として組み立てる。
+ * `status` は 1 回出力するだけだが、`watch` は同じ内容を毎秒描き直すため、
+ * 「出力」ではなく「文字列」を作る形にして両方から使えるようにしてある。
+ */
+export function formatStatus(): string {
+  const now = new Date();
+  const data = collectStatusData(now);
+  const out: string[] = [];
+  const push = (line: string): void => {
+    out.push(line);
+  };
+  const tasks = data.tasks;
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const by = (s: TaskStatus): Task[] => tasks.filter((t) => t.status === s);
+
+  push("== 自律実行ステータス ==");
+  const archivedCompleted = data.archivedCompletedCount;
+  push(progressBar(by("completed").length + archivedCompleted, tasks.length + archivedCompleted));
+  const counts = STATUS_ORDER.map((s) => by(s).length)
+    .map((n, i) => [STATUS_ORDER[i]!, n] as const)
+    .filter(([, n]) => n > 0)
+    .map(([s, n]) => `${statusLabel(s)} ${n}`)
+    .join(" / ");
+  push(counts || "タスクなし");
+
+  const { rest: overviewRest, lines: overviewLines } = overviewSectionLines(
+    data.overview,
+    by("completed").length + archivedCompleted,
+    tasks.length + archivedCompleted,
+  );
+  push(`\n${styledSectionLabel("概観", overviewRest)}`);
+  for (const l of overviewLines) push(`  ${l}`);
+
+  const { openBlock, openReview, answered } = data.humanReview;
+  const failed = by("failed");
+  const blocked = by("blocked");
+  /** open 行の表示用ラベル。回答本文はあるがチェック忘れの場合に注意喚起を付ける */
+  const hrLine = (h: HrEntry): string =>
+    hasFreeTextAnswer(h.body)
+      ? `${h.id}: ${h.title}\n      回答本文あり — [ ] を [x] にすると取り込まれます`
+      : `${h.id}: ${h.title}`;
+
+  const pending = data.pendingConflicts;
 
   const section = (tag: string, rest: string, lines: string[]): void => {
     if (lines.length === 0) return;
@@ -4072,15 +4145,14 @@ export function formatStatus(): string {
     push("\n要対応事項なし");
   }
 
-  const denialSummary = summarizePermissionDenials(loadPermissionDenials(), new Date());
   section(
     "対応不要",
-    `直近7日の permission 拒否 ${denialSummary.total} 件(セッションは代替手段で続行済み。回答不要):`,
-    permissionDenialLines(denialSummary),
+    `直近7日の permission 拒否 ${data.permissionDenials.total} 件(セッションは代替手段で続行済み。回答不要):`,
+    permissionDenialLines(data.permissionDenials),
   );
 
   push("\n実行中のタスク");
-  const running = runningSessionLines(state.runningSessions, byId, new Date(), taskTimeoutMs, maxSessions);
+  const running = runningSessionLines(data.state.runningSessions, byId, now, data.taskTimeoutMs, data.maxSessions);
   if (running.length === 0) {
     push("  なし");
   } else {
@@ -4089,18 +4161,14 @@ export function formatStatus(): string {
 
   // 人間の入力(GOAL.md・answered な Human Review)が未取り込みなら、mainLoop は新規タスクを
   // 起動せず探索セッションを割り込ませる。表示もその実態に合わせる
-  const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
-  if (inputsChanged) {
+  if (data.inputsChanged) {
     push("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
-    push(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${maxSessions} 並列に戻ります`);
+    push(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${data.maxSessions} 並列に戻ります`);
   }
 
-  push(`\n${inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
-  const runningTaskIds = new Set(
-    state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
-  );
-  const next = nextRunnableTasks(tasks, runningTaskIds, 3);
-  const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
+  push(`\n${data.inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
+  const next = data.nextRunnableTasks;
+  const snoozed = data.snoozedTasks;
   if (next.length === 0) {
     push(
       snoozed.length > 0
@@ -4122,21 +4190,21 @@ export function formatStatus(): string {
   }
 
   push("\n-- 稼働状態 --");
-  push(`セッション数: ${state.sessionCount} / 最終探索: ${state.lastExploreAt ?? "未実行"}`);
+  push(`セッション数: ${data.state.sessionCount} / 最終探索: ${data.state.lastExploreAt ?? "未実行"}`);
   // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
-  if (state.stopMode === "clean") {
+  if (data.state.stopMode === "clean") {
     push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");
   }
-  if (state.rateLimit.resumeAt !== null) {
-    push(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
+  if (data.state.rateLimit.resumeAt !== null) {
+    push(`レートリミット待機中: ${data.state.rateLimit.resumeAt} まで`);
   }
-  if (isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash())) {
+  if (data.supervisorSourceStale) {
     push(
       "  ※ supervisor のコードが起動後に変更されている — 稼働中なら再起動(ccloop run を止めて起動し直す)しないと反映されない",
     );
   }
 
-  const metrics = loadMetrics();
+  const metrics = data.metrics;
   if (metrics.length > 0) {
     const last = metrics[metrics.length - 1]!;
     const totalCost = metrics.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
@@ -4150,6 +4218,14 @@ export function formatStatus(): string {
   return out.join("\n");
 }
 
-export function cmdStatus(): void {
+/**
+ * `ccloop status [--json]`。`--json` があれば `collectStatusData` の結果をそのまま
+ * JSON.stringify して 1 行で出す(整形出力とは別の出口。既存のテキスト出力は変えない)。
+ */
+export function cmdStatus(argv: string[] = []): void {
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(collectStatusData(new Date())));
+    return;
+  }
   console.log(formatStatus());
 }
