@@ -11,13 +11,14 @@
  * 停止方法(run モード): 外部からの停止手段は Ctrl+C(SIGINT)だけで、停止指示は
  * このプロセスのメモリ(currentStopMode)にしか存在しない。プロセスが終われば停止意思も消える
  * ため、再開はいつでも `ccloop run` を実行するだけでよい。Ctrl+C は押すたびに段階が上がる:
- *   1 回目 (clean)   新規セッションを起動せず、実行中のセッションが終わり次第停止する。
- *                    git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する
- *   2 回目 (session) 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
- *   3 回目           緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で即 SIGKILL。中断された
- *                    セッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
- *                    再利用される
- * SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
+ *   1 回目 (clean) 新規セッションを起動せず、実行中のセッションが終わり次第停止する。
+ *                  git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する。
+ *                  例外として、衝突解消待ちの worktree があれば、その解消セッションだけは
+ *                  1 本ずつ(タスクごとに停止後 1 回まで)起動してから停止する
+ *   2 回目         緊急停止(SIGTERM → 猶予後 SIGKILL)
+ *   3 回目         即 SIGKILL
+ * 中断されたセッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
+ * 再利用される。SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
  *
  * タスクセッションは常に `claude -p --worktree <タスクID>` で起動され、リポジトリ本体の外側の
  * worktree(ブランチ `agent/<タスクID>`)で動く。成果は終了後に Supervisor が main へ自動マージし、
@@ -421,7 +422,7 @@ export function normalizeState(raw: unknown): State {
     state.triageAttemptedHash = r.triageAttemptedHash;
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
-  if (r.stopMode === "none" || r.stopMode === "clean" || r.stopMode === "session") state.stopMode = r.stopMode;
+  if (r.stopMode === "none" || r.stopMode === "clean") state.stopMode = r.stopMode;
   return state;
 }
 
@@ -777,6 +778,16 @@ export function prunePatches(
 let currentStopMode: StopMode = "none";
 
 /**
+ * 現在の停止指示を読む。直接 currentStopMode を参照せず関数越しに読むのは型のため:
+ * mainLoop は入口で `currentStopMode = "none"` を代入しており、実際の更新はシグナルハンドラ
+ * (制御フロー解析からは見えない)が行うため、同じ関数内で直接読むと "none" に絞り込まれた
+ * 型になってしまい、"clean" との比較がコンパイルエラーになる。
+ */
+function readStopMode(): StopMode {
+  return currentStopMode;
+}
+
+/**
  * 停止指示を state.json へ写す(**表示専用**。制御には使わない)。
  * `ccloop status` / `ccloop watch` が「停止処理中」を出せるようにするためだけの副産物なので、
  * 書き込みに失敗しても停止処理は続ける。
@@ -897,20 +908,19 @@ function emergencyStop(signal: string): void {
 
 /**
  * 段階エスカレーションの次の一手を判定する(純粋)。
- * 停止指示なし(none)なら clean を予約、既に clean なら session へ格上げ、
- * 既に session(= これ以上待たずに止めたい意図)なら緊急停止に進む。
+ * 停止指示なし(none)なら clean を予約、既に clean(= 一度待つ意思表示は済んでいる)なら
+ * 緊急停止に進む。
  */
 export type StopEscalation = { mode: Exclude<StopMode, "none"> } | "emergency";
 export function nextStopEscalation(mode: StopMode): StopEscalation {
   if (mode === "none") return { mode: "clean" };
-  if (mode === "clean") return { mode: "session" };
   return "emergency";
 }
 
 /**
- * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean、2 回目は session へ格上げするに留め、
- * セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、
- * またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean へ留め、セッションが安全な区切りで
+ * 自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、またはエスカレーション判定が
+ * emergency のときは強制終了へ進む。
  * 停止指示はメモリ上の currentStopMode にだけ書く(state.json への反映は表示専用で、
  * メインループが「main を触るのはループ上だけ」の不変条件を守りながら行う)。
  */
@@ -925,15 +935,9 @@ function escalateStop(signal: string): void {
     return;
   }
   currentStopMode = escalation.mode;
-  if (escalation.mode === "clean") {
-    log(
-      `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず、実行中が終わり次第停止する。もう一度 Ctrl+C でセッション境界停止`,
-    );
-  } else {
-    log(
-      `${signal} 受信。停止指示を session へ格上げした: 実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)`,
-    );
-  }
+  log(
+    `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず(衝突解消待ちの worktree がある場合は解消セッションだけ 1 本ずつ起動してから)、実行中が終わり次第停止する。もう一度 Ctrl+C すると実行中セッションを強制終了する(SIGTERM→猶予後 SIGKILL)`,
+  );
   wakeEmitter.emit("wake");
 }
 
@@ -1495,6 +1499,50 @@ function selectRunnable(): { runnable: Task[]; snoozedCount: number } {
     log(`block: ${t.id} (依存 ${deadDep})`);
   }
   return { runnable, snoozedCount: snoozed.length };
+}
+
+/**
+ * clean 停止中に例外的に起動してよい「衝突解消待ち」タスクを選ぶ判断(純粋)。
+ *
+ * 通常の選定(selectRunnable)はタスクファイルを書き換える副作用(依存 dead の blocked 落ち)を
+ * 持つため、停止処理中には使えない。ここでは planTaskSelection の純粋な選定結果だけを使い、
+ * 「worktree にマージが残っている(hasConflict)」かつ「この停止指示の後にまだ起動していない
+ * (launchedIds に無い)」タスクを優先度順に返す。
+ *
+ * スヌーズ中のタスクも対象に含める。スヌーズはタスクの再試行ペースの都合であって、
+ * MERGE_HEAD 付きの worktree を残したままプロセスを終えてよい理由にはならない
+ * (次回 run の recoverOrphanBranch が retries を消費せず即再開するのと同じ考え方)。
+ */
+export function planConflictResume(opts: {
+  tasks: Task[];
+  now: Date;
+  runningIds: Set<string>;
+  launchedIds: Set<string>;
+  hasConflict: (taskId: string) => boolean;
+}): Task[] {
+  const { runnable, snoozed } = planTaskSelection(opts.tasks, opts.now, opts.runningIds);
+  return [...runnable, ...snoozed]
+    .filter((t) => !opts.launchedIds.has(t.id) && opts.hasConflict(t.id))
+    .sort(byPriorityThenCreatedAt);
+}
+
+/** planConflictResume を実際のファイル・worktree の状態へ配線したもの(副作用なし) */
+function selectConflictResumable(config: Config, launchedIds: Set<string>): Task[] {
+  const runningIds = new Set(
+    loadState()
+      .runningSessions.map((s) => s.taskId)
+      .filter((id): id is string => id !== undefined),
+  );
+  return planConflictResume({
+    tasks: loadTasks(),
+    now: new Date(),
+    runningIds,
+    launchedIds,
+    hasConflict: (taskId) => {
+      const worktree = worktreePathFor(config.parallel.worktreeDir, taskId);
+      return fs.existsSync(worktree) && mergeInProgressSafe(worktree);
+    },
+  });
 }
 
 /**
@@ -2955,6 +3003,9 @@ export async function mainLoop(): Promise<void> {
   // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
   let lastExploreYieldedNothing = false;
+  // 停止 (clean) 指示の後、衝突解消のために起動したタスク ID(プロセス内フラグ、永続化しない)。
+  // タスクごとに停止後 1 回までに制限し、解消セッションが再び衝突しても停止が無限に延びないようにする。
+  const conflictResumeLaunched = new Set<string>();
 
   try {
     // worktree 置き場が書き込めない環境(EACCES 等)では、タスクセッションが 1 本も
@@ -3018,7 +3069,7 @@ export async function mainLoop(): Promise<void> {
 
       // 停止指示はシグナルハンドラがメモリ上で進めるだけなので、state.json への写し
       // (status / watch の表示専用)はメインループ上でだけ書く(不変条件を守るため)
-      const stopMode = currentStopMode;
+      const stopMode = readStopMode();
       if ((state.stopMode ?? "none") !== stopMode) {
         state.stopMode = stopMode;
         saveState(state);
@@ -3066,6 +3117,15 @@ export async function mainLoop(): Promise<void> {
       const { runnable, snoozedCount } =
         gathering && !inputsChanged ? selectRunnable() : { runnable: [], snoozedCount: 0 };
 
+      // clean 停止中でも、衝突解消待ちの worktree を抱えたタスクだけは例外的に起動する
+      // (衝突解消はセッションを起動しないと進まないため)。selectRunnable は副作用を持つので
+      // ここでは使わず、副作用のない selectConflictResumable で選ぶ。rate limit 中は
+      // planLoopStep がどのみち起動しないため、worktree ごとの git 呼び出しも省く。
+      const conflictResumable =
+        stopMode === "clean" && runningCount === 0 && rateLimitedUntilMs === null
+          ? selectConflictResumable(config, conflictResumeLaunched)
+          : [];
+
       const action = planLoopStep({
         now: new Date(),
         stopMode,
@@ -3073,6 +3133,7 @@ export async function mainLoop(): Promise<void> {
         runningCount,
         maxSessions: config.parallel.maxSessions,
         runnableTaskIds: runnable.map((t) => t.id),
+        conflictResumeTaskIds: conflictResumable.map((t) => t.id),
         inputsChanged,
         triageEnabled: config.triage.enabled,
         triageAttempted,
@@ -3094,6 +3155,14 @@ export async function mainLoop(): Promise<void> {
         drainCompletedSessions(config);
         log(action.reason);
         if (dirtyPaths.length > 0) log(`残った差分: ${formatDiffPathList(dirtyPaths)}`);
+        // 解消セッションが再び衝突した場合や idle-exit の場合、衝突解消待ちの worktree が残りうる。
+        // 放置すると忘れられるため、次回 run が再開することまで含めて明示する
+        const pendingConflicts = collectPendingConflicts(repoPaths().root, config.parallel.worktreeDir).worktrees;
+        if (pendingConflicts.length > 0) {
+          log(
+            `衝突解消待ちの worktree が ${pendingConflicts.length} 件残っている(${pendingConflicts.map((w) => w.taskId).join(", ")})。次の ccloop run が同じ worktree で解消セッションを再開する`,
+          );
+        }
         if (action.cause === "idle-exit") {
           const idleExitTasks = loadTasks();
           const blockedCount = idleExitTasks.filter((t) => t.status === "blocked").length;
@@ -3158,16 +3227,28 @@ export async function mainLoop(): Promise<void> {
       if (action.type === "launch") {
         // 空きスロット分をまとめて起動する。await しないので、次の周回はすぐ回り、
         // 完了は completedSessions 経由で先頭の掃き出しへ戻ってくる
-        const byId = new Map(runnable.map((t) => [t.id, t]));
+        const byId = new Map([...runnable, ...conflictResumable].map((t) => [t.id, t]));
         let launched = 0;
         for (const taskId of action.taskIds) {
           const task = byId.get(taskId);
           if (task === undefined) continue; // 判断材料と実行の間でタスクが消えた場合の保険
+          // 起動の成否に関わらず記録する(起動できない状態で同じタスクを選び続けないため)
+          if (action.conflictResume === true) conflictResumeLaunched.add(taskId);
           agentDirty = true; // 起動処理自体が main の .agent/ をコミットするため先に立てる
-          if (launchTaskSession(config, task)) launched += 1;
-          // 起動できなかった 1 件は次の周回で選び直す(startTaskSession 側でログ済み)
+          const ok = launchTaskSession(config, task);
+          if (ok) launched += 1;
+          // 起動できなかった 1 件は次の周回で選び直す(startTaskSession 側でログ済み)。
+          // ただし停止中の衝突解消は 1 回きりなので、次の周回では選び直さず停止へ進む
+          if (action.conflictResume === true) {
+            log(
+              ok
+                ? `停止指示 (clean) 中だが衝突解消待ちの worktree があるため、衝突解消セッションを起動した (${taskId})。完了後に停止する。即停止するにはもう一度 Ctrl+C`
+                : `停止指示 (clean) 中の衝突解消セッションの起動に失敗した (${taskId})。このタスクは再試行せず停止に進む`,
+            );
+          }
         }
-        if (launched === 0) {
+        // 停止中の衝突解消は起動に失敗しても次の周回で即 stop が確定するため、待つ意味がない
+        if (launched === 0 && action.conflictResume !== true) {
           // 1 件も起動できなかった(.agent をコミットできない等)場合、同じ条件で即座に
           // 選び直すと空回りし続けるため、状況が変わるのを待ってから次の周回へ進む
           await sleep(config.idlePollMs);
@@ -4113,8 +4194,6 @@ export function formatStatus(): string {
   // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
   if (data.state.stopMode === "clean") {
     push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");
-  } else if (data.state.stopMode === "session") {
-    push("停止処理中 (session): 実行中セッションが supervisor に返った時点で run が停止する");
   }
   if (data.state.rateLimit.resumeAt !== null) {
     push(`レートリミット待機中: ${data.state.rateLimit.resumeAt} まで`);

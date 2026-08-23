@@ -12,11 +12,11 @@
 /**
  * 停止指示の段階。run プロセスのメモリだけに持ち、ファイルには永続化しない
  * (プロセスが終われば停止意思も消えるのが正しい: 外部からの停止手段は Ctrl+C だけ)。
- *   - none:    停止指示なし
- *   - clean:   新規セッションを起動せず、実行中が終わり次第、一区切りとして停止する
- *   - session: 実行中セッションが supervisor に返ってきた時点で停止する
+ *   - none:  停止指示なし
+ *   - clean: 新規セッションを起動せず、実行中が終わり次第、一区切りとして停止する
+ *            (例外: 衝突解消待ちの worktree があれば、その解消セッションだけは 1 本ずつ起動する)
  */
-export type StopMode = "none" | "clean" | "session";
+export type StopMode = "none" | "clean";
 
 export interface LoopInput {
   now: Date;
@@ -30,6 +30,11 @@ export interface LoopInput {
   maxSessions: number;
   /** planTaskSelection が返した実行可能タスクの ID(優先度順) */
   runnableTaskIds: string[];
+  /** 衝突解消待ちの worktree(マージ進行中)を抱えたまま runnable に戻っているタスクの ID(優先度順)。
+   * ただし「この停止指示の後にまだ衝突解消セッションを起動していない」ものに限る。
+   * 衝突解消は新規セッションを起動しないと進まないため、clean 停止中でもここに載っているタスクだけは
+   * 例外的に起動する(タスクごとに停止後 1 回まで・同時に 1 本まで) */
+  conflictResumeTaskIds: string[];
   /** 人間からの入力(GOAL.md・Human Review の回答)が前回取り込み時から変わったか */
   inputsChanged: boolean;
   /** Human Review の段階的処理(triage: 決定論判定→軽量モデル判定)を行うか */
@@ -60,14 +65,16 @@ export type LoopAction =
   | { type: "stop"; reason: string; cause?: "idle-exit" }
   | { type: "explore"; trigger: "inputs" | "idle" }
   | { type: "triage" }
-  | { type: "launch"; taskIds: string[] }
+  | { type: "launch"; taskIds: string[]; conflictResume?: true }
   | { type: "wait"; ms: number; why: "rate-limit" | "drain" | "slots-full" | "idle" | "crash-backoff" };
 
 /** rate limit 待機の 1 スライス。長時間待ちでも定期的に停止指示を拾い直すため上限を設ける */
 export const RATE_LIMIT_SLICE_MS = 60_000;
 
+/** 「起動直後の異常終了」が何回続いたら系統的な故障とみなすか */
+export const FAST_CRASH_STREAK_LIMIT = 3;
+
 export const STOP_REASON = {
-  session: "停止指示 (session): セッション境界で停止する(再開: ccloop run)",
   clean: "停止指示 (clean): 一区切りとして停止する(再開: ccloop run)",
   cleanDirty:
     "停止指示 (clean): .agent/ 以外に未コミットの差分が残っているが、新規セッションを起動しない以上は解消しないため差分を残して停止する(再開: ccloop run)",
@@ -78,10 +85,16 @@ export const STOP_REASON = {
  * 次の一手を決める。判断の優先度は以下の順で、上位が成立したら下位は評価しない。
  *
  * 1. 停止指示あり(stopMode !== "none")
- *    実行中セッションがあれば drain 待ち、無ければ停止する。
- *    session / clean のどちらでも「新規起動を止めて、走っているものを待って停止する」に収束させる。
- *    worktree 化により main の .agent/ 以外の差分はセッションでは解消できなくなったため、
- *    「clean で差分が残っているうちは ready タスクを流し続ける」という従来の挙動は成立しない。
+ *    新規セッションの起動を止め、実行中セッションがあれば drain 待ち、無ければ停止する。
+ *    ただし clean 停止で実行中が 0 のとき、衝突解消待ちのタスク(conflictResumeTaskIds)が
+ *    あれば、その先頭 1 件だけを起動してから停止へ向かう。衝突解消はセッションを起動しないと
+ *    進まず、放置すると MERGE_HEAD 付きの worktree が次回 run まで宙に浮くため。
+ *    複数同時に起動すると解消セッション同士が再び衝突しうるので必ず 1 本ずつ。
+ *    ただし起動しても確実に失敗する状況では起動しない:
+ *      - rate limit 中 → 通常の rate limit 待機に回す(解除は時間で来るので、解除後に
+ *        解消セッションを起動してから停止できる)
+ *      - 瞬時クラッシュが連続している → 諦めて停止する(停止中は他に起動するセッションが無く
+ *        fastCrashStreak を解消する機会が無いため、待っても待ち続けるだけになる)
  * 2. rate limit 中(rateLimitedUntilMs > 0)
  *    最大 RATE_LIMIT_SLICE_MS のスライスで待つ。待機中も周回ごとに停止指示を拾い直せる。
  * 3. 人間からの入力が変化した → 既存タスクより先に割り込ませる。triage が有効かつこの入力
@@ -112,7 +125,17 @@ export function planLoopStep(input: LoopInput): LoopAction {
   // 1. 停止指示
   if (input.stopMode !== "none") {
     if (input.runningCount > 0) return drain;
-    if (input.stopMode === "session") return { type: "stop", reason: STOP_REASON.session };
+    // 衝突解消だけは停止前に片付ける(1 本ずつ。上限は呼び出し側が conflictResumeTaskIds で担保する)
+    if (input.stopMode === "clean" && input.conflictResumeTaskIds.length > 0) {
+      // rate limit 中の起動は確実に失敗し、待機の延長と 1 回きりの起動枠の空費になる
+      if (input.rateLimitedUntilMs !== null && input.rateLimitedUntilMs > 0) {
+        return { type: "wait", ms: Math.min(input.rateLimitedUntilMs, RATE_LIMIT_SLICE_MS), why: "rate-limit" };
+      }
+      // 系統的な故障が疑われるときは起動を諦めて停止する(残った worktree は次回 run が再開する)
+      if (input.fastCrashStreak < FAST_CRASH_STREAK_LIMIT) {
+        return { type: "launch", taskIds: [input.conflictResumeTaskIds[0]!], conflictResume: true };
+      }
+    }
     return {
       type: "stop",
       reason: input.mainDirtyOutsideAgent ? STOP_REASON.cleanDirty : STOP_REASON.clean,
@@ -133,7 +156,7 @@ export function planLoopStep(input: LoopInput): LoopAction {
   const free = input.maxSessions - input.runningCount;
 
   // 4. 瞬時クラッシュの連続によるバックオフ
-  if (input.fastCrashStreak >= 3 && input.runnableTaskIds.length > 0 && free > 0) {
+  if (input.fastCrashStreak >= FAST_CRASH_STREAK_LIMIT && input.runnableTaskIds.length > 0 && free > 0) {
     return { type: "wait", ms: input.idlePollMs, why: "crash-backoff" };
   }
 
