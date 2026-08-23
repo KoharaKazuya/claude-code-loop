@@ -165,7 +165,9 @@ export interface RunningSessionState {
 }
 
 interface State {
-  /** 実行中セッションの一覧(タスクセッションは最大 parallel.maxSessions 件、探索は排他で 1 件) */
+  /** 実行中セッションの一覧。探索セッションも並列枠を 1 つ消費するため、
+   * タスクセッションと探索セッションの合計が parallel.maxSessions を超えることはない
+   * (探索が走っている間は新しいタスクセッションを起動しない) */
   runningSessions: RunningSessionState[];
   lastExploreAt: string | null;
   /** 前回取り込んだ人間からの入力(GOAL.md と answered な Human Review)のハッシュ */
@@ -860,6 +862,24 @@ const FAST_CRASH_MS = 10_000;
  * 検知し、機械的な再試行で失敗コミットを積み増し続ける事故を避けるために持つ。
  */
 let fastCrashStreak = 0;
+
+/**
+ * 前回の探索セッション以降に、タスクセッションの成果が main へマージされたか
+ * (プロセス内フラグ、永続化しない)。scheduler.ts の探索判定へ mainDirty として渡す。
+ * main が変わったときだけ「GOAL とタスク全体を突き合わせ直す価値がある」とみなすため、
+ * セッションが完了しただけでは立てず、マージが成立した(merged / renumbered)ときだけ立てる。
+ * 起動時は mainLoop が true にリセットする(前回 run の積み残しを一度は見直すため)。
+ */
+let mainMergedSinceExplore = true;
+
+/**
+ * このマージ結果で main の内容が変わったか。conflict / blocked / wedged はもちろん、
+ * nothing-to-merge(ブランチに新しいコミットが無い)も main は変わっていないため false。
+ */
+export function mergeUpdatedMain(outcome: MergeOutcome | null): boolean {
+  if (outcome === null) return false;
+  return outcome.result === "merged" || outcome.result === "renumbered";
+}
 
 // sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で停止指示を立てた直後に
 // アイドル待機・rate limit 待機を打ち切って停止判定へ即座に戻す。並列実行では
@@ -2129,7 +2149,8 @@ function readGoal(): string {
 
 /**
  * 人間からの入力(GOAL.md と Human Review の answered エントリ)のハッシュ。
- * 変化を検出したら、次のタスクより先に探索セッションを割り込ませて取り込む。
+ * 変化を検出したら triage の起動条件になり、以降の探索セッションの起動理由にもなる
+ * (取り込みのためにタスクの起動を止めることはしない)。
  * answered はファイル全文を対象にするため、既存回答の書き換えも変化として検出される。
  */
 function hashInputs(): string {
@@ -2300,7 +2321,8 @@ export function buildTaskPrompt(
 
 /** 探索セッション起動時にわかっている、機械的に検出済みの差分情報(プロンプトへ注入する) */
 export interface ExploreContext {
-  trigger: "inputs" | "idle";
+  /** idle: 実行可能タスクが無い / periodic: タスク消化中の定期見直し */
+  trigger: "idle" | "periodic";
   /** GOAL.md が前回探索から変化したか。前回情報がなければ null(不明) */
   goalChanged: boolean | null;
   /** 新規に answered になった Human Review の ID。前回情報がなければ null(不明) */
@@ -2316,9 +2338,9 @@ export interface ExploreContext {
 /** buildExplorePrompt に埋め込む「今回の起動情報」セクション本文 */
 function launchInfoSection(ctx: ExploreContext): string {
   const reasonText =
-    ctx.trigger === "inputs"
-      ? "GOAL.md / Human Review 回答の変化を検知したため"
-      : "実行可能なタスクがないため(定期探索)";
+    ctx.trigger === "idle"
+      ? "実行可能なタスクがないため(main / 入力の変化を検知)"
+      : "タスク消化中の定期見直し(前回探索から一定時間が経過し、main / 入力が変化)";
   const goalText =
     ctx.goalChanged === null
       ? "不明(前回情報なし)"
@@ -2341,9 +2363,8 @@ function launchInfoSection(ctx: ExploreContext): string {
     "",
     "「変化なし」と明記された入力の再確認は省略してよい。新規 answered の ID が列挙されている場合、",
     "手順1ではそのファイルだけを読めばよい。「不明」の項目は従来どおり全て確認する。",
-    "起動理由が変化検知のときは、変化した入力の取り込みに集中してよく、変化していない観点の手順は",
-    "省略してよい。定期探索のときは全手順を従来どおり実施する(タスク全体・GOAL との整合の見直し",
-    "機会はここで担保する)。",
+    "GOAL.md / Human Review に変化がある場合は、まずその取り込みに集中してよい。変化がない場合は",
+    "全手順を従来どおり実施する(タスク全体・GOAL との整合の見直し機会はここで担保する)。",
   ].join("\n");
 }
 
@@ -2515,8 +2536,8 @@ function startTaskSession(
 
 /**
  * reason: なぜ探索セッションを起動するのか(ログにそのまま表示する)。ctx: プロンプトへ注入する差分内訳
- * 戻り値の rateLimited は、run モードの自動終了判定(exploreDone)で
- * 「rate limit による中断は探索完了として扱わない」ために呼び出し元が使う。
+ * 戻り値の rateLimited は、呼び出し元が「rate limit による中断は探索完了として扱わない」
+ * (mainDirty・空振り判定を更新せず、解除後に再試行させる)ために使う。
  */
 async function runExploreSession(
   config: Config,
@@ -2742,6 +2763,9 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
       } else {
         outcome = mergeAgentBranch(repoPaths().root, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
         mergeLabel = outcome.result;
+        // main が実際に変わったときだけ探索理由(mainDirty)を立てる。
+        // クラッシュ・衝突・マージ不能では立てない(見直す対象が増えていないため)
+        if (mergeUpdatedMain(outcome)) mainMergedSinceExplore = true;
         log(`${taskId}: ${describeMergeOutcome(outcome)}`);
         if (outcome.result === "conflict") {
           conflictPaths = outcome.paths;
@@ -2995,10 +3019,9 @@ export async function mainLoop(): Promise<void> {
   // コミットすると内容を語らない定型コミットが 1 分おきに積み上がるため、`.agent/` を
   // 触った場合だけ、次に待機へ入る直前とループ終了時にまとめてコミットする。
   let agentDirty = false;
-  // 自動終了判定に使うプロセス内フラグ(永続化しない)。探索セッションが
-  // rate limit 以外の理由で完了したら true、タスクセッションが完了したら false に戻す。
-  // 「探索したのに新しいタスクが生まれなかった」を検出するための唯一の判定材料。
-  let exploreDone = false;
+  // 起動直後は recover 済みの main を一度は探索させたいので、mainDirty 相当から始める
+  // (前回の run が積み残した状態を GOAL と突き合わせ直す機会をここで担保する)。
+  mainMergedSinceExplore = true;
   // 直前に完了した探索セッションが新規タスクを 1 件も登録しなかったか(プロセス内フラグ、
   // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
@@ -3030,13 +3053,10 @@ export async function mainLoop(): Promise<void> {
       }
 
       // 1. 完了したセッションの後始末。並列に走ったセッションもここで 1 件ずつ直列に処理する
+      // 探索の要否(mainDirty)は「main へマージできたか」で判断するため、ここでは何も立てない
+      // (finishTaskSession がマージ結果を見て mainMergedSinceExplore を更新する)
       const finished = drainCompletedSessions(config);
-      if (finished > 0) {
-        agentDirty = true;
-        // タスクセッションが完了して main の状態が変わったため、終了前にもう一度
-        // 探索して GOAL と突き合わせ直す必要がある
-        exploreDone = false;
-      }
+      if (finished > 0) agentDirty = true;
 
       // 後始末で state.json が書き換わるため、判断材料はその後で読む
       const state = loadState();
@@ -3090,7 +3110,7 @@ export async function mainLoop(): Promise<void> {
 
       // 上位の判断で周回が確定する場合、下位の判断材料は集めない。hashInputs は state を、
       // selectRunnable はタスクファイルを書き換える副作用を持つため、その判断を実際に使う
-      // 周回でだけ動かす(planLoopStep の優先度 1〜3 が成立する周回では使われない)。
+      // 周回でだけ動かす(planLoopStep の優先度 1〜2 が成立する周回では使われない)。
       const gathering = stopMode === "none" && rateLimitedUntilMs === null;
 
       // 人間からの入力(GOAL.md・Human Review の回答)の変更検出。確認済みハッシュの更新は
@@ -3114,8 +3134,9 @@ export async function mainLoop(): Promise<void> {
         state.triageAttemptedHash !== null &&
         state.triageAttemptedHash === currentInputsHash;
 
-      const { runnable, snoozedCount } =
-        gathering && !inputsChanged ? selectRunnable() : { runnable: [], snoozedCount: 0 };
+      // 入力変化(inputsChanged)があっても起動は止めない(探索は枠の中でしか走らないため)。
+      // 探索の起動条件が「実行可能タスクの有無」で分かれる以上、gathering の周回では常に必要になる。
+      const { runnable, snoozedCount } = gathering ? selectRunnable() : { runnable: [], snoozedCount: 0 };
 
       // clean 停止中でも、衝突解消待ちの worktree を抱えたタスクだけは例外的に起動する
       // (衝突解消はセッションを起動しないと進まないため)。selectRunnable は副作用を持つので
@@ -3134,14 +3155,18 @@ export async function mainLoop(): Promise<void> {
         maxSessions: config.parallel.maxSessions,
         runnableTaskIds: runnable.map((t) => t.id),
         conflictResumeTaskIds: conflictResumable.map((t) => t.id),
-        inputsChanged,
+        inputsDirty: inputsChanged,
+        mainDirty: mainMergedSinceExplore,
         triageEnabled: config.triage.enabled,
         triageAttempted,
         exploreEnabled: config.explore.enabled,
+        // 現状の構造では探索を await するためここは常に false になるが、
+        // 不変条件(探索中は起動しない)を planLoopStep 側にも渡しておく
+        exploreRunning: state.runningSessions.some((s) => s.kind === "explore"),
         exploreDue:
           state.lastExploreAt === null ||
           Date.now() - new Date(state.lastExploreAt).getTime() >= config.explore.minIntervalMs,
-        exploreDone,
+        neverExplored: state.lastExploreAt === null,
         lastExploreYieldedNothing,
         pendingSnoozeCount: snoozedCount,
         rateLimitedUntilMs,
@@ -3200,9 +3225,9 @@ export async function mainLoop(): Promise<void> {
         // セッションが書いた .agent/ の状態を失わせないため)
         agentDirty = true;
         const reason =
-          action.trigger === "inputs"
-            ? "GOAL.md / Human Review 回答の変化を検出。取り込みと消化順序の再検討"
-            : "実行可能なタスクがないため、次の作業を探す";
+          action.trigger === "idle"
+            ? "実行可能なタスクがなく、前回探索以降に main / 入力が変化したため、次の作業を探す"
+            : "前回探索から一定時間が経過し、main / 入力が変化したため、タスク起動前に全体を見直す";
         // 探索セッションの前後で main の `.agent/tasks/` の ID 集合を比べ、新規登録の有無を見る。
         // 並走するタスクセッションは専用 worktree で動き、その成果が main へ現れるのは
         // ループ先頭の drainCompletedSessions()(同期実行)による自動マージ時なので、
@@ -3216,9 +3241,9 @@ export async function mainLoop(): Promise<void> {
         });
         const yielded = loadTasks().some((t) => !taskIdsBefore.has(t.id));
         // rate limit による中断は探索完了として扱わない(解除後に再試行させる)。
-        // その場合は空振り判定も更新しない(中断前の状態を引きずらせない)
+        // その場合は main の変化(mainDirty)も空振り判定も更新しない(中断前の状態を引きずらせない)
         if (!rateLimited) {
-          exploreDone = true;
+          mainMergedSinceExplore = false;
           lastExploreYieldedNothing = !yielded;
         }
         continue;
@@ -3704,7 +3729,7 @@ export function runningSessionLines(
   for (const s of sessions) {
     let mainLine: string;
     if (s.kind === "explore") {
-      mainLine = "探索セッション  (実行可能なタスクを探索中)";
+      mainLine = "探索セッション  (次の作業を探索中)";
     } else {
       const id = s.taskId;
       if (id === undefined) {
@@ -4129,7 +4154,7 @@ export function formatStatus(): string {
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
     "対応不要",
-    "answered — 探索セッションが割り込みで取り込み予定:",
+    "answered — 次の triage / 探索セッションが取り込み予定:",
     answered.map((h) => `${h.id}: ${h.title}`),
   );
   if (
@@ -4159,14 +4184,14 @@ export function formatStatus(): string {
     for (const l of running) push(`  ${l}`);
   }
 
-  // 人間の入力(GOAL.md・answered な Human Review)が未取り込みなら、mainLoop は新規タスクを
-  // 起動せず探索セッションを割り込ませる。表示もその実態に合わせる
+  // 人間の入力(GOAL.md・answered な Human Review)が未取り込みなら、次の triage / 探索セッションが
+  // 取り込む。タスクの起動は止まらない(探索は並列枠の中でしか走らない)ので、表示もその実態に合わせる
   if (data.inputsChanged) {
-    push("\n新規タスクの起動は保留中: 人間の入力変化(answered HR / GOAL.md)を取り込む探索セッションを優先");
-    push(`  → 実行中セッションの完了後に探索を 1 本実行し、その後 ${data.maxSessions} 並列に戻ります`);
+    push("\n未取り込みの入力変化あり (answered HR / GOAL.md): 次の triage / 探索セッションが取り込みます");
+    push(`  → タスクの起動は止まりません(探索は ${data.maxSessions} 並列の枠を 1 つ使って走ります)`);
   }
 
-  push(`\n${data.inputsChanged ? "探索後に起動予定のタスク" : "次に実行予定のタスク"}`);
+  push("\n次に実行予定のタスク");
   const next = data.nextRunnableTasks;
   const snoozed = data.snoozedTasks;
   if (next.length === 0) {

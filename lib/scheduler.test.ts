@@ -9,7 +9,10 @@ import {
 
 const NOW = new Date("2026-08-16T00:00:00.000Z");
 
-/** 何も起きない状態(停止指示なし・タスクなし・未探索)を基準にする */
+/**
+ * 何も起きない状態(停止指示なし・タスクなし・探索済みで main も入力も変化なし)を基準にする。
+ * この基準では探索の理由が無いため、素の input() は idle-exit になる。
+ */
 function input(over: Partial<LoopInput> = {}): LoopInput {
   return {
     now: NOW,
@@ -19,12 +22,14 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
     maxSessions: 1,
     runnableTaskIds: [],
     conflictResumeTaskIds: [],
-    inputsChanged: false,
+    inputsDirty: false,
+    mainDirty: false,
     triageEnabled: false,
     triageAttempted: false,
     exploreEnabled: true,
+    exploreRunning: false,
     exploreDue: false,
-    exploreDone: false,
+    neverExplored: false,
     lastExploreYieldedNothing: false,
     pendingSnoozeCount: 0,
     rateLimitedUntilMs: null,
@@ -33,6 +38,8 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
     ...over,
   };
 }
+
+const IDLE_EXIT = { type: "stop", reason: STOP_REASON.idleExit, cause: "idle-exit" };
 
 describe("planLoopStep", () => {
   describe("停止指示 (優先度 1)", () => {
@@ -98,7 +105,7 @@ describe("planLoopStep", () => {
 
     it("停止指示は実行可能タスクや入力変化より優先される", () => {
       expect(
-        planLoopStep(input({ stopMode: "clean", runnableTaskIds: ["T-001"], inputsChanged: true })),
+        planLoopStep(input({ stopMode: "clean", runnableTaskIds: ["T-001"], inputsDirty: true })),
       ).toEqual({ type: "stop", reason: STOP_REASON.clean });
     });
   });
@@ -136,47 +143,40 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("入力変化による割り込み (優先度 3)", () => {
-    it("triage が無効ならアイドルで実行可能タスクより先に探索する", () => {
-      expect(planLoopStep(input({ inputsChanged: true, runnableTaskIds: ["T-001"] }))).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
+  describe("入力変化の取り込み (優先度 3: triage)", () => {
+    it("triage が有効かつ未試行なら実行可能タスクより先に triage する", () => {
+      expect(
+        planLoopStep(input({ inputsDirty: true, triageEnabled: true, runnableTaskIds: ["T-001"] })),
+      ).toEqual({ type: "triage" });
     });
 
-    it("drain は廃止した: セッションが走っていても待たずに探索する(mainLoop がブロックするため git 操作は直列のまま)", () => {
-      expect(planLoopStep(input({ inputsChanged: true, runningCount: 1, maxSessions: 2 }))).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
-    });
-
-    it("explore が無効でも入力変化の取り込みは行う", () => {
-      expect(planLoopStep(input({ inputsChanged: true, exploreEnabled: false }))).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
-    });
-
-    it("triage が有効かつ未試行なら探索より先に triage する", () => {
-      expect(planLoopStep(input({ inputsChanged: true, triageEnabled: true, triageAttempted: false }))).toEqual({
-        type: "triage",
-      });
-    });
-
-    it("triage はセッションが走っていても待たずに起動する", () => {
+    it("triage は軽量なのでセッションが走っていても空きが無くても起動する", () => {
       expect(
         planLoopStep(
-          input({ inputsChanged: true, triageEnabled: true, triageAttempted: false, runningCount: 1, maxSessions: 2 }),
+          input({ inputsDirty: true, triageEnabled: true, runningCount: 1, maxSessions: 1 }),
         ),
       ).toEqual({ type: "triage" });
     });
 
-    it("triage を既に試行済みなら探索へフォールバックする", () => {
-      expect(planLoopStep(input({ inputsChanged: true, triageEnabled: true, triageAttempted: true }))).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
+    it("triage を既に試行済みなら triage しない(残りは探索が取り込む)", () => {
+      expect(
+        planLoopStep(input({ inputsDirty: true, triageEnabled: true, triageAttempted: true })),
+      ).toEqual({ type: "explore", trigger: "idle" });
+    });
+
+    it("triage が無効なら入力変化だけでは割り込まず、探索の起動条件で判断する", () => {
+      // 実行可能タスクがある + クールダウン未経過 → 探索せずタスクを起動する(枠の割り込みは廃止)
+      expect(
+        planLoopStep(input({ inputsDirty: true, runnableTaskIds: ["T-001"], exploreDue: false })),
+      ).toEqual({ type: "launch", taskIds: ["T-001"] });
+    });
+
+    it("入力変化があっても空きが無ければ探索しない(枠を超える割り込みは廃止した)", () => {
+      expect(
+        planLoopStep(
+          input({ inputsDirty: true, runningCount: 1, maxSessions: 1, exploreDue: true }),
+        ),
+      ).toEqual({ type: "wait", ms: 60_000, why: "slots-full" });
     });
   });
 
@@ -194,8 +194,8 @@ describe("planLoopStep", () => {
       });
     });
 
-    it("streak が 3 以上でも実行可能タスクが無ければ通常の判断(定期探索等)へ進む", () => {
-      expect(planLoopStep(input({ fastCrashStreak: 3, exploreDue: true }))).toEqual({
+    it("streak が 3 以上でも実行可能タスクが無ければ通常の判断(探索等)へ進む", () => {
+      expect(planLoopStep(input({ fastCrashStreak: 3, mainDirty: true }))).toEqual({
         type: "explore",
         trigger: "idle",
       });
@@ -209,14 +209,143 @@ describe("planLoopStep", () => {
             runnableTaskIds: ["T-001"],
             maxSessions: 1,
             runningCount: 1,
-            exploreDone: true,
           }),
         ),
       ).toEqual({ type: "wait", ms: 60_000, why: "slots-full" });
     });
   });
 
-  describe("タスク起動 (優先度 5)", () => {
+  describe("探索 (優先度 5)", () => {
+    describe("A: アイドル時の探索", () => {
+      it("main が変化していれば、実行可能タスクが無いときに探索する", () => {
+        expect(planLoopStep(input({ mainDirty: true }))).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("入力が変化していれば探索する(triage 無効時)", () => {
+        expect(planLoopStep(input({ inputsDirty: true }))).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("未探索なら main も入力も変化していなくても探索する", () => {
+        expect(planLoopStep(input({ neverExplored: true }))).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("main も入力も変化しておらず探索済みなら探索しない(idle-exit)", () => {
+        expect(planLoopStep(input({ exploreDue: true }))).toEqual(IDLE_EXIT);
+      });
+
+      it("クールダウン(exploreDue)が未経過でも、空振りでなければ探索する", () => {
+        expect(
+          planLoopStep(input({ mainDirty: true, lastExploreYieldedNothing: false, exploreDue: false })),
+        ).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("直前の探索が空振りかつクールダウン未経過なら再探索せず idle-exit する", () => {
+        expect(
+          planLoopStep(input({ mainDirty: true, lastExploreYieldedNothing: true, exploreDue: false })),
+        ).toEqual(IDLE_EXIT);
+      });
+
+      it("直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
+        expect(
+          planLoopStep(input({ mainDirty: true, lastExploreYieldedNothing: true, exploreDue: true })),
+        ).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("走っているセッションがあっても空きがあれば待たずに探索する(drain は廃止した)", () => {
+        expect(planLoopStep(input({ mainDirty: true, runningCount: 1, maxSessions: 2 }))).toEqual({
+          type: "explore",
+          trigger: "idle",
+        });
+      });
+
+      it("空きが無ければ探索しない(探索も枠を 1 つ消費する)", () => {
+        expect(
+          planLoopStep(input({ mainDirty: true, runningCount: 1, maxSessions: 1, neverExplored: true })),
+        ).toEqual({ type: "wait", ms: 60_000, why: "slots-full" });
+      });
+    });
+
+    describe("B: 忙しい中の定期見直し", () => {
+      it("実行可能タスクがあっても、変化があり実行間隔が来ていれば起動より探索を優先する", () => {
+        expect(
+          planLoopStep(input({ runnableTaskIds: ["T-001"], mainDirty: true, exploreDue: true })),
+        ).toEqual({ type: "explore", trigger: "periodic" });
+      });
+
+      it("入力変化でも定期見直しは成立する(triage 試行済み)", () => {
+        expect(
+          planLoopStep(
+            input({
+              runnableTaskIds: ["T-001"],
+              inputsDirty: true,
+              triageEnabled: true,
+              triageAttempted: true,
+              exploreDue: true,
+            }),
+          ),
+        ).toEqual({ type: "explore", trigger: "periodic" });
+      });
+
+      it("実行間隔が来ていなければ探索せず起動する", () => {
+        expect(
+          planLoopStep(input({ runnableTaskIds: ["T-001"], mainDirty: true, exploreDue: false })),
+        ).toEqual({ type: "launch", taskIds: ["T-001"] });
+      });
+
+      it("変化がなければ実行間隔が来ていても探索せず起動する", () => {
+        expect(planLoopStep(input({ runnableTaskIds: ["T-001"], exploreDue: true }))).toEqual({
+          type: "launch",
+          taskIds: ["T-001"],
+        });
+      });
+
+      it("未探索であることは定期見直しの理由にならない(変化が必要)", () => {
+        expect(
+          planLoopStep(input({ runnableTaskIds: ["T-001"], neverExplored: true, exploreDue: true })),
+        ).toEqual({ type: "launch", taskIds: ["T-001"] });
+      });
+
+      it("空きが無ければ探索しない", () => {
+        expect(
+          planLoopStep(
+            input({
+              runnableTaskIds: ["T-001"],
+              mainDirty: true,
+              exploreDue: true,
+              runningCount: 1,
+              maxSessions: 1,
+            }),
+          ),
+        ).toEqual({ type: "wait", ms: 60_000, why: "slots-full" });
+      });
+    });
+
+    describe("共通", () => {
+      it("explore が無効なら理由があっても探索しない", () => {
+        expect(planLoopStep(input({ exploreEnabled: false, mainDirty: true, neverExplored: true }))).toEqual(
+          IDLE_EXIT,
+        );
+      });
+
+      it("探索セッションが走っている間は次の探索もタスク起動もしない", () => {
+        expect(
+          planLoopStep(
+            input({
+              exploreRunning: true,
+              runnableTaskIds: ["T-001"],
+              mainDirty: true,
+              exploreDue: true,
+              runningCount: 1,
+              maxSessions: 4,
+              idlePollMs: 5_000,
+            }),
+          ),
+        ).toEqual({ type: "wait", ms: 5_000, why: "explore-running" });
+      });
+    });
+  });
+
+  describe("タスク起動 (優先度 6)", () => {
     it("空きスロット数だけ先頭から起動する", () => {
       expect(
         planLoopStep(input({ maxSessions: 2, runningCount: 0, runnableTaskIds: ["T-001", "T-002", "T-003"] })),
@@ -232,91 +361,15 @@ describe("planLoopStep", () => {
     it("空きが無ければ slots-full で待つ", () => {
       expect(
         planLoopStep(
-          input({
-            maxSessions: 1,
-            runningCount: 1,
-            runnableTaskIds: ["T-001"],
-            idlePollMs: 1_000,
-            exploreDone: true,
-          }),
+          input({ maxSessions: 1, runningCount: 1, runnableTaskIds: ["T-001"], idlePollMs: 1_000 }),
         ),
       ).toEqual({ type: "wait", ms: 1_000, why: "slots-full" });
-    });
-
-    it("実行可能タスクがあるうちは探索の実行間隔が来ていても起動を優先する", () => {
-      expect(planLoopStep(input({ runnableTaskIds: ["T-001"], exploreDue: true }))).toEqual({
-        type: "launch",
-        taskIds: ["T-001"],
-      });
-    });
-  });
-
-  describe("探索 (優先度 6)", () => {
-    it("未探索ならクールダウン(exploreDue)を待たずに探索する", () => {
-      expect(planLoopStep(input({ exploreDone: false, exploreDue: false }))).toEqual({
-        type: "explore",
-        trigger: "idle",
-      });
-    });
-
-    it("探索済みなら実行間隔が来ていても探索しない(定期探索は廃止した)", () => {
-      expect(planLoopStep(input({ exploreDone: true, exploreDue: true }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.idleExit,
-        cause: "idle-exit",
-      });
-    });
-
-    it("drain は廃止した: セッションが走っていても待たずに探索する", () => {
-      expect(planLoopStep(input({ exploreDone: false, runningCount: 1, maxSessions: 2 }))).toEqual({
-        type: "explore",
-        trigger: "idle",
-      });
-    });
-
-    it("直前の探索が空振りかつクールダウン未経過なら再探索せず idle-exit する(空振り探索の連鎖抑制)", () => {
-      expect(
-        planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: true, exploreDue: false })),
-      ).toEqual({
-        type: "stop",
-        reason: STOP_REASON.idleExit,
-        cause: "idle-exit",
-      });
-    });
-
-    it("直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
-      expect(
-        planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: true, exploreDue: true })),
-      ).toEqual({
-        type: "explore",
-        trigger: "idle",
-      });
-    });
-
-    it("直前の探索がタスクを生んでいれば、クールダウン未経過でも従来どおり即座に再探索する", () => {
-      expect(
-        planLoopStep(input({ exploreDone: false, lastExploreYieldedNothing: false, exploreDue: false })),
-      ).toEqual({
-        type: "explore",
-        trigger: "idle",
-      });
-    });
-
-    it("直前の探索が空振りでクールダウン未経過でも、入力変化があれば抑制されず探索(triage 無効時)へ進む", () => {
-      expect(
-        planLoopStep(
-          input({ inputsChanged: true, exploreDone: false, lastExploreYieldedNothing: true, exploreDue: false }),
-        ),
-      ).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
     });
   });
 
   describe("完了待ち (優先度 7)", () => {
-    it("探索済みで実行可能タスクも無くセッションだけ走っていれば slots-full で待つ", () => {
-      expect(planLoopStep(input({ exploreDone: true, runningCount: 1, maxSessions: 2 }))).toEqual({
+    it("探索理由も実行可能タスクも無くセッションだけ走っていれば slots-full で待つ", () => {
+      expect(planLoopStep(input({ runningCount: 1, maxSessions: 2 }))).toEqual({
         type: "wait",
         ms: 60_000,
         why: "slots-full",
@@ -325,46 +378,35 @@ describe("planLoopStep", () => {
   });
 
   describe("アイドル終了 (優先度 8・9)", () => {
-    it("探索済みで実行可能タスクも実行中セッションも無ければ終了する", () => {
-      expect(planLoopStep(input({ exploreDone: true }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.idleExit,
-        cause: "idle-exit",
-      });
+    it("探索理由も実行可能タスクも実行中セッションも無ければ終了する", () => {
+      expect(planLoopStep(input())).toEqual(IDLE_EXIT);
     });
 
-    it("explore が無効なら exploreDone に関わらず終了する", () => {
-      expect(planLoopStep(input({ exploreEnabled: false, exploreDone: false }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.idleExit,
-        cause: "idle-exit",
-      });
+    it("explore が無効なら未探索でも終了する", () => {
+      expect(planLoopStep(input({ exploreEnabled: false, neverExplored: true }))).toEqual(IDLE_EXIT);
     });
 
     it("実行可能タスクがあれば終了せず起動する", () => {
-      expect(planLoopStep(input({ exploreDone: true, runnableTaskIds: ["T-001"] }))).toEqual({
+      expect(planLoopStep(input({ runnableTaskIds: ["T-001"] }))).toEqual({
         type: "launch",
         taskIds: ["T-001"],
       });
     });
 
     it("セッションが実行中なら終了せず完了を待つ", () => {
-      expect(planLoopStep(input({ exploreDone: true, runningCount: 1, maxSessions: 2 }))).toEqual({
+      expect(planLoopStep(input({ runningCount: 1, maxSessions: 2 }))).toEqual({
         type: "wait",
         ms: 60_000,
         why: "slots-full",
       });
     });
 
-    it("inputsChanged なら終了せず探索へ回る", () => {
-      expect(planLoopStep(input({ exploreDone: true, inputsChanged: true }))).toEqual({
-        type: "explore",
-        trigger: "inputs",
-      });
+    it("入力変化があれば終了せず探索へ回る", () => {
+      expect(planLoopStep(input({ inputsDirty: true }))).toEqual({ type: "explore", trigger: "idle" });
     });
 
     it("rate limit 中は終了せず待機する", () => {
-      expect(planLoopStep(input({ exploreDone: true, rateLimitedUntilMs: 5_000 }))).toEqual({
+      expect(planLoopStep(input({ rateLimitedUntilMs: 5_000 }))).toEqual({
         type: "wait",
         ms: 5_000,
         why: "rate-limit",
@@ -372,14 +414,14 @@ describe("planLoopStep", () => {
     });
 
     it("停止指示があれば idle-exit ではなく通常の停止理由になる", () => {
-      expect(planLoopStep(input({ exploreDone: true, stopMode: "clean" }))).toEqual({
+      expect(planLoopStep(input({ stopMode: "clean" }))).toEqual({
         type: "stop",
         reason: STOP_REASON.clean,
       });
     });
 
     it("スヌーズ中のタスクが残っていれば終了せずアイドル待機する(時間が来れば runnable に戻るため)", () => {
-      expect(planLoopStep(input({ exploreDone: true, pendingSnoozeCount: 1 }))).toEqual({
+      expect(planLoopStep(input({ pendingSnoozeCount: 1 }))).toEqual({
         type: "wait",
         ms: 60_000,
         why: "idle",

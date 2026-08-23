@@ -29,6 +29,7 @@ import {
   isSupervisorSourceStale,
   loadDenyRules,
   loadPermissionDenials,
+  mergeUpdatedMain,
   newTaskId,
   nextStopEscalation,
   normalizeState,
@@ -1121,7 +1122,7 @@ describe("runningSessionLines", () => {
 
     expect(runningSessionLines(sessions, new Map(), now, staleAfterMs, 1)).toEqual([
       "実行中のセッション (1/1)",
-      "探索セッション  (実行可能なタスクを探索中)",
+      "探索セッション  (次の作業を探索中)",
       "  45秒経過 (2026-08-16T02:00:00.000Z 開始)",
     ]);
   });
@@ -1551,17 +1552,19 @@ describe("buildExplorePrompt", () => {
     return { trigger: "idle", goalChanged: null, newAnsweredIds: null, runningTasks: [], ...overrides };
   }
 
-  it("trigger=inputs のとき変化検知が起動理由になる", () => {
-    const prompt = buildExplorePrompt(ctx({ trigger: "inputs" }));
-
-    expect(prompt).toContain("### 今回の起動情報(Supervisor による機械的検出)");
-    expect(prompt).toContain("起動理由: GOAL.md / Human Review 回答の変化を検知したため");
-  });
-
-  it("trigger=idle のとき定期探索が起動理由になる", () => {
+  it("trigger=idle のとき「実行可能なタスクがない」が起動理由になる", () => {
     const prompt = buildExplorePrompt(ctx({ trigger: "idle" }));
 
-    expect(prompt).toContain("起動理由: 実行可能なタスクがないため(定期探索)");
+    expect(prompt).toContain("### 今回の起動情報(Supervisor による機械的検出)");
+    expect(prompt).toContain("起動理由: 実行可能なタスクがないため(main / 入力の変化を検知)");
+  });
+
+  it("trigger=periodic のとき定期見直しが起動理由になる", () => {
+    const prompt = buildExplorePrompt(ctx({ trigger: "periodic" }));
+
+    expect(prompt).toContain(
+      "起動理由: タスク消化中の定期見直し(前回探索から一定時間が経過し、main / 入力が変化)",
+    );
   });
 
   it("goalChanged の true/false/null がそれぞれ文言に反映される", () => {
@@ -2189,6 +2192,22 @@ describe("commitAgentDir", () => {
     // 検出できず、誤ってコミットしてしまう。ここでスキップされることが
     // ./worktree.ts の gitOperationInProgress を使っている効果の確認になる。
     expect(headHash(wtPath)).toBe(before);
+  });
+});
+
+describe("mergeUpdatedMain", () => {
+  it("main の内容が変わるマージだけを true にする", () => {
+    expect(mergeUpdatedMain({ result: "merged" })).toBe(true);
+    expect(mergeUpdatedMain({ result: "renumbered" })).toBe(true);
+  });
+
+  it("main が変わらない結果(マージ無し・失敗・マージ未実施)は false", () => {
+    expect(mergeUpdatedMain({ result: "nothing-to-merge" })).toBe(false);
+    expect(mergeUpdatedMain({ result: "conflict", paths: ["a.ts"], conflictKind: "substantive" })).toBe(false);
+    expect(mergeUpdatedMain({ result: "blocked", reason: "dirty" })).toBe(false);
+    expect(mergeUpdatedMain({ result: "wedged", stderr: "not uptodate" })).toBe(false);
+    // マージを試みていない(worktree が無い・衝突解消が未完)場合
+    expect(mergeUpdatedMain(null)).toBe(false);
   });
 });
 
