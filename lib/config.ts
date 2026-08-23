@@ -20,8 +20,12 @@ export interface Config {
   taskTimeoutMs: number;
   maxTurns: number;
   rateLimit: { backoffMs: number };
-  /** minIntervalMs: 直前の探索が空振り(新規タスク 0 件)だった場合の再探索クールダウン
-   * (空振り探索の即時連鎖を防ぐ)。直前の探索がタスクを生んでいれば間隔を待たずに探索する */
+  /** 探索セッション(次の作業を探し、GOAL とタスク全体を突き合わせ直すセッション)の設定。
+   * 探索は parallel.maxSessions の枠を 1 つ消費し、走っている間は新しいタスクセッションを起動しない。
+   * minIntervalMs は 2 つの用途を兼ねる:
+   *   - 実行可能タスクがある間の「定期見直し」探索の最小間隔
+   *   - 直前の探索が空振り(新規タスク 0 件)だった場合の再探索クールダウン
+   * 実行可能タスクが無く、前回探索以降に main / 入力が変化していれば、間隔を待たずに探索する */
   explore: { enabled: boolean; minIntervalMs: number };
   /** Human Review 回答の段階的処理(Stage 1: 決定論判定 / Stage 2: 軽量モデル判定)の設定。
    * enabled=false なら Stage 1/2 を飛ばし、従来どおり毎回フル探索(Stage 3)へ回す */

@@ -50,7 +50,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
 1. `ccloop init` (または任意のサブコマンドの初回実行)で `.agent/` を用意する
 2. `.agent/GOAL.md` にミッション・現在の目標・制約を書く(**空のままだと新しい作業を発明しない**)
 3. `ccloop run` でループを起動する。ready なタスクが無ければまず探索セッションが動き、GOAL.md から
-   タスクを導出する
+   タスクを導出する(ready なタスクがある間も、一定間隔ごとに探索を挟んで GOAL.md / main の変化を
+   取り込む)
 4. 別の端末から `ccloop watch`(既定 1 秒間隔、`--interval` で変更可)で進捗を眺める。1 回だけ見たい
    ときは `ccloop status`、タスク一覧は `ccloop list`(`--full` で詳細)。どちらも `--json` を付けると
    機械可読な JSON を出力する
@@ -89,8 +90,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
   チェックを入れるだけでよい(`status` の書き換えは不要)。
   - 対応不要なら `- [ ] 対応不要(このままクローズしてよい)` を `- [x]` にする。
   - 回答を書くなら `- [ ] 回答を下に書いた` を `- [x]` にしたうえで、その下に決定内容を書く。
-  次のセッション起動時にこの変化が検出され、3 段階(決定論判定 → 軽量モデル判定 → 探索セッション)で
-  取り込まれる(BLOCK は常に最終段のみ)。
+  次のセッション起動時に決定論判定 → 軽量モデル判定(triage)までが即時に走り、探索セッション
+  (最終段)は次に空き枠が空いたタイミングで 1 回にまとめて取り込む(BLOCK は常に最終段のみ)。
 - **failed / blocked タスクの再実行**: 該当タスクファイル(`.agent/tasks/T-<日時>-<slug>.md`)の frontmatter を
   `status: ready`、`retries: 0` に手で編集する。失敗原因を放置すると再び失敗するので、原因側の修正を
   先に行うのが普通。古い completed / closed / 判断ファイルは `.agent/archive/` へ自動的に退避される
@@ -137,9 +138,9 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 | `permissionMode` | `claude -p` の permission mode |
 | `maxRetries` / `taskTimeoutMs` / `maxTurns` | タスクセッションのリトライ上限・タイムアウト・ターン上限 |
 | `rateLimit.backoffMs` | レート制限検出時のバックオフ |
-| `explore` | 探索セッションの有効/無効・最小間隔 |
+| `explore` | 探索セッションの有効/無効・最小間隔(`minIntervalMs` は、実行可能タスクがある間の定期見直し間隔と、直前の探索が空振りだった場合のクールダウンを兼ねる) |
 | `triage` | Human Review の軽量モデル判定の有効/無効・モデル |
-| `parallel.maxSessions` | 独立な ready タスクを同時に走らせる上限 |
+| `parallel.maxSessions` | 独立な ready タスクを同時に走らせる上限(探索セッションもこの枠を 1 つ消費し、探索中は新規タスクセッションを起動しない) |
 
 `.agent/claude-settings.json`(任意)は permissions の allow/deny への追記だけを書く。
 `.agent/PROMPT.local.md`(任意)はリポジトリ固有の追加ルールを書くと共通ルールの後ろに連結されて

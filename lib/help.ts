@@ -44,6 +44,8 @@ export const SUBCOMMAND_HELP: Readonly<Record<string, string>> = {
 
 常駐ループを起動し、.agent/ の ready なタスクを優先度順に Claude Code セッションへ割り当てて
 実行する。ready なタスクが無ければまず探索セッションが動き、GOAL.md からタスクを導出する。
+ready なタスクがある間も、一定間隔ごとに空いた枠で探索を挟んで GOAL.md / main の変化を取り込む
+(探索は並列セッション枠を 1 つ消費し、走行中は新しいタスクセッションを起動しない)。
 フォアグラウンドで動き続けるプロセスなので、エージェントから使うときはバックグラウンド/別プロセスで
 起動し、\`ccloop status\` か \`ccloop watch\` で監視すること。
 
