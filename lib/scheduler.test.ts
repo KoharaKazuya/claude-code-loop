@@ -12,6 +12,7 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
     runningCount: 0,
     maxSessions: 1,
     runnableTaskIds: [],
+    conflictResumeTaskIds: [],
     inputsChanged: false,
     triageEnabled: false,
     triageAttempted: false,
@@ -47,6 +48,27 @@ describe("planLoopStep", () => {
         type: "wait",
         ms: 5_000,
         why: "drain",
+      });
+    });
+
+    it("停止指示 clean でも衝突解消待ちのタスクがあれば先頭 1 件だけ起動する", () => {
+      expect(
+        planLoopStep(input({ stopMode: "clean", conflictResumeTaskIds: ["T-001", "T-002"] })),
+      ).toEqual({ type: "launch", taskIds: ["T-001"], conflictResume: true });
+    });
+
+    it("衝突解消待ちがあってもセッションが走っていれば drain 待ちを優先する", () => {
+      expect(
+        planLoopStep(
+          input({ stopMode: "clean", runningCount: 1, conflictResumeTaskIds: ["T-001"], idlePollMs: 5_000 }),
+        ),
+      ).toEqual({ type: "wait", ms: 5_000, why: "drain" });
+    });
+
+    it("衝突解消待ちが無ければ従来どおり停止する", () => {
+      expect(planLoopStep(input({ stopMode: "clean", conflictResumeTaskIds: [] }))).toEqual({
+        type: "stop",
+        reason: STOP_REASON.clean,
       });
     });
 

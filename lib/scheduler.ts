@@ -14,6 +14,7 @@
  * (プロセスが終われば停止意思も消えるのが正しい: 外部からの停止手段は Ctrl+C だけ)。
  *   - none:  停止指示なし
  *   - clean: 新規セッションを起動せず、実行中が終わり次第、一区切りとして停止する
+ *            (例外: 衝突解消待ちの worktree があれば、その解消セッションだけは 1 本ずつ起動する)
  */
 export type StopMode = "none" | "clean";
 
@@ -29,6 +30,11 @@ export interface LoopInput {
   maxSessions: number;
   /** planTaskSelection が返した実行可能タスクの ID(優先度順) */
   runnableTaskIds: string[];
+  /** 衝突解消待ちの worktree(マージ進行中)を抱えたまま runnable に戻っているタスクの ID(優先度順)。
+   * ただし「この停止指示の後にまだ衝突解消セッションを起動していない」ものに限る。
+   * 衝突解消は新規セッションを起動しないと進まないため、clean 停止中でもここに載っているタスクだけは
+   * 例外的に起動する(タスクごとに停止後 1 回まで・同時に 1 本まで) */
+  conflictResumeTaskIds: string[];
   /** 人間からの入力(GOAL.md・Human Review の回答)が前回取り込み時から変わったか */
   inputsChanged: boolean;
   /** Human Review の段階的処理(triage: 決定論判定→軽量モデル判定)を行うか */
@@ -59,7 +65,7 @@ export type LoopAction =
   | { type: "stop"; reason: string; cause?: "idle-exit" }
   | { type: "explore"; trigger: "inputs" | "idle" }
   | { type: "triage" }
-  | { type: "launch"; taskIds: string[] }
+  | { type: "launch"; taskIds: string[]; conflictResume?: true }
   | { type: "wait"; ms: number; why: "rate-limit" | "drain" | "slots-full" | "idle" | "crash-backoff" };
 
 /** rate limit 待機の 1 スライス。長時間待ちでも定期的に停止指示を拾い直すため上限を設ける */
@@ -77,6 +83,10 @@ export const STOP_REASON = {
  *
  * 1. 停止指示あり(stopMode !== "none")
  *    新規セッションの起動を止め、実行中セッションがあれば drain 待ち、無ければ停止する。
+ *    ただし clean 停止で実行中が 0 のとき、衝突解消待ちのタスク(conflictResumeTaskIds)が
+ *    あれば、その先頭 1 件だけを起動してから停止へ向かう。衝突解消はセッションを起動しないと
+ *    進まず、放置すると MERGE_HEAD 付きの worktree が次回 run まで宙に浮くため。
+ *    複数同時に起動すると解消セッション同士が再び衝突しうるので必ず 1 本ずつ。
  * 2. rate limit 中(rateLimitedUntilMs > 0)
  *    最大 RATE_LIMIT_SLICE_MS のスライスで待つ。待機中も周回ごとに停止指示を拾い直せる。
  * 3. 人間からの入力が変化した → 既存タスクより先に割り込ませる。triage が有効かつこの入力
@@ -107,6 +117,10 @@ export function planLoopStep(input: LoopInput): LoopAction {
   // 1. 停止指示
   if (input.stopMode !== "none") {
     if (input.runningCount > 0) return drain;
+    // 衝突解消だけは停止前に片付ける(1 本ずつ。上限は呼び出し側が conflictResumeTaskIds で担保する)
+    if (input.stopMode === "clean" && input.conflictResumeTaskIds.length > 0) {
+      return { type: "launch", taskIds: [input.conflictResumeTaskIds[0]!], conflictResume: true };
+    }
     return {
       type: "stop",
       reason: input.mainDirtyOutsideAgent ? STOP_REASON.cleanDirty : STOP_REASON.clean,

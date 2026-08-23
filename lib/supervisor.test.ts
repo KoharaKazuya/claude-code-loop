@@ -42,6 +42,7 @@ import {
   permissionDenialsPathOf,
   type PermissionDenialRecord,
   pickModel,
+  planConflictResume,
   planTaskSelection,
   projectsDirName,
   prunePatches,
@@ -334,6 +335,68 @@ describe("planTaskSelection", () => {
 
     expect(snoozed).toEqual([]);
     expect(runnable).toEqual([dep]);
+  });
+});
+
+describe("planConflictResume", () => {
+  const CONFLICT_NOW = new Date("2026-08-16T00:00:00.000Z");
+
+  function resume(tasks: Task[], conflicted: string[], launched: string[] = []): string[] {
+    return planConflictResume({
+      tasks,
+      now: CONFLICT_NOW,
+      runningIds: new Set<string>(),
+      launchedIds: new Set(launched),
+      hasConflict: (id) => conflicted.includes(id),
+    }).map((t) => t.id);
+  }
+
+  it("衝突中の worktree を持つ ready タスクだけを優先度順に返す", () => {
+    const a = makeTask({ id: "T-001", priority: 5 });
+    const b = makeTask({ id: "T-002", priority: 1 });
+    const c = makeTask({ id: "T-003", priority: 1 });
+
+    expect(resume([a, b, c], ["T-001", "T-002"])).toEqual(["T-002", "T-001"]);
+  });
+
+  it("この停止指示の後に既に起動したタスクは除外する(停止が無限に延びないため)", () => {
+    const a = makeTask({ id: "T-001" });
+
+    expect(resume([a], ["T-001"], ["T-001"])).toEqual([]);
+  });
+
+  it("スヌーズ中でも衝突解消の対象に含める(worktree を残したまま終われないため)", () => {
+    const a = makeTask({ id: "T-001", snoozeUntil: "2026-08-17T00:00:00.000Z" });
+
+    expect(resume([a], ["T-001"])).toEqual(["T-001"]);
+  });
+
+  it("実行中・ready でない・依存が dead のタスクは対象外", () => {
+    const running = makeTask({ id: "T-001" });
+    const working = makeTask({ id: "T-002", status: "working" });
+    const dead = makeTask({ id: "T-003", status: "failed" });
+    const blocked = makeTask({ id: "T-004", dependencies: ["T-003"] });
+
+    const ids = planConflictResume({
+      tasks: [running, working, dead, blocked],
+      now: CONFLICT_NOW,
+      runningIds: new Set(["T-001"]),
+      launchedIds: new Set<string>(),
+      hasConflict: () => true,
+    }).map((t) => t.id);
+
+    expect(ids).toEqual([]);
+  });
+
+  it("タスクファイルを書き換えない(副作用がない)", () => {
+    const dead = makeTask({ id: "T-001", status: "failed" });
+    const blocked = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const tasks = [dead, blocked];
+    const snapshot = JSON.parse(JSON.stringify(tasks));
+
+    resume(tasks, ["T-002"]);
+
+    expect(tasks).toEqual(snapshot);
   });
 });
 
