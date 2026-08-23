@@ -25,6 +25,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { checkNodeVersion, cmdDoctor } from "./doctor.ts";
+import { SUBCOMMAND_HELP, TOP_LEVEL_HELP } from "./help.ts";
 import { checkSchemaVersion, cmdInit, configReadErrorMessage, ensureAgentDir } from "./init.ts";
 import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
 import { cmdAdd, cmdList, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
@@ -34,9 +35,7 @@ import { cmdWatch } from "./watch.ts";
 // 起動時チェックとしてここでも使うので、CLI の API としてそのまま再公開する。
 export { checkNodeVersion };
 
-const USAGE =
-  "使い方: ccloop [--repo <path>] <run|status|watch|list|add|init|doctor|version> [引数...]" +
-  "(--repo はサブコマンドの後ろでも指定可)";
+const USAGE = TOP_LEVEL_HELP;
 
 /** `.agent/` が揃っていることを前提とするサブコマンド(init / doctor / version を除く) */
 export const REPO_COMMANDS: readonly string[] = ["run", "status", "watch", "list", "add"];
@@ -127,6 +126,16 @@ export async function main(argv: string[]): Promise<void> {
     console.log(USAGE);
     return;
   }
+
+  // サブコマンド別ヘルプはリポジトリ解決より前に返す(`.agent/` 未配置・repo 未特定でも
+  // `ccloop <サブコマンド> --help` が使えるようにするため)
+  const subArgs = parsed.rest.slice(1);
+  const subHelp = SUBCOMMAND_HELP[cmd];
+  if (subHelp !== undefined && (subArgs.includes("--help") || subArgs.includes("-h"))) {
+    console.log(subHelp);
+    return;
+  }
+
   // version はリポジトリに紐づかないため、ルート解決より前に返す
   // (リポジトリ外から `ccloop version` を叩いても答えられるようにする)
   if (cmd === "version" || cmd === "--version" || cmd === "-v") {
@@ -149,7 +158,7 @@ export async function main(argv: string[]): Promise<void> {
     throw err;
   }
 
-  const args = parsed.rest.slice(1);
+  const args = subArgs;
 
   // init は `.agent/` を用意する側なので、未配置チェックより前に処理する
   if (cmd === "init") {
@@ -180,7 +189,7 @@ export async function main(argv: string[]): Promise<void> {
       await mainLoop();
       break;
     case "status":
-      cmdStatus();
+      cmdStatus(args);
       break;
     case "watch":
       try {
