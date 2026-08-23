@@ -12,7 +12,6 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { ccloopHome, type Paths } from "./paths.ts";
 
@@ -30,17 +29,6 @@ export interface Settings {
 /** テンプレートのファイルパス(CCLOOP_HOME 配下) */
 export function settingsTemplatePath(home: string = ccloopHome()): string {
   return path.join(home, "settings.template.json");
-}
-
-/**
- * テンプレート文字列のプレースホルダを埋めて JSON として読む(純粋)。
- * 現状のプレースホルダは `{{HOME}}` のみ。deny の `Read(/{{HOME}}/.claude/**)` で使い、
- * homeDir が絶対パス(先頭 `/`)であることを前提に、claude の permission 記法における
- * 絶対パス接頭辞 `//` を作る。値は JSON 文字列リテラルとして安全になるようエスケープする。
- */
-export function renderSettingsTemplate(templateText: string, homeDir: string): Settings {
-  const escaped = JSON.stringify(homeDir).slice(1, -1);
-  return JSON.parse(templateText.replaceAll("{{HOME}}", escaped)) as Settings;
 }
 
 /** 文字列だけを取り出した配列(不正な要素は捨てる) */
@@ -83,15 +71,14 @@ export function mergeSettings(base: Settings, overlay: unknown): Settings {
  * これらはリポジトリの外(state ディレクトリ)にあるため git diff でレビューされない。
  * `.agent/claude-settings.json` の deny だけでは、そこに書かれた permissions.deny 自体を
  * 上書きする経路(生成 settings ファイルへの直接の Write/Edit)を塞げないため、絶対パスで
- * 個別に拒否する。`//abs/path` はテンプレートの `Read(/{{HOME}}/...)` と同じ表記
- * (claude の permission 記法における絶対パス接頭辞 `/` + 絶対パス)。
+ * 個別に拒否する。`Edit(//abs/path)` は claude の permission 記法における絶対パス接頭辞
+ * `/` + 絶対パス。Edit への deny だけで Write ツールによる書き込みも止まることを実機確認済みのため、
+ * `Write(...)` は列挙しない(冗長)。
  */
 function selfProtectDenyEntries(paths: Paths): string[] {
-  const entries: string[] = [];
-  for (const target of [paths.generatedSettingsPath, paths.generatedSystemPromptPath]) {
-    entries.push(`Write(/${target})`, `Edit(/${target})`);
-  }
-  return entries;
+  return [paths.generatedSettingsPath, paths.generatedSystemPromptPath].map(
+    (target) => `Edit(/${target})`,
+  );
 }
 
 /** 利用側リポジトリの追記用 settings(`.agent/claude-settings.json`)。無ければ null */
@@ -108,12 +95,9 @@ export function readRepoSettings(paths: Paths): unknown {
  * 自律実行セッション用の settings を生成し、`paths.generatedSettingsPath` へ書き出す。
  * 書き出したパスを返す。`ccloop run` の起動時に 1 回だけ呼べばよい。
  */
-export function generateSettings(
-  paths: Paths,
-  opts: { home?: string; homeDir?: string } = {},
-): string {
+export function generateSettings(paths: Paths, opts: { home?: string } = {}): string {
   const templateText = fs.readFileSync(settingsTemplatePath(opts.home ?? ccloopHome()), "utf8");
-  const base = renderSettingsTemplate(templateText, opts.homeDir ?? os.homedir());
+  const base = JSON.parse(templateText) as Settings;
   const merged = mergeSettings(base, readRepoSettings(paths));
   merged.permissions = {
     ...merged.permissions,

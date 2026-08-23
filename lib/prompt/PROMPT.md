@@ -84,25 +84,25 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 
 ## Bash 実行の権限制約
 
-- 許可・拒否はコマンド文字列全体に対するパターンマッチで決まる(サブコマンド単位に分解されない)。
-  ツール既定の permissions に対し、`.agent/claude-settings.json` があればそこに追記された allow/deny が
-  上書き適用される(deny が allow に優先する)。このファイルをセッション自身が権限を広げる目的で
-  編集してはならない。
-- `&&` `||` `;` `|` `>` `<<` を含む複合コマンドは、個々のコマンドが許可されていても拒否される。
-  Bash は 1 回の呼び出しにつき 1 コマンドにする(独立な呼び出しは同一メッセージで並列に行ってよい)。
-- 既定で許可されているのは主に: 読み取り系(`Read` `Glob` `Grep`)、`Edit` `Write`、
-  `git status/log/diff/show/add/commit/branch/rev-parse/rm`、`ls` `cat` `mkdir` `mv` `cp` `rm` `touch`
-  `echo` `grep` `find` `wc` `diff`、`node *` `npm *` `npx tsc*`。`git checkout`、`git push`、`sudo`、
-  `head` `tail` `stat` `awk` `sed` `tr` `timeout` `python3`、`npx` の `tsc` 以外のサブコマンド
-  (`npx vitest` 等)は許可されていない。
-- ツールの設定ディレクトリ(`~/.claude/` 配下)への読み出しも拒否される。
-- `.agent/claude-settings.json`、および生成された settings.json / system prompt(state ディレクトリ配下)への
-  Write / Edit も拒否される。これらはセッション自身が権限を広げる目的で書き換えてはならない自己改変対象のため。
+- permission mode は auto。`permissions.deny` に一致する操作は機械的に拒否される。それ以外は概ね
+  実行できるが、allow に無い操作は classifier の判定を経る(書き込み系で 1〜2 秒、判断に迷う操作では
+  十数秒かかる、または拒否されることがある)。ツール既定の permissions に対し、
+  `.agent/claude-settings.json` があればそこに追記された allow/deny が上書き適用される(deny が allow に
+  優先する)。このファイルをセッション自身が権限を広げる目的で編集してはならない。
+- deny で拒否される操作。これらは代替手段で迂回しようとせず、その操作なしではタスクが成立しない
+  場合のみ絶対ルール 6 に従い BLOCK にする。
+  - `~/.claude/` `~/.ssh/` `~/.aws/` `~/.config/gh/` 配下と `.env` / `.env.*` の読み取り
+  - `.agent/claude-settings.json` と `.agent/config.json` の編集
+  - `git push` / `checkout` / `switch` / `merge` / `rebase` / `reset` / `clean` / `stash` / `worktree`、
+    ブランチの削除・改名(`git branch -d/-D/-m/-M`)
+  - `sudo`
+  - 生成された settings.json / system prompt(state ディレクトリ配下)への Edit(自己改変の禁止)
+- allow(classifier を経ず即時に通る)は読み取り専用のコマンドに限る: `Read` `Glob` `Grep`、
+  `git status/log/diff/show/rev-parse/ls-files/blame`、`ls` `cat` `grep` `wc` `diff`。それ以外の操作
+  (`npm run <script>` を含む書き込み・実行系や `Edit`/`Write` など)は allow に無くても deny に触れない
+  限り実行でき、classifier の判定を経る。検証は `npm run <script>` 経由で行う。
 - 読み出しは Read(offset/limit)、検索は Grep / Glob、退避・書き戻しは Write ツールを優先する。
   出力を絞るときはコマンド自身のオプション(`git log --oneline -5` 等)を使う。
-- 検証は許可されているコマンドの範囲で行う。多くの場合 `npm run <script>` 経由でプロジェクト自身の
-  test / lint / typecheck / build スクリプトを呼び出せる。`npx vitest` のように allow 外のコマンドが
-  必要になった場合は使わず、絶対ルール 6 に従って回避する。
 - 拒否されたら回避せず絶対ルール 6 に従い、より安全な代替に切り替える。拒否の事実は ccloop が記録し
   `ccloop status` に要約が出るので、セッションが human-review へ報告する必要はない。その操作なしで
   タスクが成立しないときだけ BLOCK にする。
@@ -134,8 +134,9 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 
 > あなたはサブエージェントである。さらに委譲せず、このタスクを自分で完結すること。
 > AskUserQuestion は使わない。
-> Bash は 1 回の呼び出しにつき 1 コマンドとする(`&&` `||` `;` `|` `>` `<<` を含む複合コマンドは使わない)。
-> ツールの permissions.allow にないコマンド・パターンは使わない。
+> permissions.deny に一致する操作(git push/checkout/switch/merge/rebase/reset/clean/stash/worktree、
+> ブランチの削除・改名、sudo、`~/.claude` 等の読み取り、.agent/claude-settings.json や
+> .agent/config.json の編集など)は使わない。拒否されても代替手段で迂回しない。
 > 指示された範囲外のファイル・処理には触れない。
 > 検証できなかった事項は推測で埋めず、その旨を明記して報告する。
 

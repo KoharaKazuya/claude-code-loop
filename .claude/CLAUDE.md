@@ -44,5 +44,5 @@ docs/ は今後のエージェント・人間が作業時に参照するため�
 
 `ccloop run` 起動セッションの Bash 権限は `lib/settings.template.json` の既定 permissions に従う。
 `.agent/claude-settings.json` があれば、そこに追記された allow/deny がツール既定に対する
-上書き差分として適用される(deny が allow に優先)。制約の詳細(複合コマンド不可・許可コマンド一覧など)は
-`lib/prompt/PROMPT.md` の「Bash 実行の権限制約」節を参照する。
+上書き差分として適用される(deny が allow に優先)。制約の詳細(permission mode・deny 一覧・allow の
+役割など)は `lib/prompt/PROMPT.md` の「Bash 実行の権限制約」節を参照する。
