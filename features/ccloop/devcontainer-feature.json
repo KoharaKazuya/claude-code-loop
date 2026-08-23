@@ -1,6 +1,6 @@
 {
   "id": "ccloop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "name": "claude-code-loop (ccloop)",
   "description": "Autonomous development loop CLI that repeatedly launches Claude Code sessions to work through a task queue.",
   "documentationURL": "https://github.com/KoharaKazuya/claude-code-loop",
