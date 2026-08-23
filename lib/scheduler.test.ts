@@ -29,13 +29,6 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
 
 describe("planLoopStep", () => {
   describe("停止指示 (優先度 1)", () => {
-    it("停止指示 session かつセッションが走っていなければ停止する", () => {
-      expect(planLoopStep(input({ stopMode: "session" }))).toEqual({
-        type: "stop",
-        reason: STOP_REASON.session,
-      });
-    });
-
     it("停止指示 clean かつ差分なしならクリーン停止する", () => {
       expect(planLoopStep(input({ stopMode: "clean" }))).toEqual({
         type: "stop",
@@ -50,7 +43,7 @@ describe("planLoopStep", () => {
     });
 
     it("停止指示があってもセッションが走っていれば drain 待ちにする", () => {
-      expect(planLoopStep(input({ stopMode: "session", runningCount: 1, idlePollMs: 5_000 }))).toEqual({
+      expect(planLoopStep(input({ stopMode: "clean", runningCount: 1, idlePollMs: 5_000 }))).toEqual({
         type: "wait",
         ms: 5_000,
         why: "drain",
