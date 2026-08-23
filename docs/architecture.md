@@ -42,7 +42,7 @@ feature(参照先は `.devcontainer/devcontainer.json`。`npm version` で同期
 
 **既知の制約**: `--append-system-prompt-file` で注入した内容は、fork でないサブエージェント
 (Task ツールで起動されたセッション)には引き継がれない。そのため自律実行セッションが他のサブエージェント
-へ委譲するときは、守らせたいルール(AskUserQuestion を使わない、Bash は 1 コマンドずつ、等)を
+へ委譲するときは、守らせたいルール(AskUserQuestion を使わない、permissions.deny に一致する操作をしない、等)を
 委譲プロンプト本文に定型文として明示的に書く必要がある(`lib/prompt/PROMPT.md` の「委譲時の定型注意」)。
 これは仕組み上の制約であり、将来 Claude Code 側の挙動が変わらない限り解消されない。
 

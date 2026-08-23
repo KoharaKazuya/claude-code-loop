@@ -2287,6 +2287,41 @@ describe("denialMatchesRule", () => {
     ).toBe(false);
   });
 
+  it("Read: ~/ 始まりのホーム基準パターンを ** グロブで判定する", () => {
+    const denial = {
+      tool_name: "Read",
+      tool_input: { file_path: path.join(os.homedir(), ".claude", "settings.json") },
+    };
+    expect(denialMatchesRule(denial, "Read(~/.claude/**)", root)).toBe(true);
+    expect(
+      denialMatchesRule({ tool_name: "Read", tool_input: { file_path: "/etc/passwd" } }, "Read(~/.claude/**)", root),
+    ).toBe(false);
+  });
+
+  it("Edit: ./ 始まりの root 基準パターンは tool_name Edit にも一致する", () => {
+    const denial = { tool_name: "Edit", tool_input: { file_path: `${root}/.agent/config.json` } };
+    expect(denialMatchesRule(denial, "Edit(./.agent/config.json)", root)).toBe(true);
+    expect(
+      denialMatchesRule(
+        { tool_name: "Edit", tool_input: { file_path: `${root}/.agent/other.json` } },
+        "Edit(./.agent/config.json)",
+        root,
+      ),
+    ).toBe(false);
+  });
+
+  it("Bash: git branch -D * は削除コマンドに一致し --show-current には一致しない", () => {
+    const denial = { tool_name: "Bash", tool_input: { command: "git branch -D victim" } };
+    expect(denialMatchesRule(denial, "Bash(git branch -D *)", root)).toBe(true);
+    expect(
+      denialMatchesRule(
+        { tool_name: "Bash", tool_input: { command: "git branch --show-current" } },
+        "Bash(git branch -D *)",
+        root,
+      ),
+    ).toBe(false);
+  });
+
   it("ツール名が一致しなければ false", () => {
     const denial = { tool_name: "Write", tool_input: { file_path: `${root}/.env` } };
     expect(denialMatchesRule(denial, "Read(./.env)", root)).toBe(false);
