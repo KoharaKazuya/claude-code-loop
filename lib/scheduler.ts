@@ -12,11 +12,10 @@
 /**
  * 停止指示の段階。run プロセスのメモリだけに持ち、ファイルには永続化しない
  * (プロセスが終われば停止意思も消えるのが正しい: 外部からの停止手段は Ctrl+C だけ)。
- *   - none:    停止指示なし
- *   - clean:   新規セッションを起動せず、実行中が終わり次第、一区切りとして停止する
- *   - session: 実行中セッションが supervisor に返ってきた時点で停止する
+ *   - none:  停止指示なし
+ *   - clean: 新規セッションを起動せず、実行中が終わり次第、一区切りとして停止する
  */
-export type StopMode = "none" | "clean" | "session";
+export type StopMode = "none" | "clean";
 
 export interface LoopInput {
   now: Date;
@@ -67,7 +66,6 @@ export type LoopAction =
 export const RATE_LIMIT_SLICE_MS = 60_000;
 
 export const STOP_REASON = {
-  session: "停止指示 (session): セッション境界で停止する(再開: ccloop run)",
   clean: "停止指示 (clean): 一区切りとして停止する(再開: ccloop run)",
   cleanDirty:
     "停止指示 (clean): .agent/ 以外に未コミットの差分が残っているが、新規セッションを起動しない以上は解消しないため差分を残して停止する(再開: ccloop run)",
@@ -78,10 +76,7 @@ export const STOP_REASON = {
  * 次の一手を決める。判断の優先度は以下の順で、上位が成立したら下位は評価しない。
  *
  * 1. 停止指示あり(stopMode !== "none")
- *    実行中セッションがあれば drain 待ち、無ければ停止する。
- *    session / clean のどちらでも「新規起動を止めて、走っているものを待って停止する」に収束させる。
- *    worktree 化により main の .agent/ 以外の差分はセッションでは解消できなくなったため、
- *    「clean で差分が残っているうちは ready タスクを流し続ける」という従来の挙動は成立しない。
+ *    新規セッションの起動を止め、実行中セッションがあれば drain 待ち、無ければ停止する。
  * 2. rate limit 中(rateLimitedUntilMs > 0)
  *    最大 RATE_LIMIT_SLICE_MS のスライスで待つ。待機中も周回ごとに停止指示を拾い直せる。
  * 3. 人間からの入力が変化した → 既存タスクより先に割り込ませる。triage が有効かつこの入力
@@ -112,7 +107,6 @@ export function planLoopStep(input: LoopInput): LoopAction {
   // 1. 停止指示
   if (input.stopMode !== "none") {
     if (input.runningCount > 0) return drain;
-    if (input.stopMode === "session") return { type: "stop", reason: STOP_REASON.session };
     return {
       type: "stop",
       reason: input.mainDirtyOutsideAgent ? STOP_REASON.cleanDirty : STOP_REASON.clean,

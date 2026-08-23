@@ -400,20 +400,14 @@ describe("nextStopEscalation", () => {
     expect(nextStopEscalation("none")).toEqual({ mode: "clean" });
   });
 
-  it("clean なら session へ格上げする", () => {
-    expect(nextStopEscalation("clean")).toEqual({ mode: "session" });
-  });
-
-  it("session なら緊急停止へ進む", () => {
-    expect(nextStopEscalation("session")).toBe("emergency");
+  it("clean なら緊急停止へ進む", () => {
+    expect(nextStopEscalation("clean")).toBe("emergency");
   });
 
   it("3 段階で緊急停止に到達し、ファイルを一切介さない", () => {
     const first = nextStopEscalation("none");
     expect(first).not.toBe("emergency");
-    const second = nextStopEscalation((first as { mode: "clean" | "session" }).mode);
-    expect(second).not.toBe("emergency");
-    expect(nextStopEscalation((second as { mode: "clean" | "session" }).mode)).toBe("emergency");
+    expect(nextStopEscalation((first as { mode: "clean" }).mode)).toBe("emergency");
   });
 });
 

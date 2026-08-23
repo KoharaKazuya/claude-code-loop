@@ -11,13 +11,12 @@
  * 停止方法(run モード): 外部からの停止手段は Ctrl+C(SIGINT)だけで、停止指示は
  * このプロセスのメモリ(currentStopMode)にしか存在しない。プロセスが終われば停止意思も消える
  * ため、再開はいつでも `ccloop run` を実行するだけでよい。Ctrl+C は押すたびに段階が上がる:
- *   1 回目 (clean)   新規セッションを起動せず、実行中のセッションが終わり次第停止する。
- *                    git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する
- *   2 回目 (session) 実行中セッションが supervisor に返ってきた時点で停止(作業途中の差分が残りうる)
- *   3 回目           緊急停止(SIGTERM → 猶予後 SIGKILL)、4 回目で即 SIGKILL。中断された
- *                    セッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
- *                    再利用される
- * SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
+ *   1 回目 (clean) 新規セッションを起動せず、実行中のセッションが終わり次第停止する。
+ *                  git 差分(.agent/ 除く)が残っていればその旨をログに出したうえで残して停止する
+ *   2 回目         緊急停止(SIGTERM → 猶予後 SIGKILL)
+ *   3 回目         即 SIGKILL
+ * 中断されたセッションの worktree とブランチはそのまま残り、次回そのタスクを実行するときに
+ * 再利用される。SIGTERM も同じ段階エスカレーションに合流する(1 回目は clean 相当)。
  *
  * タスクセッションは常に `claude -p --worktree <タスクID>` で起動され、リポジトリ本体の外側の
  * worktree(ブランチ `agent/<タスクID>`)で動く。成果は終了後に Supervisor が main へ自動マージし、
@@ -421,7 +420,7 @@ export function normalizeState(raw: unknown): State {
     state.triageAttemptedHash = r.triageAttemptedHash;
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
-  if (r.stopMode === "none" || r.stopMode === "clean" || r.stopMode === "session") state.stopMode = r.stopMode;
+  if (r.stopMode === "none" || r.stopMode === "clean") state.stopMode = r.stopMode;
   return state;
 }
 
@@ -897,20 +896,19 @@ function emergencyStop(signal: string): void {
 
 /**
  * 段階エスカレーションの次の一手を判定する(純粋)。
- * 停止指示なし(none)なら clean を予約、既に clean なら session へ格上げ、
- * 既に session(= これ以上待たずに止めたい意図)なら緊急停止に進む。
+ * 停止指示なし(none)なら clean を予約、既に clean(= 一度待つ意思表示は済んでいる)なら
+ * 緊急停止に進む。
  */
 export type StopEscalation = { mode: Exclude<StopMode, "none"> } | "emergency";
 export function nextStopEscalation(mode: StopMode): StopEscalation {
   if (mode === "none") return { mode: "clean" };
-  if (mode === "clean") return { mode: "session" };
   return "emergency";
 }
 
 /**
- * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean、2 回目は session へ格上げするに留め、
- * セッションが安全な区切りで自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、
- * またはエスカレーション判定が emergency のときのみ強制終了へ進む。
+ * SIGINT(Ctrl+C)/ SIGTERM のハンドラ。1 回目は clean へ留め、セッションが安全な区切りで
+ * 自発的に止まるのを待つ。既に緊急停止(SIGTERM)を送信済み、またはエスカレーション判定が
+ * emergency のときは強制終了へ進む。
  * 停止指示はメモリ上の currentStopMode にだけ書く(state.json への反映は表示専用で、
  * メインループが「main を触るのはループ上だけ」の不変条件を守りながら行う)。
  */
@@ -925,15 +923,9 @@ function escalateStop(signal: string): void {
     return;
   }
   currentStopMode = escalation.mode;
-  if (escalation.mode === "clean") {
-    log(
-      `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず、実行中が終わり次第停止する。もう一度 Ctrl+C でセッション境界停止`,
-    );
-  } else {
-    log(
-      `${signal} 受信。停止指示を session へ格上げした: 実行中セッション終了時点で停止する。もう一度 Ctrl+C で緊急停止(実行中セッションを強制終了)`,
-    );
-  }
+  log(
+    `${signal} 受信。停止 (clean) を予約した: 新規セッションを起動せず、実行中が終わり次第停止する。もう一度 Ctrl+C すると実行中セッションを強制終了する(SIGTERM→猶予後 SIGKILL)`,
+  );
   wakeEmitter.emit("wake");
 }
 
@@ -4045,8 +4037,6 @@ export function formatStatus(): string {
   // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
   if (state.stopMode === "clean") {
     push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");
-  } else if (state.stopMode === "session") {
-    push("停止処理中 (session): 実行中セッションが supervisor に返った時点で run が停止する");
   }
   if (state.rateLimit.resumeAt !== null) {
     push(`レートリミット待機中: ${state.rateLimit.resumeAt} まで`);
