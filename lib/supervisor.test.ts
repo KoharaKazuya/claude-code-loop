@@ -24,6 +24,7 @@ import {
   dirtyPathsOutsideAgent,
   ensureWritableDir,
   type ExploreContext,
+  fastCrashStreakAfterWait,
   formatElapsed,
   isSnoozed,
   isSupervisorSourceStale,
@@ -31,6 +32,7 @@ import {
   loadPermissionDenials,
   mainChangedByTaskOutcome,
   newTaskId,
+  nextFastCrashStreak,
   nextStopEscalation,
   normalizeState,
   overviewSectionLines,
@@ -81,6 +83,7 @@ import {
   removeWorktree,
   worktreePathFor,
 } from "./worktree.ts";
+import { type LoopInput, planLoopStep } from "./scheduler.ts";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -1769,6 +1772,125 @@ describe("buildSessionMetrics", () => {
 
     expect("conflictPaths" in metrics).toBe(false);
     expect("conflictKind" in metrics).toBe(false);
+  });
+});
+
+describe("nextFastCrashStreak", () => {
+  function res(overrides: Partial<SessionResult> = {}): SessionResult {
+    return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
+  }
+
+  it("レートリミット終了は streak を増やさず据え置く(異常終了・短時間でも)", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 1 }), 1_000, true)).toBe(2);
+  });
+
+  it("レートリミット終了は streak が 0 でも据え置く(0 のまま)", () => {
+    expect(nextFastCrashStreak(0, res({ exitCode: 1 }), 1_000, true)).toBe(0);
+  });
+
+  it("非レートリミットで、瞬時(FAST_CRASH_MS 未満)に異常終了したら streak を加算する", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 1 }), 1_000, false)).toBe(3);
+  });
+
+  it("非レートリミットで、タイムアウトによる終了なら streak を 0 に戻す", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 1, timedOut: true }), 1_000, false)).toBe(0);
+  });
+
+  it("タイムアウト かつ レートリミット検出の両方が true でも、タイムアウトを優先して streak を 0 に戻す", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 1, timedOut: true }), 1_000, true)).toBe(0);
+  });
+
+  it("非レートリミットで、時間がかかった異常終了(FAST_CRASH_MS 以上)なら streak を 0 に戻す", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 1 }), 20_000, false)).toBe(0);
+  });
+
+  it("正常終了(exitCode 0)なら streak を 0 に戻す", () => {
+    expect(nextFastCrashStreak(2, res({ exitCode: 0 }), 1_000, false)).toBe(0);
+  });
+});
+
+describe("fastCrashStreakAfterWait", () => {
+  it("停止処理に入っていない(none)ときの crash-backoff の待機明けは streak を 0 へ戻す", () => {
+    expect(fastCrashStreakAfterWait(3, "crash-backoff", "none")).toBe(0);
+  });
+
+  it("crash-backoff 以外の理由の待機では streak を変えない(stopMode が none でも)", () => {
+    expect(fastCrashStreakAfterWait(3, "rate-limit", "none")).toBe(3);
+    expect(fastCrashStreakAfterWait(3, "drain", "none")).toBe(3);
+    expect(fastCrashStreakAfterWait(3, "idle", "none")).toBe(3);
+    expect(fastCrashStreakAfterWait(3, "slots-full", "none")).toBe(3);
+    expect(fastCrashStreakAfterWait(3, "explore-running", "none")).toBe(3);
+  });
+
+  it("停止処理中(none 以外)は crash-backoff の待機明けでも streak をリセットしない", () => {
+    expect(fastCrashStreakAfterWait(3, "crash-backoff", "clean")).toBe(3);
+  });
+});
+
+/**
+ * scheduler.planLoopStep と、supervisor.ts の fastCrashStreak 更新関数(nextFastCrashStreak /
+ * fastCrashStreakAfterWait)を実際の mainLoop と同じ順序で組み合わせ、配線全体が意図通り動くかを
+ * 検証する。個々の関数の単体テストとは別に、「crash-backoff で 1 周回待った後に本当に起動へ戻るか」
+ * 「レートリミットが streak を汚さないか」という結合上の懸念を確認するためのもの。
+ */
+describe("crash-backoff の配線(planLoopStep + fastCrashStreak 更新関数)", () => {
+  function loopInput(over: Partial<LoopInput> = {}): LoopInput {
+    return {
+      now: new Date("2026-08-16T00:00:00.000Z"),
+      stopMode: "none",
+      mainDirtyOutsideAgent: false,
+      runningCount: 0,
+      maxSessions: 1,
+      runnableTaskIds: [],
+      conflictResumeTaskIds: [],
+      inputsDirty: false,
+      mainDirty: false,
+      triageEnabled: false,
+      triageAttempted: false,
+      exploreEnabled: true,
+      exploreRunning: false,
+      exploreDue: false,
+      neverExplored: false,
+      lastExploreYieldedNothing: false,
+      pendingSnoozeCount: 0,
+      rateLimitedUntilMs: null,
+      idlePollMs: 60_000,
+      fastCrashStreak: 0,
+      ...over,
+    };
+  }
+
+  function res(overrides: Partial<SessionResult> = {}): SessionResult {
+    return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
+  }
+
+  it("streak 3・runnable あり・空きありで crash-backoff wait → 待機明けにリセット → 次周回は launch", () => {
+    // 周回 1: 直前まで瞬時クラッシュが 3 回連続した状態で、起動できる状況(runnable かつ空き枠あり)
+    let streak = 3;
+    const base = loopInput({ runnableTaskIds: ["T-001"], runningCount: 0, maxSessions: 1, fastCrashStreak: streak });
+    const action1 = planLoopStep(base);
+    expect(action1).toEqual({ type: "wait", ms: 60_000, why: "crash-backoff" });
+
+    // mainLoop は sleep(action.ms) の後、停止処理に入っていなければ streak をリセットする
+    streak = fastCrashStreakAfterWait(streak, "crash-backoff", "none");
+    expect(streak).toBe(0);
+
+    // 周回 2: リセット後の streak を渡すと、同じ runnable・空き枠のまま通常どおり起動へ進む
+    const action2 = planLoopStep(loopInput({ runnableTaskIds: ["T-001"], runningCount: 0, maxSessions: 1, fastCrashStreak: streak }));
+    expect(action2).toEqual({ type: "launch", taskIds: ["T-001"] });
+  });
+
+  it("レートリミット終了が 4 本連続しても streak は増えず、crash-backoff に入らず launch のまま", () => {
+    let streak = 0;
+    for (let i = 0; i < 4; i++) {
+      streak = nextFastCrashStreak(streak, res({ exitCode: 1 }), 1_000, true);
+    }
+    expect(streak).toBe(0);
+
+    const action = planLoopStep(
+      loopInput({ runnableTaskIds: ["T-001"], runningCount: 0, maxSessions: 1, fastCrashStreak: streak }),
+    );
+    expect(action).toEqual({ type: "launch", taskIds: ["T-001"] });
   });
 });
 

@@ -43,7 +43,7 @@ import { rotate, rotateResultIsEmpty } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
 import { generateSystemPrompt } from "./prompt.ts";
 import { generateSettings } from "./settings.ts";
-import { planLoopStep, type StopMode } from "./scheduler.ts";
+import { type LoopAction, planLoopStep, type StopMode } from "./scheduler.ts";
 import {
   buildTriagePrompt,
   hasFreeTextAnswer,
@@ -856,10 +856,49 @@ let criticalSection = 0;
 const FAST_CRASH_MS = 10_000;
 
 /**
- * 直近の「瞬時クラッシュ」の連続回数(finishTaskSession が更新する)。scheduler.ts の
- * crash-backoff ルール(fastCrashStreak >= 3 で 1 周回だけ起動を見送る)へ渡すための状態。
+ * fastCrashStreak の次の値を、1 セッションの結果から計算する。finishTaskSession から
+ * 判定ロジックだけを切り出したもの(単体テストで検証できるようにするため)。判定順序は
+ * finishTaskSession の結果分類(6. 結果の分類: タイムアウト → レートリミット → それ以外)と
+ * 揃えてある:
+ *   1. タイムアウトは瞬時クラッシュではないため streak を 0 に戻す(レートリミットかどうかに
+ *      関わらず優先する)。
+ *   2. レートリミットによる終了は環境要因の故障でも復旧の証拠でもないため据え置く(増減させない)。
+ *   3. それ以外は、壁時計時間 wallMs が FAST_CRASH_MS 未満で異常終了(exitCode !== 0)なら
+ *      加算し、そうでなければ 0 に戻す。
+ */
+export function nextFastCrashStreak(current: number, res: SessionResult, wallMs: number, rateLimited: boolean): number {
+  if (res.timedOut) return 0;
+  if (rateLimited) return current;
+  if (res.exitCode !== 0 && wallMs < FAST_CRASH_MS) return current + 1;
+  return 0;
+}
+
+/**
+ * crash-backoff の待機を終えた後の fastCrashStreak。mainLoop の wait 分岐から呼ばれる決定
+ * ロジックだけを切り出したもの(単体テストで検証できるようにするため)。1 周回だけ見送る
+ * ルールのため、crash-backoff の待機明けは streak を 0 へ戻す。ただし停止処理に入っている
+ * (stopMode !== "none")間は戻さない: scheduler.ts の停止分岐(優先度 1)は
+ * 「fastCrashStreak が高いままなら諦めて停止する」設計であり、ここで streak を消してしまうと
+ * その設計を迂回してしまう(Ctrl+C で停止指示が入り wakeEmitter が sleep を早期に起こした
+ * 場合でも、この境界を守るために stopMode を見て判定する)。それ以外の理由の待機では変えない。
+ */
+export function fastCrashStreakAfterWait(
+  streak: number,
+  why: Extract<LoopAction, { type: "wait" }>["why"],
+  stopMode: StopMode,
+): number {
+  return why === "crash-backoff" && stopMode === "none" ? 0 : streak;
+}
+
+/**
+ * 直近の「瞬時クラッシュ」の連続回数。scheduler.ts の crash-backoff ルール
+ * (fastCrashStreak >= 3 で 1 周回だけ起動を見送る)へ渡すための状態。
  * 起動直後に全滅するような環境要因の系統的な故障(例: worktree 置き場への書き込み権限がない)を
  * 検知し、機械的な再試行で失敗コミットを積み増し続ける事故を避けるために持つ。
+ * レートリミットによる終了は環境要因の故障でも復旧の証拠でもないため数えない(据え置き)。
+ * 更新箇所は 2 か所: finishTaskSession が瞬時クラッシュのたびに加算・非クラッシュで 0 に戻し、
+ * mainLoop が crash-backoff の待機を 1 周回終えるたびに 0 に戻す(抑制を解除して次周回で
+ * 通常どおり起動できるようにするため)。
  */
 let fastCrashStreak = 0;
 
@@ -2730,13 +2769,13 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
 
   // 瞬時クラッシュの検知。起動直後に異常終了するセッションが連続する場合は環境要因による
   // 系統的な故障の可能性が高いため、その連続回数を scheduler.ts の crash-backoff ルールへ渡す
-  // (fastCrashStreak >= 3 になった周回だけ、起動可能でも 1 周回起動を見送る)。
+  // (fastCrashStreak >= 3 になった周回だけ、起動可能でも 1 周回起動を見送る。抑制した周回の
+  // 終わりに mainLoop 側が fastCrashStreak を 0 に戻すため、抑制は最大 1 周回で解除される)。
+  // レートリミットによる終了は時間経過で解決する事象であり環境要因の故障ではないため、
+  // 瞬時クラッシュとしては数えない(据え置き: 増やしも減らしもしない)。
+  const rateLimited = isSessionRateLimited(res);
   const wallMs = now.getTime() - new Date(ctx.startedAt).getTime();
-  if (res.exitCode !== 0 && !res.timedOut && wallMs < FAST_CRASH_MS) {
-    fastCrashStreak += 1;
-  } else {
-    fastCrashStreak = 0;
-  }
+  fastCrashStreak = nextFastCrashStreak(fastCrashStreak, res, wallMs, rateLimited);
 
   const state = loadState();
   for (const s of state.runningSessions) {
@@ -2852,7 +2891,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
     // 6. 結果の分類(判定の順序に意味がある)
     if (res.timedOut) {
       fail(`タイムアウト(${config.taskTimeoutMs}ms)`, "timeout");
-    } else if (isSessionRateLimited(res)) {
+    } else if (rateLimited) {
       // レートリミットはタスクの失敗として数えない(retries を増やさない)。worktree の
       // 扱いはマージ結果に従うため、ここでは待機の設定だけ行う
       applyRateLimit(config);
@@ -3306,9 +3345,16 @@ export async function mainLoop(): Promise<void> {
       }
       if (action.why === "rate-limit") log(`rate limit 待機中(${Math.ceil(action.ms / 60000)} 分)`);
       if (action.why === "crash-backoff") {
-        log("警告: 瞬時クラッシュが連続している。環境要因の可能性が高いため起動を抑制する");
+        log("警告: 瞬時クラッシュが連続している。環境要因の可能性が高いため 1 周回だけ起動を抑制する");
       }
       await sleep(action.ms);
+      // crash-backoff は 1 周回だけ起動を見送るルールなので、待機を終えたら基本的にここで
+      // 解除する(fastCrashStreak を更新するもう一方の場所である finishTaskSession は、抑制中は
+      // セッションが起動せず呼ばれないため、ここでリセットしないと抑制が解けなくなる)。
+      // ただし sleep は wakeEmitter でも早期に起きるため、待機中に Ctrl+C で停止指示が入った
+      // 場合に備えて stopMode を待機明けに読み直す(停止処理中は fastCrashStreakAfterWait が
+      // リセットしない)。
+      fastCrashStreak = fastCrashStreakAfterWait(fastCrashStreak, action.why, readStopMode());
     }
   } finally {
     // break・例外・正常終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は

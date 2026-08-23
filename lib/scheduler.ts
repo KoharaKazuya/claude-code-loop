@@ -70,8 +70,10 @@ export interface LoopInput {
   /** rate limit の解除までの残り時間(ミリ秒)。null または 0 以下なら制限なし */
   rateLimitedUntilMs: number | null;
   idlePollMs: number;
-  /** 直近の「起動直後に異常終了したタスクセッション」の連続回数(finishTaskSession が更新する)。
-   * 系統的な故障(環境要因でセッションが軒並み瞬時にクラッシュする)を検知するために使う */
+  /** 直近の「起動直後に異常終了したタスクセッション」の連続回数。系統的な故障(環境要因で
+   * セッションが軒並み瞬時にクラッシュする)を検知するために使う。更新箇所は supervisor.ts に
+   * 2 か所ある: finishTaskSession がセッション終了のたびに加算・リセットし、mainLoop が
+   * crash-backoff の待機(下記 5)を 1 周回終えるたびに 0 に戻す */
   fastCrashStreak: number;
 }
 
