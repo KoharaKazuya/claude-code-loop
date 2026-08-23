@@ -33,8 +33,8 @@ export const TOP_LEVEL_HELP = `ccloop: Claude Code を使った自律開発ル�
 注意点(自動実行するエージェント向け):
   - run はフォアグラウンドで動き続ける常駐プロセス。バックグラウンド/別プロセスとして起動し、
     status か watch で進捗を監視すること(run 自体の終了を待つと呼び出し元がブロックする)
-  - run の停止は Ctrl+C(SIGINT)のみ。押すたびに段階が上がる(1回目 clean → 2回目 session →
-    3回目以降は強制終了)
+  - run の停止は Ctrl+C(SIGINT)のみ。押すたびに段階が上がる(1回目 clean → 2回目 緊急停止 →
+    3回目 即 SIGKILL)
   - init は非 TTY 環境では確認プロンプトを出せないため --yes が必須
   - status / list は --json を付けると機械可読な JSON を stdout に 1 オブジェクトで出力する
     (既定の人間向け整形出力とは別の出口で、挙動は変わらない)`;
@@ -48,9 +48,10 @@ export const SUBCOMMAND_HELP: Readonly<Record<string, string>> = {
 起動し、\`ccloop status\` か \`ccloop watch\` で監視すること。
 
 停止: 実行中の端末で Ctrl+C(SIGINT)。押すたびに段階が上がる。
-  1回目 (clean)   新規セッションを起動せず、実行中のセッションが終わり次第停止する
-  2回目 (session) 実行中セッションが supervisor に返ってきた時点で停止する
-  3回目           緊急停止(SIGTERM → 猶予後 SIGKILL)、4回目で即 SIGKILL
+  1回目 (clean)  新規セッションを起動せず、実行中のセッションが終わり次第停止する
+                 (衝突解消待ちの worktree があれば、その解消セッションだけ 1 本ずつ起動してから停止する)
+  2回目          緊急停止(SIGTERM → 猶予後 SIGKILL)
+  3回目          即 SIGKILL
 
 オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,
 
