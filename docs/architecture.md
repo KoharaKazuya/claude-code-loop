@@ -67,6 +67,27 @@ basename と、同名リポジトリ(別クローン)を取り違えないため
 防げない抜け道になるため、生成物自身の絶対パスを `permissions.deny` に動的に追加して自己改変を禁じている
 (`lib/settings.ts` の `generateSettings`)。
 
+## permissions 設計(`lib/settings.template.json`)
+
+自律実行セッションは `node`/`npm` による任意コード実行が本質的に不可避なため、permissions で
+セキュリティ境界を作ることはできない。セキュリティ境界は実行環境(devcontainer 等)側の責務であり、
+permissions の役割は「うっかり・意図しない逸脱の防止」と「PROMPT.md が定めるワークフロー(worktree・
+自動マージ・自己改変の禁止など)への誘導」に限定している。
+
+permission mode は auto で起動しており、`permissions.deny` に一致しない操作は(allow の有無に関わらず)
+実行できる。したがって実質のガードレールは deny リストであり、PROMPT.md の「絶対ルール」がセッションに
+禁じている操作(ブランチ操作・push・自己改変対象ファイルの編集等)は permissions.deny にも同じ内容を
+並べ、規律と機構の二重の担保にしている。
+
+allow は「読み取り専用で副作用が無い」操作に限定している。allow の役割は許可範囲を広げることではなく、
+classifier の判定を経ずに即時実行できるようにする性能上の最適化でしかない(allow に無い操作も deny に
+触れなければ classifier 経由で実行できる)。`Edit`/`Write` などのツールは allow に列挙が無くても
+即時に通るため、あえて allow へ列挙していない。
+
+パスを対象にした deny(`Read(path)` / `Edit(path)`)は対応するツールだけでなく、同じパスに触れる Bash
+コマンド(`cat`・`cp` 等)にもクロス適用される。`Edit(path)` の deny だけで `Write` ツールによる
+同一パスへの書き込みも止まるため、`Write(path)` を並べて重複させる必要はない。
+
 ## 停止を Ctrl+C のみ・オンメモリにした理由
 
 `ccloop run` の停止は、実行しているプロセスへの Ctrl+C(SIGINT)の段階的なエスカレーション
