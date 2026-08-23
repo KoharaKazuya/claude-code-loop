@@ -143,7 +143,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("入力変化の取り込み (優先度 3: triage)", () => {
+  describe("入力変化の取り込み (優先度 4: triage)", () => {
     it("triage が有効かつ未試行なら実行可能タスクより先に triage する", () => {
       expect(
         planLoopStep(input({ inputsDirty: true, triageEnabled: true, runnableTaskIds: ["T-001"] })),
@@ -180,7 +180,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("瞬時クラッシュの連続によるバックオフ (優先度 4)", () => {
+  describe("瞬時クラッシュの連続によるバックオフ (優先度 5)", () => {
     it("streak が 3 以上かつ実行可能タスクと空きがあれば crash-backoff で待つ", () => {
       expect(
         planLoopStep(input({ fastCrashStreak: 3, runnableTaskIds: ["T-001"], idlePollMs: 5_000 })),
@@ -215,7 +215,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("探索 (優先度 5)", () => {
+  describe("探索 (優先度 6、探索中ゲートは優先度 3)", () => {
     describe("A: アイドル時の探索", () => {
       it("main が変化していれば、実行可能タスクが無いときに探索する", () => {
         expect(planLoopStep(input({ mainDirty: true }))).toEqual({ type: "explore", trigger: "idle" });
@@ -243,6 +243,12 @@ describe("planLoopStep", () => {
         expect(
           planLoopStep(input({ mainDirty: true, lastExploreYieldedNothing: true, exploreDue: false })),
         ).toEqual(IDLE_EXIT);
+      });
+
+      it("空振りクールダウン中でも、新しい人間の入力があれば探索する(取り込みを落とさない)", () => {
+        expect(
+          planLoopStep(input({ inputsDirty: true, lastExploreYieldedNothing: true, exploreDue: false })),
+        ).toEqual({ type: "explore", trigger: "idle" });
       });
 
       it("直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
@@ -327,6 +333,20 @@ describe("planLoopStep", () => {
         );
       });
 
+      it("探索セッションが走っている間は triage も返さない(HR / タスクファイルを書くため)", () => {
+        expect(
+          planLoopStep(
+            input({
+              exploreRunning: true,
+              inputsDirty: true,
+              triageEnabled: true,
+              runningCount: 1,
+              maxSessions: 4,
+            }),
+          ),
+        ).toEqual({ type: "wait", ms: 60_000, why: "explore-running" });
+      });
+
       it("探索セッションが走っている間は次の探索もタスク起動もしない", () => {
         expect(
           planLoopStep(
@@ -345,7 +365,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("タスク起動 (優先度 6)", () => {
+  describe("タスク起動 (優先度 7)", () => {
     it("空きスロット数だけ先頭から起動する", () => {
       expect(
         planLoopStep(input({ maxSessions: 2, runningCount: 0, runnableTaskIds: ["T-001", "T-002", "T-003"] })),
@@ -367,7 +387,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("完了待ち (優先度 7)", () => {
+  describe("完了待ち (優先度 8)", () => {
     it("探索理由も実行可能タスクも無くセッションだけ走っていれば slots-full で待つ", () => {
       expect(planLoopStep(input({ runningCount: 1, maxSessions: 2 }))).toEqual({
         type: "wait",
@@ -377,7 +397,7 @@ describe("planLoopStep", () => {
     });
   });
 
-  describe("アイドル終了 (優先度 8・9)", () => {
+  describe("アイドル終了 (優先度 9・10)", () => {
     it("探索理由も実行可能タスクも実行中セッションも無ければ終了する", () => {
       expect(planLoopStep(input())).toEqual(IDLE_EXIT);
     });

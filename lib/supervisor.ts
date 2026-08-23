@@ -864,21 +864,31 @@ const FAST_CRASH_MS = 10_000;
 let fastCrashStreak = 0;
 
 /**
- * 前回の探索セッション以降に、タスクセッションの成果が main へマージされたか
+ * 前回の探索セッション以降に、探索が見直すべき変化が main へ入ったか
  * (プロセス内フラグ、永続化しない)。scheduler.ts の探索判定へ mainDirty として渡す。
- * main が変わったときだけ「GOAL とタスク全体を突き合わせ直す価値がある」とみなすため、
- * セッションが完了しただけでは立てず、マージが成立した(merged / renumbered)ときだけ立てる。
+ * 立てるのは次の 2 つ、どちらも「成果または失敗確定が main に入った」場合だけ:
+ *   - タスクセッションの成果が main へマージされた(merged / renumbered)
+ *   - タスクの失敗が確定した(再試行が尽きて status=failed になった)
+ * セッションが完了しただけ・クラッシュしてリトライ待ちに戻るだけでは立てない
+ * (見直す対象が増えていないため)。
  * 起動時は mainLoop が true にリセットする(前回 run の積み残しを一度は見直すため)。
  */
-let mainMergedSinceExplore = true;
+let mainChangedSinceExplore = true;
 
 /**
- * このマージ結果で main の内容が変わったか。conflict / blocked / wedged はもちろん、
- * nothing-to-merge(ブランチに新しいコミットが無い)も main は変わっていないため false。
+ * タスクセッションの結末が「探索が見直すべき main の変化」かどうか(mainChangedSinceExplore の定義)。
+ * finishTaskSession はマージ時点と結果記録時点の 2 か所からこれを呼ぶため、判定はどちらか片方の
+ * 材料だけを渡して評価できるようにしてある(未実施・未確定は null)。
+ *   - merge:       マージ結果。merged / renumbered だけが main の内容を変える。
+ *                  conflict / blocked / wedged はもちろん、nothing-to-merge(ブランチに新しい
+ *                  コミットが無い)も main は変わっていないため false。
+ *   - finalStatus: 結果記録後の main 側タスク status。failed(再試行が尽きて確定)は、探索が
+ *                  後追いタスクや Human Review を起こすべき情報なので main の変化として扱う。
+ *                  クラッシュしてリトライ待ちに戻るだけ(ready 等)なら false。
  */
-export function mergeUpdatedMain(outcome: MergeOutcome | null): boolean {
-  if (outcome === null) return false;
-  return outcome.result === "merged" || outcome.result === "renumbered";
+export function mainChangedByTaskOutcome(merge: MergeOutcome | null, finalStatus: TaskStatus | null): boolean {
+  if (merge !== null && (merge.result === "merged" || merge.result === "renumbered")) return true;
+  return finalStatus === "failed";
 }
 
 // sleep() をタイマー満了前に起こすための通知チャネル(Ctrl+C で停止指示を立てた直後に
@@ -2361,10 +2371,11 @@ function launchInfoSection(ctx: ExploreContext): string {
     `- 新規に answered になった Human Review: ${answeredText}`,
     ...sessionTimeLines(ctx.startedAt, ctx.deadline),
     "",
-    "「変化なし」と明記された入力の再確認は省略してよい。新規 answered の ID が列挙されている場合、",
-    "手順1ではそのファイルだけを読めばよい。「不明」の項目は従来どおり全て確認する。",
-    "GOAL.md / Human Review に変化がある場合は、まずその取り込みに集中してよい。変化がない場合は",
-    "全手順を従来どおり実施する(タスク全体・GOAL との整合の見直し機会はここで担保する)。",
+    "省略してよいのは「変化なし」と明記された入力の再読だけ。新規 answered の ID が列挙されている",
+    "場合、手順1ではそのファイルだけを読めばよい。「不明」の項目は従来どおり全て確認する。",
+    "GOAL.md / Human Review に変化がある場合は、その取り込みを先に行ってよいが、手順はすべて実施する",
+    "(このセッションが GOAL とタスク全体の整合を見直す唯一の機会であり、手順を飛ばすと",
+    "変化のたびに探索を起こさずまとめて処理している意味が失われるため)。",
   ].join("\n");
 }
 
@@ -2394,8 +2405,8 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
     "---",
     "## 探索セッション",
     [
-      "このセッションは「実行可能なタスクがないとき」「GOAL.md が更新された直後」",
-      "「Human Review に新しい回答(answered)が付いたとき」に起動される。",
+      "このセッションは「実行可能なタスクがないとき」「タスク消化中でも前回探索から一定時間が経過し、",
+      "main / 入力(GOAL.md・Human Review の回答)が変化したとき」に起動される。",
       "次の実行可能な作業を探して `.agent/tasks/` にタスクファイルとして登録すること。",
       "",
       launchInfoSection(ctx),
@@ -2765,7 +2776,7 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         mergeLabel = outcome.result;
         // main が実際に変わったときだけ探索理由(mainDirty)を立てる。
         // クラッシュ・衝突・マージ不能では立てない(見直す対象が増えていないため)
-        if (mergeUpdatedMain(outcome)) mainMergedSinceExplore = true;
+        if (mainChangedByTaskOutcome(outcome, null)) mainChangedSinceExplore = true;
         log(`${taskId}: ${describeMergeOutcome(outcome)}`);
         if (outcome.result === "conflict") {
           conflictPaths = outcome.paths;
@@ -2816,6 +2827,9 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         return;
       }
       recordFailure(t, { maxRetries: config.maxRetries, reason, kind, at });
+      // 失敗が確定した(再試行が尽きた)場合は、探索が後追いタスクや Human Review を起こすべき
+      // 情報なので main の変化として扱う。リトライ待ちに戻るだけの場合は立てない
+      if (mainChangedByTaskOutcome(null, t.status)) mainChangedSinceExplore = true;
       if (t.status === "failed") {
         const lines = parkTaskWorktree(taskId, worktree, branch, now);
         if (lines.length > 0) t.body = `${t.body}\n${lines.join("\n")}`;
@@ -3021,7 +3035,7 @@ export async function mainLoop(): Promise<void> {
   let agentDirty = false;
   // 起動直後は recover 済みの main を一度は探索させたいので、mainDirty 相当から始める
   // (前回の run が積み残した状態を GOAL と突き合わせ直す機会をここで担保する)。
-  mainMergedSinceExplore = true;
+  mainChangedSinceExplore = true;
   // 直前に完了した探索セッションが新規タスクを 1 件も登録しなかったか(プロセス内フラグ、
   // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
@@ -3054,7 +3068,7 @@ export async function mainLoop(): Promise<void> {
 
       // 1. 完了したセッションの後始末。並列に走ったセッションもここで 1 件ずつ直列に処理する
       // 探索の要否(mainDirty)は「main へマージできたか」で判断するため、ここでは何も立てない
-      // (finishTaskSession がマージ結果を見て mainMergedSinceExplore を更新する)
+      // (finishTaskSession がマージ結果を見て mainChangedSinceExplore を更新する)
       const finished = drainCompletedSessions(config);
       if (finished > 0) agentDirty = true;
 
@@ -3136,6 +3150,8 @@ export async function mainLoop(): Promise<void> {
 
       // 入力変化(inputsChanged)があっても起動は止めない(探索は枠の中でしか走らないため)。
       // 探索の起動条件が「実行可能タスクの有無」で分かれる以上、gathering の周回では常に必要になる。
+      // triage や探索が確定する周回では結果を使わず副作用(依存が dead なタスクの blocked 落ち)
+      // だけが走るが、この副作用は決定論的で何周回に分けて走っても結果が変わらないため害はない。
       const { runnable, snoozedCount } = gathering ? selectRunnable() : { runnable: [], snoozedCount: 0 };
 
       // clean 停止中でも、衝突解消待ちの worktree を抱えたタスクだけは例外的に起動する
@@ -3156,7 +3172,7 @@ export async function mainLoop(): Promise<void> {
         runnableTaskIds: runnable.map((t) => t.id),
         conflictResumeTaskIds: conflictResumable.map((t) => t.id),
         inputsDirty: inputsChanged,
-        mainDirty: mainMergedSinceExplore,
+        mainDirty: mainChangedSinceExplore,
         triageEnabled: config.triage.enabled,
         triageAttempted,
         exploreEnabled: config.explore.enabled,
@@ -3243,7 +3259,7 @@ export async function mainLoop(): Promise<void> {
         // rate limit による中断は探索完了として扱わない(解除後に再試行させる)。
         // その場合は main の変化(mainDirty)も空振り判定も更新しない(中断前の状態を引きずらせない)
         if (!rateLimited) {
-          mainMergedSinceExplore = false;
+          mainChangedSinceExplore = false;
           lastExploreYieldedNothing = !yielded;
         }
         continue;

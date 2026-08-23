@@ -96,7 +96,7 @@ export const STOP_REASON = {
   clean: "停止指示 (clean): 一区切りとして停止する(再開: ccloop run)",
   cleanDirty:
     "停止指示 (clean): .agent/ 以外に未コミットの差分が残っているが、新規セッションを起動しない以上は解消しないため差分を残して停止する(再開: ccloop run)",
-  idleExit: "実行可能なタスクが無く、探索しても新しいタスクが生まれなかったため終了する(再開: ccloop run)",
+  idleExit: "実行可能なタスクが無く、新たに探索する理由も無いため終了する(再開: ccloop run)",
 } as const;
 
 /**
@@ -115,29 +115,33 @@ export const STOP_REASON = {
  *        fastCrashStreak を解消する機会が無いため、待っても待ち続けるだけになる)
  * 2. rate limit 中(rateLimitedUntilMs > 0)
  *    最大 RATE_LIMIT_SLICE_MS のスライスで待つ。待機中も周回ごとに停止指示を拾い直せる。
- * 3. 人間からの入力が変化した かつ triage が有効・未試行 → triage を割り込ませる
+ * 3. 探索セッションが走っている(exploreRunning)→ 何も起動せずに待つ。
+ *    探索は既存タスクの書き換え・取り下げを行うため、その間はタスクセッションも triage も
+ *    起動しない(triage も Human Review とタスクファイルを書くため、探索を非同期化したときに
+ *    競合する)。走行中の既存セッションは止めない。
+ * 4. 人間からの入力が変化した かつ triage が有効・未試行 → triage を割り込ませる
  *    (軽量なセッションなので枠を消費させず即時に走らせる)。triage で解決しきれなかった分は
- *    inputsDirty が残ったままになり、以降の探索(優先度 5)が通常の探索として取り込む。
+ *    inputsDirty が残ったままになり、以降の探索(優先度 6)が通常の探索として取り込む。
  *    入力変化そのものは探索へ即時に割り込ませない: 探索は枠を消費する重いセッションであり、
  *    タスク完了のたびに割り込ませると並列数の上限を超えて走ってしまうため。
- * 4. 瞬時クラッシュが 3 回連続している かつ 起動できる状況(実行可能タスクがあり空きスロットもある)
+ * 5. 瞬時クラッシュが 3 回連続している かつ 起動できる状況(実行可能タスクがあり空きスロットもある)
  *    → 環境要因によるシステム的な故障の可能性が高いため、1 周回分だけ起動を見送って様子を見る
- *    (rate limit(2)と探索・起動(5, 6)の間に位置する: rate limit ほど長くは待たないが、
+ *    (rate limit(2)と探索・起動(6, 7)の間に位置する: rate limit ほど長くは待たないが、
  *    機械的に起動し続けて失敗を積み増すことは避ける)。
- * 5. 探索したい → 空きスロットを 1 つ使って探索する。次のどちらかが成立するときだけ走らせる:
+ * 6. 探索したい → 空きスロットを 1 つ使って探索する。次のどちらかが成立するときだけ走らせる:
  *      A) アイドル: 実行可能タスクが無く、前回探索以降に main か入力が変化した(または未探索)。
  *         直前の探索が空振りだった場合は、クールダウン(exploreDue)が経過するまで再探索しない
- *         (空振り探索の即時連鎖を抑制する)。
+ *         (空振り探索の即時連鎖を抑制する)。ただし新しい人間の入力(inputsDirty)には
+ *         このクールダウンを掛けない。
  *      B) 定期見直し: 実行可能タスクはあるが、前回探索から minInterval が経過し、かつ
  *         main か入力が変化している。タスクを消化し続ける間も全体を見直すための経路。
  *    いずれも free > 0 が前提。走っているタスクセッションは止めない(drain しない)。
- * 6. 空きスロットと実行可能タスクがある → 空き数だけ起動する。
- * 7. 実行可能タスクは無いが走っているセッションがある → 完了を待つ。
- * 8. スヌーズ中のタスクが無い(pendingSnoozeCount === 0)→ 終了(idle-exit)。
+ * 7. 空きスロットと実行可能タスクがある → 空き数だけ起動する。
+ * 8. 実行可能タスクは無いが走っているセッションがある → 完了を待つ。
+ * 9. スヌーズ中のタスクが無い(pendingSnoozeCount === 0)→ 終了(idle-exit)。
  *    ここに到達した時点で「停止指示なし・rate limit なし・runnable なし・実行中なし・
- *    探索する理由なし(または explore 無効)」が構造的に成立しているため、探索しても
- *    新しい実行可能タスクは生まれなかったとみなせる。
- * 9. それ以外(スヌーズ中のタスクが残っている)→ アイドル待機(時間が来れば runnable に戻る)。
+ *    探索する理由なし(または explore 無効)」が構造的に成立している。
+ * 10. それ以外(スヌーズ中のタスクが残っている)→ アイドル待機(時間が来れば runnable に戻る)。
  */
 export function planLoopStep(input: LoopInput): LoopAction {
   const drain: LoopAction = { type: "wait", ms: input.idlePollMs, why: "drain" };
@@ -167,48 +171,52 @@ export function planLoopStep(input: LoopInput): LoopAction {
     return { type: "wait", ms: Math.min(input.rateLimitedUntilMs, RATE_LIMIT_SLICE_MS), why: "rate-limit" };
   }
 
-  // 3. 入力変化の軽量な取り込み(triage)。重い探索への即時割り込みはしない
-  if (input.inputsDirty && input.triageEnabled && !input.triageAttempted) return { type: "triage" };
-
-  const free = input.maxSessions - input.runningCount;
-
-  // 4. 瞬時クラッシュの連続によるバックオフ
-  if (input.fastCrashStreak >= FAST_CRASH_STREAK_LIMIT && input.runnableTaskIds.length > 0 && free > 0) {
-    return { type: "wait", ms: input.idlePollMs, why: "crash-backoff" };
-  }
-
-  // 探索セッションが走っている間は、新しいタスクセッションも次の探索も起動しない(不変条件)。
+  // 3. 探索セッションが走っている間は、タスクセッションも triage も次の探索も起動しない
+  // (不変条件)。triage も Human Review・タスクファイルを書くため、探索と同時には走らせない。
   // 走行中のセッションは止めず、完了を待つだけにする
   if (input.exploreRunning) {
     return { type: "wait", ms: input.idlePollMs, why: "explore-running" };
   }
 
-  // 5. 探索(空き枠を 1 つ消費する)
+  // 4. 入力変化の軽量な取り込み(triage)。重い探索への即時割り込みはしない
+  if (input.inputsDirty && input.triageEnabled && !input.triageAttempted) return { type: "triage" };
+
+  const free = input.maxSessions - input.runningCount;
+
+  // 5. 瞬時クラッシュの連続によるバックオフ
+  if (input.fastCrashStreak >= FAST_CRASH_STREAK_LIMIT && input.runnableTaskIds.length > 0 && free > 0) {
+    return { type: "wait", ms: input.idlePollMs, why: "crash-backoff" };
+  }
+
+  // 6. 探索(空き枠を 1 つ消費する)
   const idle = input.runnableTaskIds.length === 0;
   const dirty = input.inputsDirty || input.mainDirty;
   // A) アイドル: 未探索、または前回探索以降に main/入力が変化していれば探索する。
-  //    直前の探索が空振りだったときだけクールダウンを課す
-  const idleExplore = idle && (dirty || input.neverExplored) && (!input.lastExploreYieldedNothing || input.exploreDue);
+  //    直前の探索が空振りだったときだけクールダウンを課す。ただし新しい人間の入力
+  //    (inputsDirty)にはクールダウンを掛けない: 空振りクールダウンは「同じ入力での再探索」を
+  //    抑えるためのものであり、空振り直後に書かれた GOAL / Human Review の回答を
+  //    未取り込みのまま idle-exit させてしまうのは目的から外れるため
+  const idleCooldownPassed = !input.lastExploreYieldedNothing || input.exploreDue || input.inputsDirty;
+  const idleExplore = idle && (dirty || input.neverExplored) && idleCooldownPassed;
   // B) 定期見直し: タスクを消化中でも、minInterval が経過し main/入力が変化していれば見直す
   const periodicExplore = !idle && dirty && input.exploreDue;
   if (input.exploreEnabled && free > 0 && (idleExplore || periodicExplore)) {
     return { type: "explore", trigger: idleExplore ? "idle" : "periodic" };
   }
 
-  // 6. 空きスロットへのタスク投入
+  // 7. 空きスロットへのタスク投入
   if (free > 0 && input.runnableTaskIds.length > 0) {
     return { type: "launch", taskIds: input.runnableTaskIds.slice(0, free) };
   }
 
-  // 7. 走っているセッションの完了待ち
+  // 8. 走っているセッションの完了待ち
   if (input.runningCount > 0) return { type: "wait", ms: input.idlePollMs, why: "slots-full" };
 
-  // 8. 自動終了: スヌーズ中のタスクが残っていなければ、探索してもタスクが
-  // 生まれなかったとみなして終了する
+  // 9. 自動終了: スヌーズ中のタスクが残っておらず、新たに探索する理由も無ければ終了する
   if (input.pendingSnoozeCount === 0) {
     return { type: "stop", reason: STOP_REASON.idleExit, cause: "idle-exit" };
   }
 
-  // 9. アイドル待機(スヌーズ中タスクが時間経過で runnable に戻るのを待つ)
+  // 10. アイドル待機(スヌーズ中タスクが時間経過で runnable に戻るのを待つ)
   return { type: "wait", ms: input.idlePollMs, why: "idle" };
 }

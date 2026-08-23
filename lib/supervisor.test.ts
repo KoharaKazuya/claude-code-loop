@@ -29,7 +29,7 @@ import {
   isSupervisorSourceStale,
   loadDenyRules,
   loadPermissionDenials,
-  mergeUpdatedMain,
+  mainChangedByTaskOutcome,
   newTaskId,
   nextStopEscalation,
   normalizeState,
@@ -2195,19 +2195,32 @@ describe("commitAgentDir", () => {
   });
 });
 
-describe("mergeUpdatedMain", () => {
-  it("main の内容が変わるマージだけを true にする", () => {
-    expect(mergeUpdatedMain({ result: "merged" })).toBe(true);
-    expect(mergeUpdatedMain({ result: "renumbered" })).toBe(true);
+describe("mainChangedByTaskOutcome", () => {
+  it("main の内容が変わるマージは true", () => {
+    expect(mainChangedByTaskOutcome({ result: "merged" }, null)).toBe(true);
+    expect(mainChangedByTaskOutcome({ result: "renumbered" }, null)).toBe(true);
   });
 
-  it("main が変わらない結果(マージ無し・失敗・マージ未実施)は false", () => {
-    expect(mergeUpdatedMain({ result: "nothing-to-merge" })).toBe(false);
-    expect(mergeUpdatedMain({ result: "conflict", paths: ["a.ts"], conflictKind: "substantive" })).toBe(false);
-    expect(mergeUpdatedMain({ result: "blocked", reason: "dirty" })).toBe(false);
-    expect(mergeUpdatedMain({ result: "wedged", stderr: "not uptodate" })).toBe(false);
+  it("main が変わらないマージ結果(マージ無し・失敗・マージ未実施)は false", () => {
+    expect(mainChangedByTaskOutcome({ result: "nothing-to-merge" }, null)).toBe(false);
+    expect(mainChangedByTaskOutcome({ result: "conflict", paths: ["a.ts"], conflictKind: "substantive" }, null)).toBe(
+      false,
+    );
+    expect(mainChangedByTaskOutcome({ result: "blocked", reason: "dirty" }, null)).toBe(false);
+    expect(mainChangedByTaskOutcome({ result: "wedged", stderr: "not uptodate" }, null)).toBe(false);
     // マージを試みていない(worktree が無い・衝突解消が未完)場合
-    expect(mergeUpdatedMain(null)).toBe(false);
+    expect(mainChangedByTaskOutcome(null, null)).toBe(false);
+  });
+
+  it("失敗が確定した(status=failed)場合は、マージできていなくても true", () => {
+    expect(mainChangedByTaskOutcome(null, "failed")).toBe(true);
+    expect(mainChangedByTaskOutcome({ result: "conflict", paths: ["a.ts"] }, "failed")).toBe(true);
+  });
+
+  it("リトライ待ちに戻るだけ(failed 以外)なら false", () => {
+    expect(mainChangedByTaskOutcome(null, "ready")).toBe(false);
+    expect(mainChangedByTaskOutcome(null, "working")).toBe(false);
+    expect(mainChangedByTaskOutcome(null, "blocked")).toBe(false);
   });
 });
 
