@@ -1,22 +1,9 @@
 /**
  * ccloop の CLI エントリポイント
  *
- * 使い方:
- *   ccloop [--repo <path>] <サブコマンド> [引数...]
- *
- * サブコマンド:
- *   run      常駐ループ(自律実行)。停止は Ctrl+C(押すたびに段階が上がる)
- *   status   稼働状況・進捗の要約
- *   watch    status を一定間隔で再描画し続ける: watch [--interval <秒>]
- *   list     タスク一覧
- *   add      タスクを追加する: add "タイトル" [--desc 説明] [--priority N] [--deps <ID>,<ID>] [--model m] [--slug slug]
- *   init     `.agent/` の雛形を配置する: init [--yes] [--upgrade]
- *   doctor   実行環境の自己診断(副作用なし)
- *   version  ccloop 自身のバージョン
- *
- * グローバルオプション:
- *   --repo <path>  対象リポジトリのルート(既定: 環境変数 CCLOOP_REPO、無ければ cwd から上方探索)。
- *                  サブコマンドの前でも後ろでも指定できる(例: `ccloop status --repo <path>`)。
+ * 利用者向けの使い方・サブコマンド一覧・オプションは help.ts(TOP_LEVEL_HELP / SUBCOMMAND_HELP)を
+ * 正とする(`ccloop --help` / `ccloop <サブコマンド> --help` の実体もここ)。二重管理を避けるため
+ * このコメントには書かない。
  *
  * ランチャーは bin/ccloop。`node "$CCLOOP_HOME/cli.ts"` としてこのファイルを直接実行する
  * (Node の型ストリップを使うため、ビルド成果物は無い)。
