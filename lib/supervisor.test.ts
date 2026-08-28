@@ -1595,6 +1595,13 @@ describe("buildExplorePrompt", () => {
     expect(buildExplorePrompt(ctx({}))).toContain("`.agent/OVERVIEW.md` を更新する");
   });
 
+  it("フェーズゲート運用への言及を含む", () => {
+    const prompt = buildExplorePrompt(ctx({}));
+
+    expect(prompt).toContain("フェーズゲート");
+    expect(prompt).toContain("importance: BLOCK");
+  });
+
   it("runningTasks が空なら実行中セクションを含めない", () => {
     expect(buildExplorePrompt(ctx({ runningTasks: [] }))).not.toContain("実行中のタスクセッション");
   });

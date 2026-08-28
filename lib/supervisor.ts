@@ -2456,6 +2456,10 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "   `対応:` が「不要」ならそのまま closed にする。それ以外は回答内容に沿って新タスクとして登録し、",
       "   frontmatter の status を closed に更新する。",
       "   BLOCK エントリだった場合は、影響タスクを再開できるか判断し、可能なら該当タスクを ready に戻す。",
+      "   フェーズゲート HR の BLOCK には再開すべき影響タスクは存在しない。回答内容(続行同意・方針変更)を",
+      "   踏まえて次フェーズのタスク生成を再開する、または方針変更を反映する(詳細は共通ルールの",
+      "   「フェーズゲート」節を参照)。フェーズ 4 の個別トピック確認 HR への回答の場合は、同意された",
+      "   トピックのみタスク化し、不同意のトピックはタスク化せず見送りとして記録する。",
       "   回答は最優先の指示ではなく「新しい情報」である。回答から作るタスクの priority は",
       "   既存タスクとの相対で内容から判断し、急がないものは低い priority でよい。",
       "2. 1. の回答を含む新しい情報を踏まえて、既存タスクの priority・dependencies を見直し、",
@@ -2466,10 +2470,16 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "4. `.agent/GOAL.md` の方向性(ミッション・現在の目標・優先順位・やらないこと)と",
       "   リポジトリの現状を突き合わせ、目標へ近づく次の一手をタスクとして登録する。",
       "   壊れているもの・未完了の TODO の修理タスクもここで登録してよい。",
+      "   GOAL がプロダクトの構築・拡張である場合はフェーズゲート運用に従う: `OVERVIEW.md` で",
+      "   現在フェーズを確認し、未回答のフェーズゲートより先のフェーズに属するタスクは生成しない。",
+      "   現在フェーズが完了したと判断したら、フェーズゲート HR(`importance: BLOCK`)を作成する。",
+      "   フェーズ 4 ではトピック案ごとに個別の HR(`importance: BLOCK`)で可否を確認し、同意済みの",
+      "   ものだけタスク化する。詳細は共通ルールの「フェーズゲート」節を参照。",
       "5. 4. で突き合わせた GOAL とタスクの完了状況を踏まえて `.agent/OVERVIEW.md` を更新する。",
       "   GOAL に対する現在地(どこまで実装できたか)と、これから何をやれば完了に近づくかの見立てを",
       "   本文に短くまとめる。frontmatter の `updatedAt`(ISO 8601)と、`ccloop status` の",
       "   進捗バーが示す完了数・総数を `completed`/`total` として記録する(形式は共通ルール参照)。",
+      "   フェーズゲート運用時は現在フェーズと各ゲートの回答状況も記載する。",
       "   内容に実質的な変化がなければファイルには触れない(無変更の書き直しは禁止)。ファイルが無ければ",
       "   新規作成する。",
       "6. 既存の ready タスクが GOAL.md の方向性と矛盾していないか確認する。矛盾するタスクは",
@@ -4192,7 +4202,7 @@ export function formatStatus(): string {
     push(`\n${styledSectionLabel(tag, rest)}`);
     for (const l of lines) push(`  ${l}`);
   };
-  section("要対応", "open な Human Review (BLOCK) — タスクが停止中:", openBlock.map(hrLine));
+  section("要対応", "open な Human Review (BLOCK) — タスクまたはフェーズ進行が停止中:", openBlock.map(hrLine));
   section(
     "要対応",
     "failed タスク — タスクファイルの status を ready に戻して再挑戦するか、断念を判断:",
