@@ -179,11 +179,17 @@ npm test
 (`bin/ccloop` は自身の実体から見た `../lib` を `CCLOOP_HOME` として解決するランチャー)。feature 自体の
 動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと同じ手順)。
 
-リリースは `npm version <patch|minor|major>` を実行する。`package.json` の `version` が更新された
-あと、`version` フック(`scripts/sync-version.mjs`)が `features/ccloop/devcontainer-feature.json` の
-`version`、README.md と `.devcontainer/devcontainer.json` 中の ccloop feature 参照バージョンを同期し、
-コミットと `vX.Y.Z` タグの作成まで 1 コマンドで完結する。あとは `git push --follow-tags` するだけでよい。
-これら 3 ファイルを手で編集してはいけない(`scripts/sync-version.mjs` が上書きする)。
+リリースは `npm run release <patch|minor|major>` を実行する。`npm version` を直接叩いてはいけない
+(`npm run release` のみを使う)。このスクリプトは main ブランチであること・作業ツリーがクリーンであること・
+origin/main と同期していることを確認したうえで `check:version` / `typecheck` / `lint` / `test` を実行し、
+すべて通れば `npm version <patch|minor|major>`(コミットメッセージは `build: バージョンを %s に更新` に固定)
+を実行してコミットと `vX.Y.Z` タグを作成し、最後に `git push --follow-tags` する。`npm version` の
+`version` フック(`scripts/sync-version.mjs`)が `features/ccloop/devcontainer-feature.json` の
+`version`、README.md と `.devcontainer/devcontainer.json` 中の ccloop feature 参照バージョンを同期する。
+これら 3 ファイルを手で編集してはいけない(`scripts/sync-version.mjs` が上書きする)。push が失敗した場合、
+コミットとタグはローカルに作成済みなので `git push --follow-tags origin main` を再実行すれば回復する。
+状態チェックと検証だけ試したい場合は `npm run release -- <patch|minor|major> --dry-run`(npm 経由で
+オプションを渡すには `--` が必要)を使うと、`npm version` や `git push` などの変更操作を実行する手前で止まる。
 
 `scripts/check-version.mjs` が package.json を含む 4 箇所のバージョン一致を検証する。CI
 (`.github/workflows/ci.yml`)は push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は
