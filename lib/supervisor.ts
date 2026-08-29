@@ -3076,6 +3076,11 @@ export async function mainLoop(): Promise<void> {
   process.on("SIGINT", () => escalateStop("SIGINT"));
   process.on("SIGTERM", () => escalateStop("SIGTERM"));
   log("supervisor start");
+  // 緊急停止(Ctrl-C 2 回、finally を通らない終了)で root 側 .agent/ に未コミットの差分が
+  // 残っていると、recoverStartup 内の recoverOrphanBranch が呼ぶ mergeAgentBranch(root, ...)
+  // が「ローカル変更の上書き」を検知して blocked になり、孤児ブランチの回収が次回 run まで
+  // 丸ごと遅延しうる。recoverStartup を呼ぶ前に root 側を先にコミットして防ぐ。
+  commitAgentDir();
   // 前回の終了時に積み残した .agent/ の差分もここで拾う。復旧が無かった周回で
   // 「中断していたタスクを復旧する」と名乗ると嘘になるため、件数で文言を出し分ける。
   const recovered = startupRecoveryTotal(recoverStartup(config));
@@ -3125,8 +3130,8 @@ export async function mainLoop(): Promise<void> {
       const runningCount = state.runningSessions.length;
 
       // ローテーションはセッションが走っていない周回だけ行う(走行中のセッションが参照して
-      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外なので
-      // 消してもコミットは要らない)。
+      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外のパスなので
+      // 掃除自体に .agent/ の差分は生じない)。
       if (runningCount === 0) {
         // main が git 操作(マージ等)の途中で固まっていないかを確認し、可能なら自己修復する。
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
@@ -3338,8 +3343,9 @@ export async function mainLoop(): Promise<void> {
         continue;
       }
 
-      // wait: `.agent/` のコミットはここでは行わない(タスク起動前・main マージ前・
-      // ループ終了時の finally に集約している。詳細は D-20260829-0314-defer-agent-commit)。
+      // wait: `.agent/` のコミットはここでは行わない。頻繁な待機のたびにコミットすると
+      // 内容を語らない定型コミットが積み上がるため、コミットはタスク起動前・main マージ前・
+      // ループ終了時の finally に集約している。
       // sleep は wakeEmitter でも起きるため、走っているセッションの完了は待機を打ち切って
       // 先頭の掃き出しへ戻す(idlePollMs を待たされない)
       if (action.why === "rate-limit") log(`rate limit 待機中(${Math.ceil(action.ms / 60000)} 分)`);
