@@ -188,6 +188,8 @@ origin/main と同期していることを確認したうえで `check:version` 
 `version`、README.md と `.devcontainer/devcontainer.json` 中の ccloop feature 参照バージョンを同期する。
 これら 3 ファイルを手で編集してはいけない(`scripts/sync-version.mjs` が上書きする)。push が失敗した場合、
 コミットとタグはローカルに作成済みなので `git push --follow-tags origin main` を再実行すれば回復する。
+状態チェックと検証だけ試したい場合は `npm run release -- <patch|minor|major> --dry-run`(npm 経由で
+オプションを渡すには `--` が必要)を使うと、`npm version` や `git push` などの変更操作を実行する手前で止まる。
 
 `scripts/check-version.mjs` が package.json を含む 4 箇所のバージョン一致を検証する。CI
 (`.github/workflows/ci.yml`)は push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は
