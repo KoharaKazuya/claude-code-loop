@@ -2821,6 +2821,10 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
         mergeLabel = "unresolved";
         log(`${taskId}: 衝突解消が未完のままセッションが終了した。worktree を残す`);
       } else {
+        // main 側の `.agent/` に未コミットの差分が残っていると、取り込み側の変更と
+        // 競合して git merge が「ローカル変更の上書き」を検知し blocked になりうるため、
+        // マージ直前に main 側もコミットしておく
+        commitAgentDir();
         outcome = mergeAgentBranch(repoPaths().root, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
         mergeLabel = outcome.result;
         // main が実際に変わったときだけ探索理由(mainDirty)を立てる。
@@ -3072,16 +3076,17 @@ export async function mainLoop(): Promise<void> {
   process.on("SIGINT", () => escalateStop("SIGINT"));
   process.on("SIGTERM", () => escalateStop("SIGTERM"));
   log("supervisor start");
+  // 緊急停止(Ctrl-C 2 回、finally を通らない終了)で root 側 .agent/ に未コミットの差分が
+  // 残っていると、recoverStartup 内の recoverOrphanBranch が呼ぶ mergeAgentBranch(root, ...)
+  // が「ローカル変更の上書き」を検知して blocked になり、孤児ブランチの回収が次回 run まで
+  // 丸ごと遅延しうる。recoverStartup を呼ぶ前に root 側を先にコミットして防ぐ。
+  commitAgentDir();
   // 前回の終了時に積み残した .agent/ の差分もここで拾う。復旧が無かった周回で
   // 「中断していたタスクを復旧する」と名乗ると嘘になるため、件数で文言を出し分ける。
   const recovered = startupRecoveryTotal(recoverStartup(config));
   if (recovered > 0) commitAgentDir("docs(agent): 中断していたタスクを復旧する");
   else commitAgentDir();
 
-  // この周回までに main の `.agent/` を触ったか。アイドル・rate limit 待機の周回まで
-  // コミットすると内容を語らない定型コミットが 1 分おきに積み上がるため、`.agent/` を
-  // 触った場合だけ、次に待機へ入る直前とループ終了時にまとめてコミットする。
-  let agentDirty = false;
   // 起動直後は recover 済みの main を一度は探索させたいので、mainDirty 相当から始める
   // (前回の run が積み残した状態を GOAL と突き合わせ直す機会をここで担保する)。
   mainChangedSinceExplore = true;
@@ -3118,16 +3123,15 @@ export async function mainLoop(): Promise<void> {
       // 1. 完了したセッションの後始末。並列に走ったセッションもここで 1 件ずつ直列に処理する
       // 探索の要否(mainDirty)は「main へマージできたか」で判断するため、ここでは何も立てない
       // (finishTaskSession がマージ結果を見て mainChangedSinceExplore を更新する)
-      const finished = drainCompletedSessions(config);
-      if (finished > 0) agentDirty = true;
+      drainCompletedSessions(config);
 
       // 後始末で state.json が書き換わるため、判断材料はその後で読む
       const state = loadState();
       const runningCount = state.runningSessions.length;
 
       // ローテーションはセッションが走っていない周回だけ行う(走行中のセッションが参照して
-      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外なので
-      // 消してもコミットは要らず、agentDirty は立てない)。
+      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外のパスなので
+      // 掃除自体に .agent/ の差分は生じない)。
       if (runningCount === 0) {
         // main が git 操作(マージ等)の途中で固まっていないかを確認し、可能なら自己修復する。
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
@@ -3146,7 +3150,7 @@ export async function mainLoop(): Promise<void> {
           }
         }
 
-        if (runRotate() !== null) agentDirty = true;
+        runRotate();
         prunePatches();
       }
 
@@ -3269,9 +3273,6 @@ export async function mainLoop(): Promise<void> {
       }
 
       if (action.type === "triage") {
-        // await より前に立てる(triage が HR/タスクファイルを書き換えうるため、
-        // セッションが例外を投げてもこの周回はコミット扱いにする)
-        agentDirty = true;
         const ok = await runHumanReviewTriage(config);
         if (!ok) log("警告: triage セッションに失敗した。次回は Stage 3(探索)にフォールバックする");
         // 無限リトライ防止のため、成功・失敗に関わらずこの入力ハッシュへの triage 試行を記録する
@@ -3286,9 +3287,6 @@ export async function mainLoop(): Promise<void> {
           goalHash: currentGoalHash(),
           answeredKeys: currentAnsweredKeys(),
         });
-        // await より前に立てる(セッションが例外を投げてもこの周回はコミット扱いにし、
-        // セッションが書いた .agent/ の状態を失わせないため)
-        agentDirty = true;
         const reason =
           action.trigger === "idle"
             ? "実行可能なタスクがなく、前回探索以降に main / 入力が変化したため、次の作業を探す"
@@ -3324,7 +3322,6 @@ export async function mainLoop(): Promise<void> {
           if (task === undefined) continue; // 判断材料と実行の間でタスクが消えた場合の保険
           // 起動の成否に関わらず記録する(起動できない状態で同じタスクを選び続けないため)
           if (action.conflictResume === true) conflictResumeLaunched.add(taskId);
-          agentDirty = true; // 起動処理自体が main の .agent/ をコミットするため先に立てる
           const ok = launchTaskSession(config, task);
           if (ok) launched += 1;
           // 起動できなかった 1 件は次の周回で選び直す(startTaskSession 側でログ済み)。
@@ -3346,13 +3343,11 @@ export async function mainLoop(): Promise<void> {
         continue;
       }
 
-      // wait: 待機に入る前に、この周回までに溜めた .agent/ の差分を流し切る。
+      // wait: `.agent/` のコミットはここでは行わない。頻繁な待機のたびにコミットすると
+      // 内容を語らない定型コミットが積み上がるため、コミットはタスク起動前・main マージ前・
+      // ループ終了時の finally に集約している。
       // sleep は wakeEmitter でも起きるため、走っているセッションの完了は待機を打ち切って
       // 先頭の掃き出しへ戻す(idlePollMs を待たされない)
-      if (agentDirty) {
-        commitAgentDir();
-        agentDirty = false;
-      }
       if (action.why === "rate-limit") log(`rate limit 待機中(${Math.ceil(action.ms / 60000)} 分)`);
       if (action.why === "crash-backoff") {
         log("警告: 瞬時クラッシュが連続している。環境要因の可能性が高いため 1 周回だけ起動を抑制する");
