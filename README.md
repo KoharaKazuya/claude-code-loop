@@ -32,7 +32,7 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.0": {}
+    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.1": {}
   }
 }
 ```
@@ -174,7 +174,7 @@ npm test
 ```
 
 `.devcontainer/` のコンテナ内で `ccloop` コマンドが指すのは、利用者と同じ経路でインストールされた
-公開済み feature(`ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.0`)であり、この checkout の
+公開済み feature(`ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.1`)であり、この checkout の
 `lib/` ではない。`lib/` のローカル変更を試すときは `./bin/ccloop <subcommand>` を直接実行する
 (`bin/ccloop` は自身の実体から見た `../lib` を `CCLOOP_HOME` として解決するランチャー)。feature 自体の
 動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと同じ手順)。
