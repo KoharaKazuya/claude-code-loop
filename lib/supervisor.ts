@@ -48,7 +48,14 @@ import {
   type LoopLiveness,
 } from "./liveness.ts";
 import { log } from "./log.ts";
-import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
+import {
+  abortMerge,
+  mergeAgentBranch,
+  type AbortRetryPolicy,
+  type ConflictKind,
+  type MergeOutcome,
+  type WedgedStep,
+} from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
@@ -1192,30 +1199,39 @@ function readGitPathFile(dir: string, name: string): string | null {
 }
 
 /**
+ * abortInterruptedAutoMerge の結果。呼び出し元が「再試行すべきか」「諦めるべきか」を
+ * 判別できるよう boolean ではなく列挙で返す。
+ * - "no-merge": そもそもマージが進行中でなかった
+ * - "not-ours": MERGE_HEAD が読めない、または agent/* ブランチ由来でない(人間のマージ途中)
+ * - "aborted": 巻き戻しに成功した
+ * - "abort-failed": agent 由来のマージだったが abort 自体が失敗した(racy git 等)
+ */
+export type AutoMergeAbortResult = "no-merge" | "not-ours" | "aborted" | "abort-failed";
+
+/**
  * 前回のプロセスが main のマージ中に落ちた場合の後始末。MERGE_HEAD が agent/* ブランチの
  * 先端を指していれば Supervisor 自身の自動マージの中断とみなして巻き戻す。一致しなければ
- * 人間が手で始めたマージの途中なので、警告だけ出して一切触らない。戻り値は巻き戻したか。
+ * 人間が手で始めたマージの途中なので、警告だけ出して一切触らない。
  */
-function abortInterruptedAutoMerge(root: string): boolean {
-  if (!mergeInProgressSafe(root)) return false;
+export function abortInterruptedAutoMerge(root: string, policy?: AbortRetryPolicy): AutoMergeAbortResult {
+  if (!mergeInProgressSafe(root)) return "no-merge";
   const sha = (readGitPathFile(root, "MERGE_HEAD") ?? "").split("\n")[0]?.trim() ?? "";
   if (sha === "") {
     log("警告: main でマージが進行中だが MERGE_HEAD を読めないため触らない");
-    return false;
+    return "not-ours";
   }
   const match = listAgentBranches(root).find((b) => b.sha === sha);
   if (match === undefined) {
     log("警告: main で agent 由来でないマージが進行中のため触らない(人間のマージ途中とみなす)");
-    return false;
+    return "not-ours";
   }
-  try {
-    execFileSync("git", ["merge", "--abort"], { cwd: root });
+  const result = abortMerge(root, policy);
+  if (result.ok) {
     log(`中断していた自動マージを巻き戻した(${match.branch})`);
-    return true;
-  } catch (err) {
-    log(`警告: 中断していた自動マージの巻き戻しに失敗した: ${String(err)}`);
-    return false;
+    return "aborted";
   }
+  log(`警告: 中断していた自動マージの巻き戻しに失敗した: ${result.stderr}`);
+  return "abort-failed";
 }
 
 /** p が dir の配下にあるか(dir 自身は含まない) */
@@ -3208,6 +3224,13 @@ function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: 
   return lines;
 }
 
+/** wedged の step を日本語ラベルへ変換する(網羅性を型で担保するため Record にしている)。 */
+const WEDGED_STEP_LABELS: Record<WedgedStep, string> = {
+  "substantive-conflict": "実質コンフリクトの中止",
+  "decisions-index": "decisions/index.md の機械マージ失敗",
+  "unexpected-error": "想定外の例外",
+};
+
 /** MergeOutcome を 1 行のログ表現にする。 */
 export function describeMergeOutcome(outcome: MergeOutcome): string {
   switch (outcome.result) {
@@ -3233,8 +3256,14 @@ export function describeMergeOutcome(outcome: MergeOutcome): string {
       return `コンフリクトのためマージを中止した(${outcome.paths.join(", ")})`;
     case "blocked":
       return `マージを開始できなかった: ${outcome.reason}`;
-    case "wedged":
-      return `main が git 操作の途中で固まった(merge --abort 失敗): ${outcome.stderr}`;
+    case "wedged": {
+      const context: string[] = [];
+      if (outcome.step !== undefined) context.push(`失敗ステップ: ${WEDGED_STEP_LABELS[outcome.step]}`);
+      if (outcome.conflictKind !== undefined) context.push(`分類: ${outcome.conflictKind}`);
+      if (outcome.cause !== undefined) context.push(`直前のエラー: ${outcome.cause}`);
+      const suffix = context.length > 0 ? `【${context.join(" / ")}】` : "";
+      return `main が git 操作の途中で固まった(merge --abort 失敗): ${outcome.stderr}${suffix}`;
+    }
   }
 }
 
@@ -3666,6 +3695,44 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * main で git 操作(マージ等)が進行中のときに自己修復(abortInterruptedAutoMerge)を試みる。
+ * マージ直後の同一秒内は racy-git により `merge --abort` が `not uptodate` で失敗しうるため、
+ * 失敗直後に諦めず待機を挟んで再試行する。「人間の git 操作が進行中」という結論(false を
+ * 再試行なしで返す)は、agent 由来でないと判定できた場合にのみ出す。
+ *
+ * 再試行の層はここ 1 つに集約する。abortMerge も自前の再試行を持つが、ここからは
+ * `attempts: 1` で呼び、待機はこのループの `delayMs`(非同期 sleep)だけが行う。
+ * 二重に再試行させると待ち時間が掛け算で伸びるうえ、abortMerge 側の待機は同期
+ * (Atomics.wait)でイベントループを止めるため、非同期で待てるここが待つ方がよい。
+ * 既定の待機は秒境界を必ず跨ぐよう 1 秒より少し長くとる(racy git の解消条件)。
+ */
+export async function selfHealGitOperationInProgress(
+  root: string,
+  opts?: { attempts?: number; delayMs?: number },
+): Promise<boolean> {
+  const attempts = opts?.attempts ?? 3;
+  const delayMs = opts?.delayMs ?? 1100;
+  const singleAttempt: AbortRetryPolicy = { attempts: 1, delayMs: 0 };
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let result: AutoMergeAbortResult | undefined;
+    try {
+      result = abortInterruptedAutoMerge(root, singleAttempt);
+    } catch (err) {
+      log(`警告: 自己修復に失敗した: ${String(err)}`);
+    }
+    if (result === "not-ours") return false;
+    if ((result === "aborted" || result === "no-merge") && !gitOperationInProgress(root)) {
+      return true;
+    }
+    if (result === "abort-failed" && attempt < attempts) {
+      log(`main の自己修復を再試行する(${attempt + 1}/${attempts} 回目)`);
+      await sleep(delayMs);
+    }
+  }
+  return false;
+}
+
 export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
   // 状態を書き換える処理(generateSettings 以降)より前に、必ず二重起動ガードを確認する。
   // 後発の ccloop run がここより後ろへ進むと、recoverStartup 等が先発プロセスの実行状態を
@@ -3786,16 +3853,11 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
       if (runningCount === 0) {
         // main が git 操作(マージ等)の途中で固まっていないかを確認し、可能なら自己修復する。
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
-        // 復旧を試みる。abortInterruptedAutoMerge 自体は失敗を投げずに false を返す設計だが、
-        // 想定外の例外を投げても mainLoop を落とさないよう念のため try で囲む
+        // 復旧を試みる。マージ直後の同一秒内は racy-git により abort 自体が一時的に失敗しうる
+        // ため、selfHealGitOperationInProgress が待機を挟んで再試行してから fatal 判定する。
         if (gitOperationInProgress(repoPaths().root)) {
           log("警告: main で git 操作が進行中を検知。自己修復を試みる");
-          try {
-            abortInterruptedAutoMerge(repoPaths().root);
-          } catch (err) {
-            log(`警告: 自己修復に失敗した: ${String(err)}`);
-          }
-          if (gitOperationInProgress(repoPaths().root)) {
+          if (!(await selfHealGitOperationInProgress(repoPaths().root))) {
             log("fatal: 人間の git 操作が進行中、または巻き戻し不能。対処後に再起動すること");
             break;
           }
