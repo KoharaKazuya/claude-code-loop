@@ -4883,7 +4883,9 @@ export function formatStatus(): string {
   }
 
   push("\n-- 稼働状態 --");
-  push(`セッション数: ${data.state.sessionCount} / 最終探索: ${data.state.lastExploreAt ?? "未実行"}`);
+  push(
+    `起動セッション: ${data.state.sessionCount} 件(実行中を含む) / 最終探索: ${data.state.lastExploreAt ?? "未実行"}`,
+  );
   push(describeLoopLiveness(data.loopLiveness));
   push(`状態の更新: ${data.state.updatedAt ?? "未記録"}`);
   // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
@@ -4908,7 +4910,7 @@ export function formatStatus(): string {
     push(
       `直近セッション: cost=${fmtCost(last.costUsd)} / turns=${last.numTurns ?? "不明"}${last.abnormal ? ` / 異常終了: ${last.abnormal}` : ""}`,
     );
-    push(`累計: cost=${fmtCost(totalCost)} / セッション数=${metrics.length}`);
+    push(`累計: cost=${fmtCost(totalCost)}(終了した ${metrics.length} セッション分・サブエージェント込み)`);
   }
   push("\n確認・介入の手順: README.md の「人間の関与」");
   return out.join("\n");

@@ -1,9 +1,10 @@
 ---
 title: "ccloop status が同じ「セッション数」で違う値を 2 つ出している"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "「起動セッション: N 件(実行中を含む)」と「累計: cost=...(終了した M セッション分・サブエージェント込み)」に分離。テスト追加・CHANGELOG 記載済み"
 createdAt: 2026-08-30T05:00:44.284Z
 ---
 
