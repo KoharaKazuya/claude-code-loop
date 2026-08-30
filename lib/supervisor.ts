@@ -6328,13 +6328,12 @@ export function formatStatus(): string {
   const snoozed = data.snoozedTasks;
   const conflictHeld = data.conflictHeldTasks;
   if (next.length === 0) {
-    push(
-      conflictHeld.length > 0
-        ? `  なし(競合待ち ${conflictHeld.length} 件)`
-        : snoozed.length > 0
-          ? `  なし(スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil})`
-          : "  なし(依存待ちの可能性)",
-    );
+    // 待ち理由は同時に成立しうるので、成立しているものをすべて並べる(片方だけ出すと
+    // 「もう片方は無い」と読めてしまう)。どれも無ければ依存待ちを疑う
+    const waiting: string[] = [];
+    if (conflictHeld.length > 0) waiting.push(`競合待ち ${conflictHeld.length} 件`);
+    if (snoozed.length > 0) waiting.push(`スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil}`);
+    push(waiting.length > 0 ? `  なし(${waiting.join("、")})` : "  なし(依存待ちの可能性)");
   } else {
     for (const t of next) push(`  ${t.id}  p${t.priority}  ${t.title}`);
   }
