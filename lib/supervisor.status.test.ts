@@ -10,8 +10,10 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { serializeFrontmatter } from "./frontmatter.ts";
 import { writeRunnerRecord, type RunnerRecord } from "./liveness.ts";
+import { CURRENT_SCHEMA_VERSION } from "./migrations.ts";
 import {
   collectStatusData,
+  evaluateConfigSchema,
   formatStatus,
   hrSummary,
   loadSalvageFailures,
@@ -80,6 +82,13 @@ describe("collectStatusData / formatStatus", () => {
     const decisionsDir = path.join(dir, ".agent", "decisions");
     fs.mkdirSync(decisionsDir, { recursive: true });
     fs.writeFileSync(path.join(decisionsDir, `${id}.md`), serializeFrontmatter({ title }, "決定の本文。"));
+  }
+
+  /** `.agent/config.json` を任意の中身で書く(schemaVersion の食い違いを検証するため) */
+  function writeConfig(content: Record<string, unknown>): void {
+    const agentDir = path.join(dir, ".agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "config.json"), JSON.stringify(content, null, 2));
   }
 
   it("何も無ければ要対応事項なしになる", () => {
@@ -480,6 +489,91 @@ describe("collectStatusData / formatStatus", () => {
       const data = collectStatusData(NOW);
       expect(data.missingDependencies).toEqual([]);
       expect(data.nextRunnableTasks.map((t) => t.id)).toContain("T-child");
+    });
+  });
+
+  describe("config.json の schemaVersion 食い違い", () => {
+    it("config.json が無ければ configSchema は null で「要対応事項なし」のまま", () => {
+      const data = collectStatusData(NOW);
+      expect(data.configSchema).toBeNull();
+
+      const out = formatStatus();
+      expect(out).toContain("要対応事項なし");
+    });
+
+    it("config.json が JSON として壊れていれば configSchema は null で誤報しない", () => {
+      const agentDir = path.join(dir, ".agent");
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, "config.json"), "{ this is not valid json");
+
+      const data = collectStatusData(NOW);
+      expect(data.configSchema).toBeNull();
+
+      const out = formatStatus();
+      expect(out).toContain("要対応事項なし");
+    });
+
+    it("schemaVersion が古い(config-outdated)とき要対応に案内と ccloop init --upgrade が出る", () => {
+      writeConfig({ schemaVersion: CURRENT_SCHEMA_VERSION - 1 });
+
+      const data = collectStatusData(NOW);
+      expect(data.configSchema).toEqual({
+        version: CURRENT_SCHEMA_VERSION - 1,
+        current: CURRENT_SCHEMA_VERSION,
+        compat: "config-outdated",
+      });
+
+      const out = formatStatus();
+      expect(out).toContain("設定ファイルが古い");
+      expect(out).toContain("ccloop init --upgrade");
+      expect(out).toContain(`schemaVersion ${CURRENT_SCHEMA_VERSION - 1} → ${CURRENT_SCHEMA_VERSION}`);
+      expect(out).not.toContain("要対応事項なし");
+    });
+
+    it("schemaVersion が一致していれば何も出ず「要対応事項なし」のまま", () => {
+      writeConfig({ schemaVersion: CURRENT_SCHEMA_VERSION });
+
+      const data = collectStatusData(NOW);
+      expect(data.configSchema).toEqual({
+        version: CURRENT_SCHEMA_VERSION,
+        current: CURRENT_SCHEMA_VERSION,
+        compat: "ok",
+      });
+
+      const out = formatStatus();
+      expect(out).not.toContain("設定ファイルが古い");
+      expect(out).not.toContain("ccloop 本体が古い");
+      expect(out).toContain("要対応事項なし");
+    });
+  });
+});
+
+describe("evaluateConfigSchema", () => {
+  it("raw が null なら判定しない", () => {
+    expect(evaluateConfigSchema(null)).toBeNull();
+  });
+
+  it("バージョンが一致していれば ok", () => {
+    expect(evaluateConfigSchema({ schemaVersion: CURRENT_SCHEMA_VERSION })).toEqual({
+      version: CURRENT_SCHEMA_VERSION,
+      current: CURRENT_SCHEMA_VERSION,
+      compat: "ok",
+    });
+  });
+
+  it("config の版数が古ければ config-outdated", () => {
+    expect(evaluateConfigSchema({ schemaVersion: CURRENT_SCHEMA_VERSION - 1 })).toEqual({
+      version: CURRENT_SCHEMA_VERSION - 1,
+      current: CURRENT_SCHEMA_VERSION,
+      compat: "config-outdated",
+    });
+  });
+
+  it("config の版数がツールより新しければ tool-outdated", () => {
+    expect(evaluateConfigSchema({ schemaVersion: CURRENT_SCHEMA_VERSION + 1 })).toEqual({
+      version: CURRENT_SCHEMA_VERSION + 1,
+      current: CURRENT_SCHEMA_VERSION,
+      compat: "tool-outdated",
     });
   });
 });
