@@ -1,6 +1,6 @@
 ---
 title: "conflictRetries を共通ルールのタスク形式に追記する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 conflicts: [T-20260830-1407-narrow-readonly-git-deny-patterns]
