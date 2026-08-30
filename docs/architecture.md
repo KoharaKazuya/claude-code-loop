@@ -21,7 +21,8 @@ ccloop は DevContainer feature としてインストールされ、`/usr/local/
 ## このリポジトリ自身も公開 feature 経由で ccloop を使う理由
 
 `.devcontainer/` は checkout の `bin/ccloop` を symlink せず、利用者と同じくバージョン固定の公開済み
-feature(参照先は `.devcontainer/devcontainer.json`。`npm version` で同期される)をインストールする。
+feature(参照先は `.devcontainer/devcontainer.json`。バージョンはリリース後に手動で更新する)を
+インストールする。
 
 - 自律ループがこのリポジトリの `lib/` を書き換えても、コンテナ内で動いている `ccloop` は feature 側の
   固定コピーなので影響を受けない(自己改変で実行中のツールが壊れない)。

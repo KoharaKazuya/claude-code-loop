@@ -17,13 +17,17 @@
 ## feature のタグ運用
 
 バージョンの真実は `package.json` の `version` 1 箇所とし、`features/ccloop/devcontainer-feature.json`
-の `version`、README.md と `.devcontainer/devcontainer.json` の feature 参照
-(`ghcr.io/koharakazuya/claude-code-loop/ccloop:X.Y.Z`)は `scripts/sync-version.mjs` で機械的に同期する。
-`npm version <patch|minor|major>` の `version` フックがこれを実行してからコミットと `vX.Y.Z` タグを
-作るため、通常の手順ではこれらがずれない。
+の `version` と README.md の feature 参照(`ghcr.io/koharakazuya/claude-code-loop/ccloop:X.Y.Z`)は
+`scripts/sync-version.mjs` で機械的に同期する。`npm version <patch|minor|major>` の `version` フックが
+これを実行してからコミットと `vX.Y.Z` タグを作るため、通常の手順ではこれらがずれない。
+
+`.devcontainer/devcontainer.json` の feature 参照と `.devcontainer/devcontainer-lock.json` はこの同期の
+対象外で、リリース後に手動で更新する。lock の digest は publish 後にしか確定しないため、
+devcontainer.json だけを自動更新すると lock との整合が取れない差分が生じる。lock はコンテナ再ビルド時に
+devcontainer CLI が解決し直す。
 
 ずれを検出する安全弁として `scripts/check-version.mjs` があり、CI(`.github/workflows/ci.yml`)が
-毎 push で package.json を含む 4 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)が
+毎 push で package.json を含む 3 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)が
 タグ push 時にタグバージョンとの一致まで検証してから publish する。README の参照をタグと一致させる理由は、
 devcontainers/action が publish するタグは `X` / `X.Y` / `X.Y.Z` / `latest` であり、README に
 実在しないタグ(例: 0.x リリース時の `:1`)を載せてしまう事故を防ぐため。
