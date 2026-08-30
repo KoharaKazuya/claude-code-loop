@@ -160,6 +160,41 @@ function hasControlChar(s: string): boolean {
   return false;
 }
 
+/**
+ * 表示を実際の内容と食い違わせうる文字を、1 文字ずつ `<U+XXXX>` 形式(16 進大文字・
+ * 4 桁以上・0 埋め)の可視表記へ置換する。対象は `hasControlChar` と同じ制御文字
+ * (コードポイントが 0x20 未満、または 0x7f)に加え、見た目に現れないまま並びや
+ * 内容を偽装できる双方向制御文字・ゼロ幅文字。
+ * 破棄差分(`ownTaskFileDiscarded`)は main 側の任意の内容がそのまま `git log` に出るため、
+ * これらがコミットメッセージ経由で紛れ込むのを防ぐ。改行(`\n`)は差分の構造そのもの、
+ * タブ(`\t`)は通常のテキストなのでどちらも置換対象から除外する(`hasControlChar` 自体は
+ * どちらも制御文字として扱うが、この関数はその判定を変えず、除外だけをここで行う)。
+ * 「差分を捨てる」フォールバックにはしない(黙って捨てるのをやめるのがこの機能の目的のため)。
+ */
+export function escapeUnsafeChars(text: string): string {
+  let result = "";
+  for (const ch of text) {
+    if (ch === "\n" || ch === "\t") {
+      result += ch;
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    const isControl = code < 0x20 || code === 0x7f;
+    // 双方向制御(LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI)とゼロ幅(ZWSP/ZWNJ/ZWJ/BOM)
+    const isInvisible =
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      (code >= 0x200b && code <= 0x200d) ||
+      code === 0xfeff;
+    if (isControl || isInvisible) {
+      result += `<U+${code.toString(16).toUpperCase().padStart(4, "0")}>`;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
 /** 「何を機械的に解決したか」の内訳。mergeCommitMessage が本文に書く内容に加え、
  *  MergeOutcome の "renumbered" が resolved として持ち出す */
 export interface ResolvedMechanicalPaths {
@@ -177,12 +212,25 @@ export interface ResolvedMechanicalPaths {
 /** マージコミットの本文に載せる破棄差分の行数上限。超えた分は省略する */
 const MAX_DISCARDED_DIFF_LINES = 60;
 
-/** 破棄した差分テキストを本文に載せる行数まで切り詰める(超えた行数は省略の注記に残す) */
+/** マージコミットの本文に載せる破棄差分の 1 行あたりの文字数上限。超えた行は先頭だけ残す */
+const MAX_DISCARDED_DIFF_LINE_CHARS = 200;
+
+/**
+ * 破棄した差分テキストを本文に載せる大きさまで切り詰める。
+ * 改行を含まない極端に長い 1 行があると本文が際限なく肥大化するため、まず行ごとに
+ * `MAX_DISCARDED_DIFF_LINE_CHARS` 文字を超える分を切り詰め(超えた行は末尾に
+ * `…(この行はここまで)` を付ける)、その上で行数を `MAX_DISCARDED_DIFF_LINES` まで
+ * 切り詰める(超えた行数は省略の注記に残す)。
+ */
 function truncateDiffText(diff: string): string {
-  const lines = diff.split("\n");
-  if (lines.length <= MAX_DISCARDED_DIFF_LINES) return diff;
-  const omitted = lines.length - MAX_DISCARDED_DIFF_LINES;
-  const kept = lines.slice(0, MAX_DISCARDED_DIFF_LINES);
+  const truncatedLines = diff.split("\n").map((line) =>
+    line.length > MAX_DISCARDED_DIFF_LINE_CHARS
+      ? `${line.slice(0, MAX_DISCARDED_DIFF_LINE_CHARS)}…(この行はここまで)`
+      : line,
+  );
+  if (truncatedLines.length <= MAX_DISCARDED_DIFF_LINES) return truncatedLines.join("\n");
+  const omitted = truncatedLines.length - MAX_DISCARDED_DIFF_LINES;
+  const kept = truncatedLines.slice(0, MAX_DISCARDED_DIFF_LINES);
   kept.push(`... (残り ${omitted} 行は省略。git diff で確認できる)`);
   return kept.join("\n");
 }
@@ -199,7 +247,9 @@ function truncateDiffText(diff: string): string {
  * - ownTaskFile があれば「タスクファイルはブランチ側を採用: <path>」
  *   - さらに ownTaskFileDiscarded があれば、空行を挟んで破棄した main 側の差分を載せる
  *     (人間が main 側で手編集していた場合もその内容が黙って消えないようにするため)。
- *     差分は `MAX_DISCARDED_DIFF_LINES` 行を超える場合、先頭だけを残して省略の注記を足す。
+ *     差分はまず `escapeUnsafeChars` で制御文字・危険 Unicode を `<U+XXXX>` 形式へ
+ *     置換してから(表示と実際の内容が食い違う紛れ込みを防ぐ)、`truncateDiffText` で
+ *     行の長さ・行数を切り詰める。
  * - decisionsIndex があれば「決定インデックスは両ブランチの項目を統合: <path>」
  * 末尾には空行を挟んで trailer を必ず付ける。
  */
@@ -221,8 +271,9 @@ export function mergeCommitMessage(
     bodyLines.push(`タスクファイルはブランチ側を採用: ${resolved.ownTaskFile}`);
     if (resolved.ownTaskFileDiscarded != null) {
       bodyLines.push("");
+      const sanitized = escapeUnsafeChars(resolved.ownTaskFileDiscarded);
       bodyLines.push(
-        `この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):\n${truncateDiffText(resolved.ownTaskFileDiscarded)}`,
+        `この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):\n${truncateDiffText(sanitized)}`,
       );
     }
   }
@@ -308,8 +359,11 @@ export function discardedOursDiff(root: string, filePath: string, hasBase: boole
         cwd: root,
       }).toString();
     } catch (err) {
-      // 差分がある場合 git diff --no-index は exit code 1 で終了し throw するので、
-      // stdout 側から差分本文を拾う(取れなければ null)。
+      // 差分がある場合 git diff --no-index は exit code 1 で終了し throw する。status が
+      // 1(=差分あり)のときだけ stdout を差分本文として採用する。2 以上(引数誤り等の
+      // 実行時エラー)や status 不明のときは、異常系を差分ありと誤認しないよう null を返す。
+      const status = err !== null && typeof err === "object" ? (err as { status?: unknown }).status : undefined;
+      if (status !== 1) return null;
       const stdout = err !== null && typeof err === "object" ? (err as { stdout?: unknown }).stdout : undefined;
       if (Buffer.isBuffer(stdout)) diffOut = stdout.toString();
       else if (typeof stdout === "string") diffOut = stdout;

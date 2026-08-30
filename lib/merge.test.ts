@@ -213,6 +213,39 @@ describe("mergeCommitMessage", () => {
     expect(message).toContain("... (残り 1 行は省略。git diff で確認できる)");
   });
 
+  it("ownTaskFileDiscarded に制御文字が含まれると <U+XXXX> 形式へ置換され、改行は保持される(表示と実際の内容が食い違う紛れ込みを防ぐ)", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      ownTaskFileDiscarded: "line1\x07line2\nline3",
+    });
+    expect(message).not.toContain("\x07");
+    expect(message).toContain("line1<U+0007>line2\nline3");
+  });
+
+  it("ownTaskFileDiscarded の双方向制御文字・ゼロ幅文字も <U+XXXX> 形式へ置換される", () => {
+    // RLO(表示順を反転させる)と ZWSP(見えないまま語を分断する)。テストソース自体に
+    // 不可視文字を書き込まないよう、コードポイントから組み立てる
+    const rlo = String.fromCodePoint(0x202e);
+    const zwsp = String.fromCodePoint(0x200b);
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      ownTaskFileDiscarded: `-priority: 3${rlo}${zwsp}+priority: 1`,
+    });
+    expect(message).not.toContain(rlo);
+    expect(message).not.toContain(zwsp);
+    expect(message).toContain("-priority: 3<U+202E><U+200B>+priority: 1");
+  });
+
+  it("ownTaskFileDiscarded の 1 行が 200 文字を超えると 200 文字で切り詰め、省略の注記が付く", () => {
+    const longLine = "a".repeat(250);
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      ownTaskFileDiscarded: longLine,
+    });
+    expect(message).toContain(`${"a".repeat(200)}…(この行はここまで)`);
+    expect(message).not.toContain("a".repeat(201));
+  });
+
   it("ownTaskFileDiscarded が無ければ破棄の記述は出ない", () => {
     const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
       ownTaskFile: ".agent/tasks/T-001.md",
@@ -476,6 +509,36 @@ describe("mergeAgentBranch", () => {
     // main 側にだけあった行が破棄記録としてマージコミットのメッセージに残る
     const message = git(["log", "-1", "--pretty=%B"]);
     expect(message).toContain("人間が main 側で直接編集した内容");
+    expect(message).toContain("この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):");
+  });
+
+  it("own-task-file が add/add(共通祖先なし)でも機械的に解決し、ブランチ側の内容を採用しつつ main 側の内容を破棄記録として残す", () => {
+    // beforeEach の初期コミット(init)には .agent/tasks/T-060.md が存在しない = 共通祖先なし
+    git(["branch", "agent/T-060"]);
+
+    writeFile(".agent/tasks/T-060.md", "main 側が独立に追加した内容\n");
+    commitAll("docs(agent): main 側でタスクファイルを新規追加する");
+
+    git(["checkout", "agent/T-060"]);
+    writeFile(".agent/tasks/T-060.md", "branch 側が独立に追加した内容\n");
+    commitAll("docs(agent): branch 側でタスクファイルを新規追加する");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-060", "T-060", "own-task-file の add/add(共通祖先なし)", TRAILER);
+
+    expect(outcome.result).toBe("renumbered");
+    if (outcome.result !== "renumbered") throw new Error("unreachable");
+    expect(outcome.resolved.ownTaskFile).toBe(".agent/tasks/T-060.md");
+    expect(outcome.resolved.decisionsIndex).toBeNull();
+    expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-060.md"), "utf8")).toBe(
+      "branch 側が独立に追加した内容\n",
+    );
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+
+    const message = git(["log", "-1", "--pretty=%B"]);
+    expect(message).toContain("タスクファイルはブランチ側を採用: .agent/tasks/T-060.md");
+    expect(message).toContain("main 側が独立に追加した内容");
     expect(message).toContain("この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):");
   });
 
