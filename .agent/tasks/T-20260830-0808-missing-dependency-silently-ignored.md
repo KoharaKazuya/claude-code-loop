@@ -1,9 +1,10 @@
 ---
 title: "存在しないタスクを依存に書くと、待たずに実行され人間の指定が黙って無視される"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "存在しない依存を status の要対応と list の deps 行で可視化した。実行は従来どおり止めない(D-20260830-0824)"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
