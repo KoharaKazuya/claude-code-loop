@@ -129,6 +129,41 @@ describe("createWorktree", () => {
       .trim();
     expect(branch).toBe("feature-x");
   });
+
+  it("ディレクトリを直接削除した後(git worktree remove を経由しない)でも再作成できる", () => {
+    const wtPath = worktreePathFor(wtRoot, "T-1");
+    createWorktree(dir, wtPath, "agent/T-1");
+
+    // 人間が worktree ディレクトリを直接消した状況を再現する
+    fs.rmSync(wtPath, { recursive: true, force: true });
+
+    // 管理情報だけが残っていることを確認する(再現の確認)
+    const staleEntries = listWorktrees(dir).filter((e) => e.path === wtPath);
+    expect(staleEntries).toHaveLength(1);
+
+    expect(() => createWorktree(dir, wtPath, "agent/T-1")).not.toThrow();
+
+    expect(fs.existsSync(wtPath)).toBe(true);
+    const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: wtPath })
+      .toString()
+      .trim();
+    expect(branch).toBe("agent/T-1");
+  });
+
+  it("作成中(locked)の worktree は prune で消えない: 並行する git worktree add を巻き込まない根拠", () => {
+    // git worktree add は初期化中、管理情報を locked にする(完了時に外す)。ここでは
+    // worktree lock で「作成中」を疑似再現し、その間に他タスクの createWorktree が呼ぶ
+    // prune がこの記録を消さないことを確認する。
+    const wtPathA = worktreePathFor(wtRoot, "T-A");
+    createWorktree(dir, wtPathA, "agent/T-A");
+    execFileSync("git", ["worktree", "lock", wtPathA], { cwd: dir });
+    fs.rmSync(wtPathA, { recursive: true, force: true });
+
+    pruneWorktrees(dir);
+
+    const entries = listWorktrees(dir).filter((e) => e.path === wtPathA);
+    expect(entries).toHaveLength(1);
+  });
 });
 
 describe("linkSharedPaths", () => {

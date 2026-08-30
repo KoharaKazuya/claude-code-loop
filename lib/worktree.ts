@@ -105,9 +105,22 @@ function branchExists(root: string, branch: string): boolean {
  * wtPath に branch の worktree を作る。
  * wtPath が既に存在するなら何もしない(冪等: コンフリクト解決の再開などで同じ worktree を使い回す)。
  * branch が既存なら `git worktree add <wtPath> <branch>`、無ければ HEAD から新規作成する。
+ *
+ * `git worktree add` の前に prune を試みる: 人がディレクトリを直接削除する(`git worktree
+ * remove` を経由しない)と、実体は無いのに「そのブランチはそのパスで使用中」という管理情報
+ * (`.git/worktrees/<name>/`)だけが残り、同じブランチ・パスでの add が拒否されてしまう。
+ * prune が対象にするのは「実体が無い」かつ「locked でない」記録だけであり、実在するディレクトリの
+ * 記録には触れない。さらに `git worktree add` は初期化中その記録を locked にし完了時に外すため、
+ * 並行して走っている他タスクの作成中の worktree を巻き込むこともない。prune 自体の失敗はここでは
+ * 無視する(あくまで復旧のための best-effort であり、例外を投げると従来より状態が悪化するため)。
  */
 export function createWorktree(root: string, wtPath: string, branch: string): void {
   if (fs.existsSync(wtPath)) return;
+  try {
+    pruneWorktrees(root);
+  } catch {
+    // best-effort: prune に失敗しても後続の worktree add を試みる
+  }
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
   if (branchExists(root, branch)) {
     execFileSync("git", ["worktree", "add", wtPath, branch], { cwd: root });
