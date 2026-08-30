@@ -288,11 +288,13 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
 }
 
 /** dir 直下の全タスクファイルを読む。warn が真なら不正ファイルを警告する */
-function loadTasksFrom(dir: string, warn: boolean): Task[] {
+function loadTasksFrom(dir: string, warn: boolean): { tasks: Task[]; invalidFiles: string[] } {
   const tasks: Task[] = [];
+  const invalidFiles: string[] = [];
   for (const fileName of listMdFiles(dir)) {
     const task = taskFromFile(dir, fileName);
     if (task === null) {
+      invalidFiles.push(fileName);
       const full = path.join(dir, fileName);
       if (warn && !warnedInvalidFiles.has(full)) {
         warnedInvalidFiles.add(full);
@@ -302,7 +304,7 @@ function loadTasksFrom(dir: string, warn: boolean): Task[] {
     }
     tasks.push(task);
   }
-  return tasks;
+  return { tasks, invalidFiles };
 }
 
 // タスク・state の読み書きは通常、確定済みの対象リポジトリ(repoPaths())に対して行うが、起動時復旧
@@ -325,7 +327,7 @@ function patchesDirOf(root: string): string {
 }
 
 function loadTasksIn(root: string): Task[] {
-  return loadTasksFrom(tasksDirOf(root), true);
+  return loadTasksFrom(tasksDirOf(root), true).tasks;
 }
 
 function loadTasks(): Task[] {
@@ -346,7 +348,7 @@ function loadTask(id: string): Task | null {
  * ID 採番・進捗集計・依存表示の母集団に含めるための参照専用。
  */
 function loadArchivedTasks(): Task[] {
-  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false);
+  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false).tasks;
 }
 
 export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | undefined> {
@@ -1801,6 +1803,11 @@ export function refreshGeneratedSessionInputs(paths: Paths = repoPaths()): void 
 /**
  * claude を 1 回起動する。引数の組み立ては buildClaudeArgs を参照。
  * env は CLAUDE_AGENT_AUTONOMOUS に追加する環境変数(hook がセッション種別を判別するために使う)。
+ *
+ * 子プロセスの異常(実行ファイルが無い等)は error イベント経由で resolve するが、spawn 自体の
+ * 同期 throw(オプション不正など)は executor の外へ出て Promise の reject になる。**呼び出し元は
+ * 必ず reject に備えること**(crashResultFromError でクラッシュ結果へ変換する)。備えを忘れると
+ * 未捕捉例外になり、セッション 1 件の起動失敗で ccloop run プロセス全体が落ちる。
  */
 function runClaude(
   config: Config,
@@ -2805,7 +2812,8 @@ export function exploreEndLogLine(res: SessionResult, timeoutMs: number): string
  * 戻り値の fastCrashed は、呼び出し元が「探索は何もしていない」扱いにして次の探索へ
  * クールダウン(exploreDue)を課すために使う(rateLimited のときは常に false)。
  */
-async function runExploreSession(
+// テスト用に export する(spawn 失敗時に例外が漏れず継続することを回帰テストで検証するため)
+export async function runExploreSession(
   config: Config,
   reason: string,
   ctx: ExploreContext,
@@ -2822,9 +2830,20 @@ async function runExploreSession(
   try {
     log(`${styleText("cyan", "▶")} 探索セッションを開始: ${reason}`);
     const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
-    const res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, repoPaths().root, {
-      env: { CLAUDE_AGENT_SESSION_KIND: "explore" },
-    });
+    // 起動そのものの失敗(spawn の同期 throw など)はタスクセッション経路(launchTaskSession)と
+    // 同じくクラッシュ結果へ変換する。ここで捕まえないと未捕捉例外になり、探索 1 件の失敗で
+    // ccloop run 全体が落ちる(タスクセッションでは同じ失敗が吸収されるため、経路ごとの差になる)。
+    let res: SessionResult;
+    try {
+      res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, repoPaths().root, {
+        env: { CLAUDE_AGENT_SESSION_KIND: "explore" },
+      });
+    } catch (err) {
+      log(`警告: 探索セッションが想定外に失敗した: ${String(err)}`);
+      // exitCode: null かつ即座に返るため、以降の isFastCrash が「瞬時クラッシュ」と判定する
+      // = 入力ハッシュを更新せず、次の探索へクールダウンを課す
+      res = crashResultFromError(err);
+    }
     recordMetrics({ kind: "explore", model: config.model, res, sessionCwd: repoPaths().root });
     if (isSessionRateLimited(res)) {
       applyRateLimit(config);
@@ -4698,6 +4717,8 @@ export interface StatusData {
   installedSourceDrifted: boolean;
   /** ループ本体(ccloop run)が生きているか */
   loopLiveness: LoopLiveness;
+  /** status が不正で処理対象から外れているタスクファイル名(`.agent/tasks/` 直下) */
+  invalidTaskFiles: string[];
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -4715,7 +4736,7 @@ function realpathOrSelf(p: string): string {
  * (status は状況を見るためのものなので、他コマンドのように止めない)。
  */
 export function collectStatusData(now: Date): StatusData {
-  const tasks = loadTasks();
+  const { tasks, invalidFiles: invalidTaskFiles } = loadTasksFrom(tasksDirOf(repoPaths().root), false);
   const state = loadState();
   const hr = parseHumanReview();
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
@@ -4798,6 +4819,7 @@ export function collectStatusData(now: Date): StatusData {
     supervisorSourceStale,
     installedSourceDrifted,
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
+    invalidTaskFiles,
   };
 }
 
@@ -4871,6 +4893,11 @@ export function formatStatus(): string {
   );
   section(
     "要対応",
+    `status が不正で集計から除外されているタスクファイル — frontmatter の status を ${TASK_STATUSES.join(" / ")} のいずれかに直す:`,
+    data.invalidTaskFiles,
+  );
+  section(
+    "要対応",
     "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
     pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
   );
@@ -4898,7 +4925,8 @@ export function formatStatus(): string {
       blocked.length +
       pending.worktrees.length +
       pending.parkedBranches.length +
-      data.pendingDecisions.count ===
+      data.pendingDecisions.count +
+      data.invalidTaskFiles.length ===
     0
   ) {
     push("\n要対応事項なし");

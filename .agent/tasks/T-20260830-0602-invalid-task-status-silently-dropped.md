@@ -1,10 +1,10 @@
 ---
 title: "status が不正なタスクファイルが集計から黙って消え、watch では痕跡も残らない"
-status: ready
+status: completed
 priority: 3
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md)(元: -)"
+retries: 0
+note: "不正な status のファイルを StatusData.invalidTaskFiles に載せ、要対応節に表示するようにした"
 createdAt: 2026-08-30T06:02:18.660Z
 ---
 
@@ -46,11 +46,3 @@ createdAt: 2026-08-30T06:02:18.660Z
 
 frontmatter そのものが読めない場合(BOM / CRLF)の取りこぼしは別タスクで対処済み。
 こちらは frontmatter は読めるが `status` の値が語彙外、というケースである。
-
-## 試行履歴
-
-### 試行 1(2026-08-30T06:15:38.207Z, Supervisor 記録: マージ衝突)
-
-- 結果: main へのマージが衝突した(.agent/decisions/index.md)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない

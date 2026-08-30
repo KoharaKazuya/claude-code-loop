@@ -1,6 +1,6 @@
 ---
 title: "事前チェックで Claude へのログイン状態も見るか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T04:29:08.819Z
 ---

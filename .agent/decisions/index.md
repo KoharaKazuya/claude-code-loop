@@ -2,7 +2,9 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0730-conflict-resolution-anchor-strategy](D-20260830-0730-conflict-resolution-anchor-strategy.md) — マージ衝突の解消は main 先端との差分アンカーを避けて行う
 - [ ] [D-20260830-0618-stopped-loop-running-sessions-display](D-20260830-0618-stopped-loop-running-sessions-display.md) — ループ停止時の「実行中のタスク」節は経過時間を出さず記録扱いで表示する
+- [ ] [D-20260830-0614-invalid-task-files-in-action-section](D-20260830-0614-invalid-task-files-in-action-section.md) — status が不正なタスクファイルは「要対応」節の 1 セクションとして出す
 - [x] [D-20260830-0439-liveness-unreadable-record](D-20260830-0439-liveness-unreadable-record.md) — 生存記録の壊れた JSON・型不正は「読めなかった」側に寄せる
 - [x] [D-20260830-0423-explore-fast-crash-input-consumption](D-20260830-0423-explore-fast-crash-input-consumption.md) — 探索の入力消費を打ち切る基準は「瞬時クラッシュ」で切る
 - [x] [D-20260830-0410-explore-crash-out-of-scope](D-20260830-0410-explore-crash-out-of-scope.md) — 探索セッションの瞬時クラッシュは crash-backoff の対象に含めない
