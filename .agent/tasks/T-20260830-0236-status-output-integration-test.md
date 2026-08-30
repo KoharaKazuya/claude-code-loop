@@ -1,9 +1,10 @@
 ---
 title: "ccloop status の出力全体に結合テストを追加する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "lib/supervisor.status.test.ts を追加(3 ケース)。collectStatusData を export。test/lint/typecheck 通過"
 createdAt: 2026-08-30T02:36:30.702Z
 ---
 
