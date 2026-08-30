@@ -1,9 +1,10 @@
 ---
 title: "ccloop add のオプション入力の検証漏れを塞ぐ"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "resolvePriority / parseDeps を純粋関数として切り出し検証を追加。test / typecheck / lint 通過"
 createdAt: 2026-08-30T03:37:51.554Z
 ---
 
