@@ -3,8 +3,8 @@ title: "ループが死んでいると判定済みでも「実行中のタスク
 status: ready
 priority: 2
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md)(元: -)"
+retries: 2
+note: "失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0602-status-shows-dead-session-running.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md…)"
 createdAt: 2026-08-30T06:02:18.660Z
 ---
 
@@ -57,5 +57,11 @@ createdAt: 2026-08-30T06:02:18.660Z
 ### 試行 1(2026-08-30T06:19:07.112Z, Supervisor 記録: マージ衝突)
 
 - 結果: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 2(2026-08-30T06:29:39.036Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0602-status-shows-dead-session-running.md)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
