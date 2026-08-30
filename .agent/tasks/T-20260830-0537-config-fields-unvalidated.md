@@ -1,10 +1,9 @@
 ---
 title: "config.json のほとんどの項目が検証されず、壊れていると素の TypeError で落ちる"
-status: ready
+status: completed
 priority: 4
-dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -)"
+note: "validateConfig を新設し、不正な項目を列挙して止めるようにした。未捕捉例外の経路は別タスクへ切り出し"
+retries: 0
 createdAt: 2026-08-30T05:37:00.000Z
 ---
 
@@ -59,8 +58,39 @@ $ node -e 'require("child_process").spawn(undefined, ["--version"])'
 
 ## 試行履歴
 
-### 試行 1(2026-08-30T06:05:53.495Z, Supervisor 記録: マージ衝突)
+### 試行 1(2026-08-30T05:58:51.146Z, セッション記録)
 
-- 結果: main へのマージが衝突した(CHANGELOG.md)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない
+- 確認済みの事実:
+  - `validateConfig` を新設し `normalizeConfig` から呼んで throw する形で実装した(コミット 731ba4c)。
+    `npm run typecheck` / `npm run lint` / `npm test`(991 テスト)すべて通過。
+  - やること 2 の調査結果: `spawn` の同期 TypeError は Promise executor 内の throw なので
+    `runClaude` の返す Promise の reject になる。経路により扱いが違う。
+    - タスクセッション経路は `launchTaskSession`(`lib/supervisor.ts` 3195 行付近)が
+      `started.result.then(onFulfilled, onRejected)` で reject を受け、`crashResultFromError` で
+      「クラッシュ扱いの結果」に変換する。プロセスは落ちない。
+    - 探索セッション経路(`runExploreSession` 2791 行の `try`)と triage 経路(4181 行付近)は
+      `try { ... } finally { ... }` で catch を持たない。`mainLoop` のループを包む try にも catch が無く、
+      `lib/cli.ts:175` の `case "run"` にもトップレベル(202 行)にも catch が無い。
+      よってこの 2 経路の reject は未捕捉例外となり `ccloop run` プロセスごと落ちる。
+  - 上記のうち「catch が無いこと」はコードを読んで確認した(実際に spawn を失敗させる再現実験は
+    していない)。今回の検証追加により `claudeCommand` が undefined のまま起動する経路は塞がったため、
+    この未捕捉経路を塞ぐ変更は入れていない。
+- 未検証の推測: 探索/triage 経路の未捕捉 reject は、`claudeCommand` 以外の理由(claude 実行ファイルが
+  途中で消える等)でも起こりうる。汎用の防御として `runClaude` の呼び出しを catch する価値はありそうだが、
+  実害の確認はしていない。
+- 次の試行への提案: 上記の未捕捉経路を塞ぐなら、タスクセッション経路と同じく
+  `crashResultFromError` へ寄せるのが一貫する。別タスクとして扱うのが妥当。
+
+### 試行 2(2026-08-30T06:07:10.710Z, セッション記録: 衝突解消)
+
+- 確認済みの事実:
+  - 衝突は `CHANGELOG.md`「## 未リリース」末尾の追記同士 1 箇所のみ。実装ファイル
+    (`lib/config.ts` / `lib/config.test.ts` など)に衝突は無く、試行 1 の成果はブランチに
+    コミット済みのまま残っていた(731ba4c / 1f1c75c)。
+  - 既存の判断 `D-20260830-0531-changelog-merge-keep-both-entries` の方針どおり、両側の項目を
+    どちらも残して解消した(main 側の 2 項目を先、ブランチ側の config 検証の項目を後)。
+    追記同士のため捨てた変更は無く、新しい判断記録は作っていない。
+  - タスクファイル本体は Supervisor の自動解消でブランチ側が採用済みだったため、そのまま維持した。
+  - マージ後の作業ツリーで `npm run typecheck` / `npm run lint` / `npm test`(1004 テスト)すべて通過。
+- 未検証の推測: なし。
+- 次の試行への提案: なし(このタスクは完了)。
