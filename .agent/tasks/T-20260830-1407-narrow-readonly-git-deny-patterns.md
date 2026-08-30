@@ -1,7 +1,8 @@
 ---
 title: "読み取り専用の git サブコマンドを禁止一覧から外す"
-status: ready
+status: completed
 priority: 3
+note: "deny を変更系だけに狭め、読み取り専用 5 コマンドを解放。npm test / lint / typecheck 通過"
 dependencies: []
 conflicts: [T-20260830-1334-explore-assigns-conflict-metadata, T-20260830-1413-status-conflict-held-count-truncated]
 retries: 0
