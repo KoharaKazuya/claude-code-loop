@@ -1662,9 +1662,12 @@ function selectRunnable(): { runnable: Task[]; snoozedCount: number } {
  * 「worktree にマージが残っている(hasConflict)」かつ「この停止指示の後にまだ起動していない
  * (launchedIds に無い)」タスクを優先度順に返す。
  *
- * スヌーズ中のタスクも対象に含める。スヌーズはタスクの再試行ペースの都合であって、
- * MERGE_HEAD 付きの worktree を残したままプロセスを終えてよい理由にはならない
- * (次回 run の recoverOrphanBranch が retries を消費せず即再開するのと同じ考え方)。
+ * スヌーズ中のタスクも対象に含める。スヌーズが無視されるのはこの停止直前の経路だけで、
+ * 通常周回の選定(planTaskSelection)はスヌーズを尊重する。無視は「タスクごとに停止指示後
+ * 1 回まで」の上限つきであり、無条件に空振りを繰り返す構造にはならない。
+ * 衝突解消セッションの仕事(マーカーの解消・検証・コミット)はスヌーズが待っている人間の
+ * 入力とは独立に進められるため空振りにあたらない。MERGE_HEAD 付きの worktree を残したまま
+ * プロセスを終えないことを優先する。
  */
 export function planConflictResume(opts: {
   tasks: Task[];

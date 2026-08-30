@@ -1,9 +1,10 @@
 ---
 title: "衝突解消の再開が待機指定を無視してよいのかを確定する"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "無視が正しいと確定。実装は変えずコメント・docs・回帰テスト・PROMPT.md に意図を固定した(D-20260830-0435-conflict-resume-ignores-snooze)"
 createdAt: 2026-08-30T04:29:08.819Z
 ---
 
