@@ -13,7 +13,9 @@
  * modify/modify コンフリクトになるが、これも内容が対立しているわけではなく、
  * main 側の変更は Supervisor 自身が書いた機械的な失敗記録に過ぎない(履歴には残る)。
  * ブランチ側にはセッションが書いた最終的な状態があるため、ブランチ側を採用して
- * 解決する。
+ * 解決する。ただし人間が main 側で同じファイルを直接編集していた場合にその内容が
+ * 警告も記録も無く消えることを避けるため、採用の際に破棄する main 側の差分を
+ * マージコミットのメッセージへ残す(`discardedOursDiff` / `mergeCommitMessage` を参照)。
  *
  * decisions/index.md: 並列セッションが同時に決定を追記すると、index.md の同じ箇所に
  * それぞれの行が挿入され modify/modify コンフリクトになる。これも内容が対立している
@@ -36,6 +38,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { mergeDecisionsIndexText } from "./decisions-index.ts";
 import { gitOperationInProgress } from "./worktree.ts";
@@ -157,6 +160,41 @@ function hasControlChar(s: string): boolean {
   return false;
 }
 
+/**
+ * 表示を実際の内容と食い違わせうる文字を、1 文字ずつ `<U+XXXX>` 形式(16 進大文字・
+ * 4 桁以上・0 埋め)の可視表記へ置換する。対象は `hasControlChar` と同じ制御文字
+ * (コードポイントが 0x20 未満、または 0x7f)に加え、見た目に現れないまま並びや
+ * 内容を偽装できる双方向制御文字・ゼロ幅文字。
+ * 破棄差分(`ownTaskFileDiscarded`)は main 側の任意の内容がそのまま `git log` に出るため、
+ * これらがコミットメッセージ経由で紛れ込むのを防ぐ。改行(`\n`)は差分の構造そのもの、
+ * タブ(`\t`)は通常のテキストなのでどちらも置換対象から除外する(`hasControlChar` 自体は
+ * どちらも制御文字として扱うが、この関数はその判定を変えず、除外だけをここで行う)。
+ * 「差分を捨てる」フォールバックにはしない(黙って捨てるのをやめるのがこの機能の目的のため)。
+ */
+export function escapeUnsafeChars(text: string): string {
+  let result = "";
+  for (const ch of text) {
+    if (ch === "\n" || ch === "\t") {
+      result += ch;
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    const isControl = code < 0x20 || code === 0x7f;
+    // 双方向制御(LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI)とゼロ幅(ZWSP/ZWNJ/ZWJ/BOM)
+    const isInvisible =
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      (code >= 0x200b && code <= 0x200d) ||
+      code === 0xfeff;
+    if (isControl || isInvisible) {
+      result += `<U+${code.toString(16).toUpperCase().padStart(4, "0")}>`;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
 /** 「何を機械的に解決したか」の内訳。mergeCommitMessage が本文に書く内容に加え、
  *  MergeOutcome の "renumbered" が resolved として持ち出す */
 export interface ResolvedMechanicalPaths {
@@ -164,6 +202,37 @@ export interface ResolvedMechanicalPaths {
   ownTaskFile?: string | null;
   /** decisions/index.md を解決した場合、そのパス */
   decisionsIndex?: string | null;
+  /**
+   * own-task-file をブランチ側で確定させた際に main 側で破棄した差分(base → ours の
+   * unified diff)。main 側に実質的な変更が無かった、または取得に失敗した場合は未設定。
+   */
+  ownTaskFileDiscarded?: string;
+}
+
+/** マージコミットの本文に載せる破棄差分の行数上限。超えた分は省略する */
+const MAX_DISCARDED_DIFF_LINES = 60;
+
+/** マージコミットの本文に載せる破棄差分の 1 行あたりの文字数上限。超えた行は先頭だけ残す */
+const MAX_DISCARDED_DIFF_LINE_CHARS = 200;
+
+/**
+ * 破棄した差分テキストを本文に載せる大きさまで切り詰める。
+ * 改行を含まない極端に長い 1 行があると本文が際限なく肥大化するため、まず行ごとに
+ * `MAX_DISCARDED_DIFF_LINE_CHARS` 文字を超える分を切り詰め(超えた行は末尾に
+ * `…(この行はここまで)` を付ける)、その上で行数を `MAX_DISCARDED_DIFF_LINES` まで
+ * 切り詰める(超えた行数は省略の注記に残す)。
+ */
+function truncateDiffText(diff: string): string {
+  const truncatedLines = diff.split("\n").map((line) =>
+    line.length > MAX_DISCARDED_DIFF_LINE_CHARS
+      ? `${line.slice(0, MAX_DISCARDED_DIFF_LINE_CHARS)}…(この行はここまで)`
+      : line,
+  );
+  if (truncatedLines.length <= MAX_DISCARDED_DIFF_LINES) return truncatedLines.join("\n");
+  const omitted = truncatedLines.length - MAX_DISCARDED_DIFF_LINES;
+  const kept = truncatedLines.slice(0, MAX_DISCARDED_DIFF_LINES);
+  kept.push(`... (残り ${omitted} 行は省略。git diff で確認できる)`);
+  return kept.join("\n");
 }
 
 /**
@@ -176,6 +245,11 @@ export interface ResolvedMechanicalPaths {
  * フックには通る。
  * resolved が指定されていれば、本文に機械的解決の内訳を 1 行ずつ入れる:
  * - ownTaskFile があれば「タスクファイルはブランチ側を採用: <path>」
+ *   - さらに ownTaskFileDiscarded があれば、空行を挟んで破棄した main 側の差分を載せる
+ *     (人間が main 側で手編集していた場合もその内容が黙って消えないようにするため)。
+ *     差分はまず `escapeUnsafeChars` で制御文字・危険 Unicode を `<U+XXXX>` 形式へ
+ *     置換してから(表示と実際の内容が食い違う紛れ込みを防ぐ)、`truncateDiffText` で
+ *     行の長さ・行数を切り詰める。
  * - decisionsIndex があれば「決定インデックスは両ブランチの項目を統合: <path>」
  * 末尾には空行を挟んで trailer を必ず付ける。
  */
@@ -195,6 +269,13 @@ export function mergeCommitMessage(
   const bodyLines: string[] = [];
   if (resolved?.ownTaskFile != null) {
     bodyLines.push(`タスクファイルはブランチ側を採用: ${resolved.ownTaskFile}`);
+    if (resolved.ownTaskFileDiscarded != null) {
+      bodyLines.push("");
+      const sanitized = escapeUnsafeChars(resolved.ownTaskFileDiscarded);
+      bodyLines.push(
+        `この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):\n${truncateDiffText(sanitized)}`,
+      );
+    }
   }
   if (resolved?.decisionsIndex != null) {
     bodyLines.push(`決定インデックスは両ブランチの項目を統合: ${resolved.decisionsIndex}`);
@@ -249,6 +330,56 @@ function extractStderr(err: unknown): string {
     if (typeof stderr === "string") return stderr.trim();
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * マージ進行中の index から base(stage 1)と ours(stage 2 = main 側)の内容を取り出し、
+ * base → ours の unified diff テキストを返す(own-task-file をブランチ側で確定させる際に
+ * main 側で捨てる変更をコミットメッセージへ残すために使う)。
+ * `hasBase` が false(add/add で共通祖先が無い)場合は base を空文字として扱う。
+ * base と ours が同一(main 側に変更が無い)なら null。取得や diff 生成に何らかの理由で
+ * 失敗した場合も、マージ処理を止めないよう例外を投げず null を返す。
+ * 返すテキストは diff のヘッダ行(`diff --no-index` / `index` / `---` / `+++`)を取り除き、
+ * `@@` から始まるハンク以降だけにする。
+ */
+export function discardedOursDiff(root: string, filePath: string, hasBase: boolean): string | null {
+  let tmpDir: string | null = null;
+  try {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "merge-discarded-diff-"));
+    const baseContent = hasBase ? git(["show", `:1:${filePath}`], root) : "";
+    const oursContent = git(["show", `:2:${filePath}`], root);
+    const baseFile = path.join(tmpDir, "base");
+    const oursFile = path.join(tmpDir, "ours");
+    fs.writeFileSync(baseFile, baseContent);
+    fs.writeFileSync(oursFile, oursContent);
+
+    let diffOut: string;
+    try {
+      diffOut = execFileSync("git", ["diff", "--no-index", "--unified=3", "--", baseFile, oursFile], {
+        cwd: root,
+      }).toString();
+    } catch (err) {
+      // 差分がある場合 git diff --no-index は exit code 1 で終了し throw する。status が
+      // 1(=差分あり)のときだけ stdout を差分本文として採用する。2 以上(引数誤り等の
+      // 実行時エラー)や status 不明のときは、異常系を差分ありと誤認しないよう null を返す。
+      const status = err !== null && typeof err === "object" ? (err as { status?: unknown }).status : undefined;
+      if (status !== 1) return null;
+      const stdout = err !== null && typeof err === "object" ? (err as { stdout?: unknown }).stdout : undefined;
+      if (Buffer.isBuffer(stdout)) diffOut = stdout.toString();
+      else if (typeof stdout === "string") diffOut = stdout;
+      else return null;
+    }
+
+    const lines = diffOut.split("\n");
+    const hunkStart = lines.findIndex((l) => l.startsWith("@@"));
+    if (hunkStart === -1) return null;
+    const result = lines.slice(hunkStart).join("\n").trim();
+    return result === "" ? null : result;
+  } catch {
+    return null;
+  } finally {
+    if (tmpDir !== null) fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /** `git rev-parse --git-path <p>` の結果を root からの絶対パスへ解決する */
@@ -353,12 +484,19 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     const { ownTaskFile, decisionsIndex } = classification;
     knownPaths = [ownTaskFile, decisionsIndex?.path ?? null].filter((p): p is string => p !== null);
 
+    let ownTaskFileDiscarded: string | null = null;
     if (ownTaskFile !== null) {
       // マージ中のタスク自身のタスクファイルは branch 側(theirs)を正とする。main 側の
-      // 差分はこのマージ処理自身(Supervisor)が書き込んだ機械的な失敗記録に過ぎず、
-      // 消えるわけではなく git 履歴には残る。一方 branch 側にはセッションが書いた
-      // 最終的なステータス・試行履歴があり、そちらが真の内容である(モジュール先頭の
-      // 説明を参照)。
+      // 差分はこのマージ処理自身(Supervisor)が書き込んだ機械的な失敗記録に過ぎないことが
+      // 多いが、人間が main 側で直接編集していた可能性もゼロではない(機械記録か人間編集か
+      // は区別しない。著者ではどちらも判定できず、メッセージのパターン照合は脆いため)。
+      // そのため採用前に main 側で捨てる差分を取得し、コミットメッセージへ残す
+      // (`discardedOursDiff` / モジュール先頭の説明を参照)。branch 側にはセッションが書いた
+      // 最終的なステータス・試行履歴があり、そちらが真の内容であることに変わりはない。
+      // own-task-file 自身の stage 集合(classifyConflicts が確定済み)から hasBase を判定する
+      // (decisionsIndex 用の hasBase は別パスのものなので使い回せない)。
+      const hasBase = stages.get(ownTaskFile)?.has(1) ?? false;
+      ownTaskFileDiscarded = discardedOursDiff(root, ownTaskFile, hasBase);
       execFileSync("git", ["checkout", "--theirs", "--", ownTaskFile], { cwd: root });
       execFileSync("git", ["add", "--", ownTaskFile], { cwd: root });
     }
@@ -393,6 +531,7 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     const resolved: ResolvedMechanicalPaths = {
       ownTaskFile,
       decisionsIndex: decisionsIndex?.path ?? null,
+      ...(ownTaskFileDiscarded != null ? { ownTaskFileDiscarded } : {}),
     };
     const message = mergeCommitMessage(branch, taskId, title, trailer, resolved);
     execFileSync("git", ["commit", "-F", "-"], {
