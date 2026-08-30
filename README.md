@@ -178,6 +178,24 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 `ccloop doctor` で git / Node.js / `claude` CLI の有無、`.agent/` の存在と `schemaVersion`、state
 ディレクトリへの書き込み可否を検査できる。
 
+## セッションログを追う
+
+`ccloop status` も実行中のコンソール出力も、セッションの結果の要約しか出さない。セッションが実際に
+何をしたかは Claude Code 自身が transcript として記録しており、次の順でたどる。
+
+1. **セッション ID を調べる。** `ccloop status --json` の `metrics` 配列(実体は状態ディレクトリの
+   `metrics.jsonl`。1 セッション 1 行の JSON Lines)に `sessionId` が入っている。`taskId` で絞り込むと
+   そのタスクの試行が時系列に並ぶので、最後の行が直近の試行。`sessionId` が無い行は結果 JSON を
+   得られずに終わったセッション(タイムアウトや起動失敗)で、原因は同じ行の `abnormal` に出る。
+2. **セッションが動いたディレクトリを決める。** タスクセッションは worktree(既定では
+   `<状態ディレクトリ>/worktrees/<タスクID>`)、探索・triage セッションはリポジトリ本体で動く。
+   状態ディレクトリの絶対パスは `ccloop doctor` の「state ディレクトリ」の行に出る。
+3. **記録を開く。** Claude Code は 2 のディレクトリの絶対パスの英数字以外をすべて `-` に置き換えた
+   名前で `~/.claude/projects/` 配下に記録を作る。その中の、セッション ID を名前に持つものが目的の
+   記録である(`<セッション ID>/subagents/` にサブエージェントの記録が並ぶ)。
+
+記録はリポジトリの外に残るため、worktree が片付いた後のタスクでも同じ手順で追える。
+
 ## 開発(この基盤自体)
 
 このリポジトリ自身の開発は次で検証する。

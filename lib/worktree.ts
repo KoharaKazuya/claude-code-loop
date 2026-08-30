@@ -1,8 +1,8 @@
 /**
  * タスクごとの git worktree 管理
  *
- * Supervisor は各タスクセッションを、リポジトリ本体の外側
- * `${dirname(ROOT)}/${basename(ROOT)}-worktrees/<taskId>`(ブランチ `agent/<taskId>`)の
+ * Supervisor は各タスクセッションを、リポジトリ本体の外側(既定では state ディレクトリ配下の
+ * `worktrees/<taskId>`、ブランチ `agent/<taskId>`。置き場は `parallel.worktreeDir` で変更できる)の
  * worktree 上で実行する。本体の作業ツリーを汚さず、複数タスクを並行して走らせられるようにするため。
  *
  * ここでは経路計算などの純粋関数と、それを使う薄い git/fs ラッパーを提供する。

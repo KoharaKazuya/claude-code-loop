@@ -478,7 +478,7 @@ function saveState(state: State): void {
 /**
  * コンソールへ 1 行出力する(ファイルには残さない)。
  * セッションの中身は Claude Code 自身が transcript として保存しており、
- * claude-code-log(README 参照)でセッション ID から確認できる。
+ * セッション ID からたどれる(README「セッションログを追う」参照)。
  */
 function log(message: string): void {
   const time = new Date().toTimeString().slice(0, 8);
@@ -1876,7 +1876,7 @@ function parseResultJson(res: SessionResult): Record<string, unknown> | null {
 
 /**
  * 結果 JSON からセッション ID を取り出す。ログの中身はこの ID を使って
- * claude-code-log(README 参照)で確認する。タイムアウト・起動失敗などで
+ * transcript から確認する(README「セッションログを追う」参照)。タイムアウト・起動失敗などで
  * 結果 JSON が得られなかった場合は "不明"。
  */
 function sessionId(res: SessionResult): string {
@@ -2764,6 +2764,21 @@ function startTaskSession(
 }
 
 /**
+ * 探索セッション終了時のログ 1 行を組み立てる。判定順序はタスクセッション側(fail 呼び出し前の分岐)
+ * と同様に timedOut を最優先にし、タイムアウトを異常終了と区別できる文言にする
+ * (タイムアウト時も session id・stderrTail は異常終了時と同様に含める)。
+ */
+export function exploreEndLogLine(res: SessionResult, timeoutMs: number): string {
+  if (res.timedOut) {
+    return `${styleText("red", "✖")} 探索セッションがタイムアウト(${timeoutMs}ms)で終了 (session ${sessionId(res)})${stderrTail(res)}`;
+  }
+  if (res.exitCode === 0) {
+    return `${styleText("green", "✔")} 探索セッション終了 (session ${sessionId(res)})`;
+  }
+  return `${styleText("red", "✖")} 探索セッションが異常終了 (exitCode=${res.exitCode}, session ${sessionId(res)})${stderrTail(res)}`;
+}
+
+/**
  * reason: なぜ探索セッションを起動するのか(ログにそのまま表示する)。ctx: プロンプトへ注入する差分内訳
  * 戻り値の rateLimited は、呼び出し元が「rate limit による中断は探索完了として扱わない」
  * (mainDirty・空振り判定を更新せず、解除後に再試行させる)ために使う。
@@ -2809,17 +2824,9 @@ async function runExploreSession(
         st.answeredKeys = currentAnsweredKeys();
         saveState(st);
       }
-      if (res.exitCode === 0) {
-        log(`${styleText("green", "✔")} 探索セッション終了 (session ${sessionId(res)})`);
-      } else {
-        log(
-          `${styleText("red", "✖")} 探索セッションが異常終了 (exitCode=${res.exitCode}, session ${sessionId(res)})${stderrTail(res)}`,
-        );
-        if (fastCrashed) {
-          log(
-            "人間の入力(GOAL.md / Human Review の回答)は未取り込みのままにする。次の探索が取り込む",
-          );
-        }
+      log(exploreEndLogLine(res, config.taskTimeoutMs));
+      if (fastCrashed) {
+        log("人間の入力(GOAL.md / Human Review の回答)は未取り込みのままにする。次の探索が取り込む");
       }
     }
   } finally {
