@@ -1,9 +1,10 @@
 ---
 title: "セッション終了処理の配線に結合テストを足す"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "finishTaskSession の結合テスト 4 件と recoverOrphanBranch の wedged 分岐テストを追加。worktree 非存在時の衝突退避分岐は既存テスト E で既にカバー済みのため追加は省いた"
 createdAt: 2026-08-30T03:18:17.730Z
 ---
 
@@ -48,3 +49,22 @@ state 更新という「壊れると main やコミット済みの成果を失�
   仕様上明らかな誤りなら直してよい。その場合は理由を `.agent/decisions/` に残す)。
 - 分量が多い。1 セッションで全部終わらない場合は、終わった分をコミットしたうえで
   status を `ready` に戻し、残りを `## 試行履歴` に書いて引き継ぐこと。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T03:49:00Z, セッション記録)
+- 確認済みの事実: `lib/supervisor.finish.test.ts` を新規追加し `finishTaskSession` の結合テスト 4 件
+  (マージ成功×成功 / マージ衝突 / タイムアウト×未コミット差分 / リトライ上限到達)を実装。
+  `lib/supervisor.test.ts` の `describe("recoverStartupIn")` に wedged 分岐のテスト K を追加。
+  `lib/supervisor.ts` は `finishTaskSession` への `export` 追加 1 箇所のみ(実装ロジックは無変更)。
+  `npm run typecheck` / `npm run lint` / `npm test`(26 files / 791 tests)すべて成功。
+- 確認済みの事実: 完了条件のうち「worktree 非存在時の衝突退避分岐」は既存テスト E
+  (`lib/supervisor.test.ts` の recoverStartupIn ブロック)で既にカバー済みのため追加を省いた。
+- 確認済みの事実: `finishTaskSession` は root を引数で受け取らず `repoPaths()` 経由で解決するため、
+  テストは `useRepoRoot(dir)` でグローバルに注入し `afterEach` で `setRepoPaths` により復元する。
+- 確認済みの事実: wedged 分岐は `post-index-change` フックでマージ後の作業ツリーを git 外から
+  書き換え、`merge --abort` を `not uptodate` で失敗させて再現している。フックが発火しなければ
+  `mergeInProgress(dir) === true` のアサートが落ちるため、静かに無意味化はしない。
+- 未検証の推測: `fastCrashStreak` / `mainChangedSinceExplore` はモジュールグローバルで
+  テスト間に持ち越されるが、現在の実装は書き込むだけで読み返さないため影響しないと判断した。
+  将来これらを参照するようになると順序依存になりうる旨をテストファイル冒頭に注記した。
