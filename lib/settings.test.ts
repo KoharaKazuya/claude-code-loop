@@ -35,6 +35,22 @@ describe("settings.template.json", () => {
       expect(fs.existsSync(path.join(import.meta.dirname, "hooks", `${hook}.ts`))).toBe(true);
     }
   });
+
+  it("PreToolUse の AskUserQuestion に deny-ask-user hook が登録されている(絶対ルール 1 を担保する唯一の実装のため、別イベントへの移動や matcher 変更を JSON.stringify の文字列一致では検出できない。構造を辿って検証する)", () => {
+    const s = JSON.parse(TEMPLATE_TEXT) as Settings & {
+      hooks?: {
+        PreToolUse?: { matcher?: string; hooks?: { type?: string; command?: string }[] }[];
+      };
+    };
+
+    const entry = s.hooks?.PreToolUse?.find((e) => e.matcher === "AskUserQuestion");
+    expect(entry).toBeDefined();
+
+    const denyAskUserHook = entry?.hooks?.find(
+      (h) => h.type === "command" && h.command?.includes("$CCLOOP_HOME/hooks/deny-ask-user.ts"),
+    );
+    expect(denyAskUserHook).toBeDefined();
+  });
 });
 
 describe("mergeSettings", () => {
