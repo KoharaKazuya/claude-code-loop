@@ -1,9 +1,10 @@
 ---
 title: "やることが尽きたときにループが自動終了する挙動をドキュメントに書く"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "README の停止節に自動終了の説明を追記した(実装は未変更)"
 createdAt: 2026-08-30T11:43:20.000Z
 ---
 
