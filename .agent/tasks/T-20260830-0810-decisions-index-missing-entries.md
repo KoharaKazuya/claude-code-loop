@@ -1,9 +1,10 @@
 ---
 title: "決定の一覧に載らない記録があり、人間の承認を素通りしてしまう"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "原因は仕組みの欠落ではなく稼働中の公開版 0.4.1 にリコンサイルが無いことだった。手動追記の義務を廃しリコンサイルへ一本化"
 createdAt: 2026-08-30T08:10:03.708Z
 ---
 
@@ -68,3 +69,18 @@ index.md への追記を明示していない可能性がある。人間の承�
 
 - 承認・アーカイブの仕組みそのものは `D-20260830-0209-decisions-index-approval-archive` の判断による。
 - index.md の衝突の機械的解決は `D-20260830-0221-decisions-index-mechanical-merge` の判断による。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T09:47:00Z, セッション記録)
+- 確認済みの事実: `lib/rotate.ts` の `rotateDecisions()` は既に未掲載 ID を未チェック行で追記する。
+  `.agent/decisions/` のコピーに `rotate()` を実行して 6 件が正しい位置・要約で追加されるのを実測した。
+  `lib/prompt/PROMPT.md` は手動追記を義務として求めていたので、タスク本文の仮説(手順書が求めていない)は誤り。
+  未掲載が起きた原因は稼働中の ccloop が `/usr/local/share/ccloop/lib/`(公開版 0.4.1、`DECISIONS_KEEP = 10` の
+  件数基準アーカイブ、index.md の概念なし)であること。
+- 実施: index.md をリポジトリ側ソースのリコンサイル結果に更新(6 件追加・archive 済み 17 行削除、
+  削除分は `.agent/archive/decisions/` に全件あることを確認)。`lib/rotate.test.ts` にリグレッションテスト 1 件追加。
+  PROMPT.md の手動追記の義務を廃止。`docs/architecture.md` の記述を実態に合わせた。
+  `npm run test`(1104 件)/ `lint` / `typecheck` すべて成功。reviewer サブエージェントは APPROVE。
+- 未検証の推測: 公開版が更新されるまでは、稼働中のループが決定を件数基準でアーカイブし続ける
+  (人間のチェックと無関係)。次のリリースで解消するはず。

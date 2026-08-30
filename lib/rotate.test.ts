@@ -128,6 +128,36 @@ describe("rotate", () => {
     expect(fs.existsSync(path.join(decisionsDir, "D-20260201-0000-new.md"))).toBe(true);
   });
 
+  it("既存の index.md に載っていない決定ファイルが、未チェック行として ID 降順の正しい位置に追記される", () => {
+    const decisionsDir = path.join(agentDir, "decisions");
+    writeFile(decisionsDir, "D-20260101-0000-a.md", decisionFixture("判断 A"));
+    writeFile(decisionsDir, "D-20260102-0000-b.md", decisionFixture("判断 B"));
+    writeFile(decisionsDir, "D-20260103-0000-c.md", decisionFixture("判断 C"));
+    writeFile(
+      decisionsDir,
+      "index.md",
+      [
+        "# 決定インデックス",
+        "",
+        "チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。",
+        "",
+        "- [ ] [D-20260102-0000-b](D-20260102-0000-b.md) — 判断 B",
+        "",
+      ].join("\n"),
+    );
+
+    const result = rotate(agentDir);
+
+    expect(result.decisions).toBe(0);
+    const text = readIndex(decisionsDir);
+    const lines = text.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines).toEqual([
+      "- [ ] [D-20260103-0000-c](D-20260103-0000-c.md) — 判断 C",
+      "- [ ] [D-20260102-0000-b](D-20260102-0000-b.md) — 判断 B",
+      "- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A",
+    ]);
+  });
+
   it("[x] を付けた決定だけが archive/decisions/ へ移動し、その行が index.md から消える", () => {
     const decisionsDir = path.join(agentDir, "decisions");
     writeFile(decisionsDir, "D-20260101-0000-keep.md", decisionFixture("残す判断"));
