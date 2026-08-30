@@ -64,10 +64,10 @@ crash-backoff の閾値・停止条件そのものを変える必要が出たと
   `lib/scheduler.ts` の `idleCooldownPassed` を「瞬時クラッシュ直後は inputsDirty による
   クールダウン免除を無効化」へ変更。判断は
   `.agent/decisions/D-20260830-0423-explore-fast-crash-input-consumption.md`。
-  `npm run typecheck` / `npm run lint` / `npm run test`(29 files / 855 tests)がすべて成功。
+  テストは scheduler の分岐 3 件・`isFastCrash` 4 件・配線(`isFastCrash` + `planLoopStep`)3 件を
+  追加し、コミット 07bdcd3 に含まれている。同コミットの内容で
+  `npm run typecheck` / `npm run lint` / `npm run test`(29 files / 858 tests)がすべて成功。
   停止条件(crash-backoff の閾値・idle-exit)は変更していないため BLOCK は不要と判断した。
 - 未検証の推測: なし。
-- 次の試行への提案: 追加で依頼していた「isFastCrash と planLoopStep を結ぶ配線テスト」と
-  reviewer のレビューはセッション時間内に戻らなかった。取り込むなら、
-  `lib/supervisor.test.ts` の `crash-backoff の配線` テストと同じ形で、瞬時クラッシュ →
-  未消費 → クールダウン経過まで再探索しない、を 1 本足すのが素直。
+- 次の試行への提案: reviewer サブエージェントのレビュー結果だけはセッション時間内に戻らなかった。
+  実装は機械的検証済みで完結しているが、気になる場合は 07bdcd3 の差分をレビュー対象にすればよい。
