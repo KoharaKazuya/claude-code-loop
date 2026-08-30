@@ -41,6 +41,7 @@ import {
   clearRunnerRecord,
   describeLoopLiveness,
   evaluateLoopLiveness,
+  readProcStartToken,
   readRunnerRecord,
   writeRunnerRecord,
   type LoopLiveness,
@@ -227,12 +228,14 @@ function loadConfig(): Config {
 
 /** `ccloop run` の生存記録を書き直す(起動時と毎周回の心拍で使う) */
 function touchRunnerRecord(startedAt: string, heartbeatIntervalMs: number): void {
+  const procStartToken = readProcStartToken(process.pid);
   writeRunnerRecord(repoPaths().runnerPath, {
     pid: process.pid,
     startedAt,
     heartbeatAt: new Date().toISOString(),
     host: os.hostname(),
     heartbeatIntervalMs,
+    ...(procStartToken !== null ? { procStartToken } : {}),
   });
 }
 

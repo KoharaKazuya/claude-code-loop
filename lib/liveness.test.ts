@@ -6,6 +6,7 @@ import {
   clearRunnerRecord,
   evaluateLoopLiveness,
   isProcessAlive,
+  parseProcStatStartTime,
   readRunnerRecord,
   writeRunnerRecord,
   type RunnerRecord,
@@ -81,6 +82,72 @@ describe("evaluateLoopLiveness", () => {
     );
     expect(result.status).toBe("running");
   });
+
+  it("procStartToken が記録と食い違えば PID の使い回しとみなし stopped/process-gone", () => {
+    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+      hostname: HOST,
+      isAlive: () => true,
+      readProcStartToken: () => "222",
+    });
+    expect(result).toMatchObject({ status: "stopped", reason: "process-gone", pid: 1234 });
+  });
+
+  it("procStartToken が記録と一致すれば従来どおり running", () => {
+    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+      hostname: HOST,
+      isAlive: () => true,
+      readProcStartToken: () => "111",
+    });
+    expect(result.status).toBe("running");
+  });
+
+  it("記録に procStartToken が無ければ照合をスキップして従来どおりの判定になる", () => {
+    const result = evaluateLoopLiveness(record(), NOW, {
+      hostname: HOST,
+      isAlive: () => true,
+      readProcStartToken: () => "222", // 現在値は取れるが記録に無いので使われない
+    });
+    expect(result.status).toBe("running");
+  });
+
+  it("現在の procStartToken が取れない(null)場合も照合をスキップして従来どおりの判定になる", () => {
+    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+      hostname: HOST,
+      isAlive: () => true,
+      readProcStartToken: () => null,
+    });
+    expect(result.status).toBe("running");
+  });
+});
+
+describe("parseProcStatStartTime", () => {
+  it("通常の /proc/<pid>/stat 形式から starttime(22 番目のフィールド)を取り出せる", () => {
+    // 3 番目(state)以降を 1, 2, 3, ... と割り振ると、20 番目が starttime(22 番目のフィールド)
+    const fields3to22 = Array.from({ length: 20 }, (_, i) => String(i + 1));
+    const stat = `1234 (bash) ${fields3to22.join(" ")}`;
+    expect(parseProcStatStartTime(stat)).toBe("20");
+  });
+
+  it("comm に空白や括弧を含んでいても正しく starttime を取り出せる", () => {
+    const fields3to22 = Array.from({ length: 20 }, (_, i) => String(i + 1));
+    const stat = `1234 (my (weird) proc) ${fields3to22.join(" ")}`;
+    expect(parseProcStatStartTime(stat)).toBe("20");
+  });
+
+  it("')' が無い壊れた内容は null", () => {
+    expect(parseProcStatStartTime("1234 bash S 1 2 3")).toBeNull();
+  });
+
+  it("フィールド数が足りない場合は null", () => {
+    expect(parseProcStatStartTime("1234 (bash) S 1 2 3")).toBeNull();
+  });
+
+  it("starttime にあたる位置が数字以外なら null", () => {
+    const fields3to22 = Array.from({ length: 20 }, (_, i) => String(i + 1));
+    fields3to22[19] = "not-a-number"; // 0-indexed 19 番目 = starttime(22 番目のフィールド)
+    const stat = `1234 (bash) ${fields3to22.join(" ")}`;
+    expect(parseProcStatStartTime(stat)).toBeNull();
+  });
 });
 
 describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
@@ -126,6 +193,34 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
         heartbeatAt: "2026-08-30T10:05:00.000Z",
         host: "host-a",
         heartbeatIntervalMs: 3_000,
+      }),
+    );
+    expect(readRunnerRecord(file)).toBeNull();
+  });
+
+  it("procStartToken を含めて write したものを read すると同じ内容が戻る", () => {
+    const rec: RunnerRecord = {
+      pid: 4321,
+      startedAt: "2026-08-30T10:00:00.000Z",
+      heartbeatAt: "2026-08-30T10:05:00.000Z",
+      host: "host-a",
+      heartbeatIntervalMs: 3_000,
+      procStartToken: "98765",
+    };
+    writeRunnerRecord(file, rec);
+    expect(readRunnerRecord(file)).toEqual(rec);
+  });
+
+  it("procStartToken が文字列以外(不正な型)なら null", () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        pid: 4321,
+        startedAt: "2026-08-30T10:00:00.000Z",
+        heartbeatAt: "2026-08-30T10:05:00.000Z",
+        host: "host-a",
+        heartbeatIntervalMs: 3_000,
+        procStartToken: 98765,
       }),
     );
     expect(readRunnerRecord(file)).toBeNull();

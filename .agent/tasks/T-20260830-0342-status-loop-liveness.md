@@ -4,7 +4,7 @@ status: completed
 priority: 3
 dependencies: []
 retries: 0
-note: "runner.json に PID・心拍を記録し、status に生死と状態の更新時刻を表示。心拍はタイマー駆動"
+note: "runner.json に PID・心拍・起動トークンを記録し、status に生死と状態の更新時刻を表示"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 
@@ -47,3 +47,18 @@ createdAt: 2026-08-30T03:42:50.737Z
   異常終了で記録が残ったままのケースも検証する。
 - `npm run` 経由の test / typecheck / lint が通る。
 - 表示文言は README の `ccloop status` の説明と食い違わないようにする(必要なら README も直す)。
+
+## 試行履歴
+
+### 試行 2(2026-08-30T04:24:00.000Z, セッション記録)
+
+- 確認済みの事実: 前回の実装(`7182e3e`)はブランチにコミット済みだった。衝突は
+  `lib/supervisor.status.test.ts` の 1 ファイルのみで、両側がそれぞれ別のテストを追記した
+  純粋な追加同士の衝突だったため、両方を残して解消した(捨てた変更は無い)。マージは `b4f1e83`。
+- 確認済みの事実: reviewer の指摘を受け、PID 使い回しによる誤った「動いています」表示を
+  `/proc/<pid>/stat` の starttime トークン照合で塞いだ(判断は
+  `.agent/decisions/D-20260830-0424-liveness-pid-reuse-token.md`)。実機で
+  `readProcStartToken(process.pid)` が値を返し、存在しない PID で `null` を返すことを確認済み。
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm run test`(30 ファイル 880 件)が全通過。
+- 未検証の推測: 「異常終了直後に別プロセスが同じ PID を取得する」競合そのものは結合テストで
+  再現しておらず、判定ロジックを依存注入で単体検証したにとどまる。
