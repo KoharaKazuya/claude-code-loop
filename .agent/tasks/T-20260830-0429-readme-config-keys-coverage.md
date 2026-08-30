@@ -1,9 +1,10 @@
 ---
 title: "README の設定キー一覧に説明の抜けている項目を足す"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "claudeCommand / idlePollMs / parallel.worktreeDir / parallel.linkPaths の 4 行を追加。既存行のずれは無し"
 createdAt: 2026-08-30T04:29:08.819Z
 ---
 
