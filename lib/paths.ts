@@ -48,6 +48,8 @@ function hasGitEntry(dir: string): boolean {
 /**
  * start から上方へ `.git` を探す。git worktree では `.git` がファイルになるため、
  * ディレクトリ・ファイルのどちらでも該当とみなす。見つからなければ null。
+ * リンクされた worktree のディレクトリがそのまま返ることがある(本体ワークツリーへの
+ * 読み替えは呼び出し側の resolveRepoRoot が行う)。
  */
 export function findGitRoot(start: string): string | null {
   let dir = path.resolve(start);
@@ -60,10 +62,54 @@ export function findGitRoot(start: string): string | null {
 }
 
 /**
+ * dir がリンクされた git worktree なら、同一リポジトリの本体ワークツリーのパスを返す。
+ * 本体ワークツリーそのもの・bare リポジトリ・判定に必要な情報が読めない場合は dir をそのまま返す。
+ * git のサブプロセスは起動せず、`.git` ファイルとその参照先の内容だけを読んで判定する
+ * (worktree ごとに repoId が変わり無関係な state を参照してしまうのを防ぐための処理)。
+ */
+function mainWorktreeRoot(dir: string): string {
+  try {
+    const gitPath = path.join(dir, ".git");
+    const stat = fs.statSync(gitPath);
+    if (stat.isDirectory()) return dir;
+
+    const content = fs.readFileSync(gitPath, "utf8");
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(content);
+    if (match === null) return dir;
+    const gitdir = path.resolve(dir, match[1]);
+
+    let commonDir: string;
+    try {
+      const commondirContent = fs.readFileSync(path.join(gitdir, "commondir"), "utf8");
+      commonDir = path.resolve(gitdir, commondirContent.trim());
+    } catch {
+      // commondir が読めない場合、gitdir が `<.git>/worktrees/<名前>` の形であることを
+      // 確認できたときだけ、そこから共通 git ディレクトリを逆算する
+      const worktreesDir = path.dirname(gitdir);
+      const dotGitDir = path.dirname(worktreesDir);
+      if (path.basename(worktreesDir) !== "worktrees") return dir;
+      commonDir = dotGitDir;
+    }
+
+    // 共通 git ディレクトリが `.git` という名前でなければ、本体ワークツリーが
+    // 存在しない構成(bare リポジトリなど)とみなす
+    if (path.basename(commonDir) !== ".git") return dir;
+
+    const candidate = path.dirname(commonDir);
+    if (!hasGitEntry(candidate)) return dir;
+    return candidate;
+  } catch {
+    return dir;
+  }
+}
+
+/**
  * 対象リポジトリのルートを決める。優先順は
  * ① `--repo <path>` ② 環境変数 `CCLOOP_REPO` ③ cwd から上方への `.git` 探索。
  * ①② は指定された時点で確定し、そこが git リポジトリでなければエラーにする
  * (黙って別のリポジトリへフォールバックすると、意図しない場所を書き換えてしまうため)。
+ * 指定・探索の結果がリンクされた worktree だった場合は、同一リポジトリの本体ワークツリーへ
+ * 読み替える(worktree ごとに repoId が変わり、無関係な state ディレクトリを参照してしまうため)。
  */
 export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
   const env = opts.env ?? process.env;
@@ -80,7 +126,7 @@ export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
           "リポジトリのルートを指定すること",
       );
     }
-    return realpath(dir);
+    return realpath(mainWorktreeRoot(dir));
   }
 
   const found = findGitRoot(opts.cwd ?? process.cwd());
@@ -90,7 +136,7 @@ export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
         "リポジトリ内で実行するか、--repo <path> か環境変数 CCLOOP_REPO でルートを指定すること",
     );
   }
-  return realpath(found);
+  return realpath(mainWorktreeRoot(found));
 }
 
 /** realpath を試み、失敗したら resolve 済みのパスをそのまま返す(state ディレクトリ ID の安定化用) */
