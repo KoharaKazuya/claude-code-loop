@@ -1,9 +1,10 @@
 ---
 title: "deny リストと PROMPT.md の記述の一致を機械的に検証するテストを足す"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "lib/deny-consistency.test.ts を追加(双方向検査 + 合成入力による自己テスト)。typecheck/lint/test 通過"
 createdAt: 2026-08-30T02:59:35.065Z
 ---
 

@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0311-deny-prompt-consistency-granularity](D-20260830-0311-deny-prompt-consistency-granularity.md) — deny リストと PROMPT.md の一致は対応表 + inline code トークンの集合比較で検査する
 - [ ] [D-20260830-0303-phase4-consent-granularity](D-20260830-0303-phase4-consent-granularity.md) — フェーズ 4 の個別確認をリリースノート粒度で運用する
 - [x] [D-20260830-0251-installed-source-drift-always-on](D-20260830-0251-installed-source-drift-always-on.md) — 自己ホスト時の乖離警告は常時点灯を許容する
 - [x] [D-20260830-0236-phase-assessment-and-single-gate](D-20260830-0236-phase-assessment-and-single-gate.md) — ccloop 自身はフェーズ 4 と見なし、遡及ゲートは 1 通に集約する
