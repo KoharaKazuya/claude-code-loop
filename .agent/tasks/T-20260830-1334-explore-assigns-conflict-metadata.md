@@ -1,9 +1,10 @@
 ---
 title: "探索セッションが競合しそうなタスクに conflicts を付けるようにする"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-1334-task-conflict-metadata-scheduling]
 retries: 0
+note: "PROMPT.md・探索プロンプト・docs・CHANGELOG を更新し、1407 の直列化依存を conflicts へ置き換えた"
 createdAt: 2026-08-30T13:34:03.651Z
 ---
 

@@ -2,7 +2,8 @@
 title: "読み取り専用の git サブコマンドを禁止一覧から外す"
 status: ready
 priority: 3
-dependencies: [T-20260830-1334-explore-assigns-conflict-metadata]
+dependencies: []
+conflicts: [T-20260830-1334-explore-assigns-conflict-metadata]
 retries: 0
 createdAt: 2026-08-30T14:07:09.352Z
 ---
@@ -58,3 +59,8 @@ createdAt: 2026-08-30T14:07:09.352Z
 - 上記 3 ファイルが揃って更新され、`npm test` / lint / typecheck が通る
 - 読み取り専用の 5 コマンドが通り、変更を伴う形が引き続き禁止されることをテストが検証している
 - `CHANGELOG.md` の「## 未リリース」節に利用者の言葉で 1 行追加(挙動の変更に当たる)
+
+## 実行順序
+
+`lib/prompt/PROMPT.md` を触るため `T-20260830-1334-explore-assigns-conflict-metadata` とは同時に
+実行しない(`conflicts` で指定済み)。順序はどちらが先でもよい。
