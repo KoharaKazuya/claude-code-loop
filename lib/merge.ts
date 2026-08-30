@@ -3,8 +3,8 @@
  *
  * Supervisor はタスクごとにブランチを切って作業させ(想定: `agent/<taskId>`)、完了後に
  * このモジュールで main へ merge commit を作る。機械的に(人手を介さず)解決してよい
- * コンフリクトは own-task-file の 1 種類だけで、それ以外のコンフリクト(内容そのものが
- * 対立するもの)は "substantive" として区別し、人間判断に回す。
+ * コンフリクトは own-task-file と `.agent/decisions/index.md` の 2 種類だけで、それ以外の
+ * コンフリクト(内容そのものが対立するもの)は "substantive" として区別し、人間判断に回す。
  *
  * own-task-file: コンフリクト解消のためブランチを残している間、Supervisor は
  * `.agent/tasks/<taskId>.md` に失敗記録を main 側で直接コミットする(次の試行がタスクを
@@ -15,12 +15,19 @@
  * ブランチ側にはセッションが書いた最終的な状態があるため、ブランチ側を採用して
  * 解決する。
  *
+ * decisions/index.md: 並列セッションが同時に決定を追記すると、index.md の同じ箇所に
+ * それぞれの行が挿入され modify/modify コンフリクトになる。これも内容が対立している
+ * わけではなく(それぞれ独立したエントリの追加・チェックであり、双方を保持すれば足りる)、
+ * `decisions-index.ts` の `mergeDecisionsIndexText` で 3-way マージして解決する。
+ * マージ不能(header/footer が両側で書き換えられた等)と判定された場合のみ substantive
+ * として人間判断へ回す。
+ *
  * `.agent/` の ID(tasks / decisions / human-review)は日時プレフィックス + slug で付ける。
  * そのため並行する複数セッションが同じパスのファイルを作るのは「同じ分に同じ slug を
  * 付けた = 同じ内容を二重に起票した」場合に限られる。これは採番のずれではなく内容の
  * 重複であり、どちらを残すか(あるいは統合するか)は人間が決めるべきものなので、
- * `.agent/decisions/` `.agent/human-review/` `.agent/tasks/` 直下の add/add も特別扱いせず
- * substantive として扱う。
+ * `.agent/decisions/` (index.md を除く)`.agent/human-review/` `.agent/tasks/` 直下の
+ * add/add も特別扱いせず substantive として扱う。
  *
  * 本モジュールはログを出さない(呼び出し側の supervisor.ts が結果を見てログ・記録を行う)。
  * 本当に壊れた状態(解決処理の途中で失敗し、かつ作業ツリーを元に戻せない等)以外は
@@ -30,6 +37,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { mergeDecisionsIndexText } from "./decisions-index.ts";
 import { gitOperationInProgress } from "./worktree.ts";
 
 // ---------- 純粋関数 ----------
@@ -60,6 +68,14 @@ export function parseUnmergedStages(lsFilesUZOut: string): Map<string, Set<numbe
 }
 
 const TASKS_DIR = ".agent/tasks/";
+const DECISIONS_INDEX_PATH = ".agent/decisions/index.md";
+
+/** stage 集合が add/add({2,3})または modify/modify({1,2,3})か */
+function isAddAddOrModifyModify(stageSet: Set<number>): boolean {
+  if (stageSet.size === 2 && stageSet.has(2) && stageSet.has(3)) return true;
+  if (stageSet.size === 3 && stageSet.has(1) && stageSet.has(2) && stageSet.has(3)) return true;
+  return false;
+}
 
 /**
  * p が「マージ中のタスク自身のタスクファイル」への add/add(stage {2,3}、共通祖先なし)
@@ -69,35 +85,56 @@ const TASKS_DIR = ".agent/tasks/";
  */
 function isOwnTaskFilePath(p: string, stageSet: Set<number>, taskId: string): boolean {
   if (p !== `${TASKS_DIR}${taskId}.md`) return false;
-  if (stageSet.size === 2 && stageSet.has(2) && stageSet.has(3)) return true;
-  if (stageSet.size === 3 && stageSet.has(1) && stageSet.has(2) && stageSet.has(3)) return true;
-  return false;
+  return isAddAddOrModifyModify(stageSet);
 }
 
 /**
+ * p が `.agent/decisions/index.md` そのものへの add/add({2,3})または modify/modify
+ * ({1,2,3})か。並列セッションが同時に決定を追記した際に発生する。
+ */
+function isDecisionsIndexPath(p: string, stageSet: Set<number>): boolean {
+  if (p !== DECISIONS_INDEX_PATH) return false;
+  return isAddAddOrModifyModify(stageSet);
+}
+
+export type MechanicalConflicts = {
+  kind: "mechanical";
+  /** own-task-file の衝突があればそのパス、無ければ null */
+  ownTaskFile: string | null;
+  /** .agent/decisions/index.md の衝突があればそのパス、無ければ null */
+  decisionsIndex: string | null;
+};
+
+export type ConflictClassification = MechanicalConflicts | { kind: "substantive"; paths: string[] };
+
+/**
  * コンフリクトを機械的に解決してよいものと、人間判断が要る「内容の対立」に分類する。
- * 機械的に解決してよいのは ownTaskFile(`.agent/tasks/<taskId>.md` そのもの・stage が
- * {2,3}(add/add)または {1,2,3}(modify/modify))だけで、モジュール先頭の説明どおり
- * ブランチ側を採用して解決する。それ以外のパスが 1 つでも混ざれば全体を "substantive" と
- * して人間判断へ回す(`.agent/decisions/` などの同名 add/add も同様。同名になるのは
+ * 機械的に解決してよいのは ownTaskFile(`.agent/tasks/<taskId>.md` そのもの)と
+ * decisionsIndex(`.agent/decisions/index.md` そのもの)で、いずれも stage が
+ * {2,3}(add/add)または {1,2,3}(modify/modify)のときに限る(モジュール先頭の説明を参照)。
+ * 両方が混在していてもよい。それ以外のパスが 1 つでも混ざれば全体を "substantive" と
+ * して人間判断へ回す(`.agent/decisions/` の index.md 以外の同名 add/add も同様。同名になるのは
  * 二重起票のときだけなので、機械的に解決してよい対象ではない)。
  */
-export function classifyConflicts(
-  stages: Map<string, Set<number>>,
-  taskId: string,
-): { kind: "mechanical"; ownTaskFile: string } | { kind: "substantive"; paths: string[] } {
+export function classifyConflicts(stages: Map<string, Set<number>>, taskId: string): ConflictClassification {
   const paths = [...stages.keys()];
   if (paths.length === 0) return { kind: "substantive", paths };
 
   let ownTaskFile: string | null = null;
+  let decisionsIndex: string | null = null;
   for (const p of paths) {
     const stageSet = stages.get(p);
     if (stageSet === undefined) return { kind: "substantive", paths };
-    if (!isOwnTaskFilePath(p, stageSet, taskId)) return { kind: "substantive", paths };
-    ownTaskFile = p;
+    if (isOwnTaskFilePath(p, stageSet, taskId)) {
+      ownTaskFile = p;
+    } else if (isDecisionsIndexPath(p, stageSet)) {
+      decisionsIndex = p;
+    } else {
+      return { kind: "substantive", paths };
+    }
   }
-  if (ownTaskFile === null) return { kind: "substantive", paths };
-  return { kind: "mechanical", ownTaskFile };
+  if (ownTaskFile === null && decisionsIndex === null) return { kind: "substantive", paths };
+  return { kind: "mechanical", ownTaskFile, decisionsIndex };
 }
 
 /** マージコミットの subject 最大長。supervisor.ts の SUBJECT_MAX_LENGTH と同じ基準だが、
@@ -113,6 +150,14 @@ function hasControlChar(s: string): boolean {
   return false;
 }
 
+/** mergeCommitMessage が本文に書く「何を機械的に解決したか」の内訳 */
+export interface ResolvedMechanicalPaths {
+  /** own-task-file を解決した場合、そのパス */
+  ownTaskFile?: string | null;
+  /** decisions/index.md を解決した場合、そのパス */
+  decisionsIndex?: string | null;
+}
+
 /**
  * マージコミットのメッセージを組み立てる。
  * subject は `Merge branch '<branch>' (<taskId> <title>)`。長すぎる・制御文字を含む場合は
@@ -121,8 +166,9 @@ function hasControlChar(s: string): boolean {
  * `Merge ` で始まる subject は commit-msg フック(Conventional Commits 検査)の対象外
  * ("^(Merge|Revert|fixup!|squash!) " は無条件で許可される)なので、フォールバック後も
  * フックには通る。
- * resolvedTaskFilePath が指定されていれば、本文に「タスクファイルはブランチ側を採用」した
- * 旨を 1 行入れる。
+ * resolved が指定されていれば、本文に機械的解決の内訳を 1 行ずつ入れる:
+ * - ownTaskFile があれば「タスクファイルはブランチ側を採用: <path>」
+ * - decisionsIndex があれば「決定インデックスは両ブランチの項目を統合: <path>」
  * 末尾には空行を挟んで trailer を必ず付ける。
  */
 export function mergeCommitMessage(
@@ -130,7 +176,7 @@ export function mergeCommitMessage(
   taskId: string,
   title: string,
   trailer: string,
-  resolvedTaskFilePath?: string,
+  resolved?: ResolvedMechanicalPaths,
 ): string {
   const candidate = `Merge branch '${branch}' (${taskId} ${title})`;
   const subject =
@@ -139,8 +185,11 @@ export function mergeCommitMessage(
       : candidate;
 
   const bodyLines: string[] = [];
-  if (resolvedTaskFilePath !== undefined) {
-    bodyLines.push(`タスクファイルはブランチ側を採用: ${resolvedTaskFilePath}`);
+  if (resolved?.ownTaskFile != null) {
+    bodyLines.push(`タスクファイルはブランチ側を採用: ${resolved.ownTaskFile}`);
+  }
+  if (resolved?.decisionsIndex != null) {
+    bodyLines.push(`決定インデックスは両ブランチの項目を統合: ${resolved.decisionsIndex}`);
   }
 
   const parts = [subject];
@@ -224,11 +273,20 @@ function abortMergeIfInProgress(root: string): { ok: true } | { ok: false; stder
   return abortMerge(root);
 }
 
+/** `git show <spec>` を試み、失敗(対象 stage が存在しない等)すれば null を返す */
+function readGitShowOrNull(root: string, spec: string): string | null {
+  try {
+    return git(["show", spec], root);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * "mechanical" と分類されたコンフリクト(own-task-file)を機械的に解決し、解決コミットを
- * 作る。失敗(substantive 判定・想定外の例外)時は merge を abort して "conflict" を返す。
- * abort 自体が失敗した(main が git 操作の途中で固まった)場合は "wedged" を返す
- * (呼び出し側はこれを見て人間に伝える判断をする)。
+ * "mechanical" と分類されたコンフリクト(own-task-file・decisions/index.md)を機械的に
+ * 解決し、解決コミットを作る。失敗(substantive 判定・想定外の例外)時は merge を abort
+ * して "conflict" を返す。abort 自体が失敗した(main が git 操作の途中で固まった)場合は
+ * "wedged" を返す(呼び出し側はこれを見て人間に伝える判断をする)。
  * テストのために export しているが、通常は mergeAgentBranch の内部からのみ呼ばれる想定。
  */
 export function resolveMechanically(root: string, branch: string, taskId: string, title: string, trailer: string): MergeOutcome {
@@ -245,23 +303,44 @@ export function resolveMechanically(root: string, branch: string, taskId: string
       return { result: "conflict", paths: classification.paths, conflictKind: knownKind };
     }
 
-    const { ownTaskFile } = classification;
-    knownPaths = [ownTaskFile];
+    const { ownTaskFile, decisionsIndex } = classification;
+    knownPaths = [ownTaskFile, decisionsIndex].filter((p): p is string => p !== null);
 
-    // マージ中のタスク自身のタスクファイルは branch 側(theirs)を正とする。main 側の
-    // 差分はこのマージ処理自身(Supervisor)が書き込んだ機械的な失敗記録に過ぎず、
-    // 消えるわけではなく git 履歴には残る。一方 branch 側にはセッションが書いた
-    // 最終的なステータス・試行履歴があり、そちらが真の内容である(モジュール先頭の
-    // 説明を参照)。
-    execFileSync("git", ["checkout", "--theirs", "--", ownTaskFile], { cwd: root });
-    execFileSync("git", ["add", "--", ownTaskFile], { cwd: root });
+    if (ownTaskFile !== null) {
+      // マージ中のタスク自身のタスクファイルは branch 側(theirs)を正とする。main 側の
+      // 差分はこのマージ処理自身(Supervisor)が書き込んだ機械的な失敗記録に過ぎず、
+      // 消えるわけではなく git 履歴には残る。一方 branch 側にはセッションが書いた
+      // 最終的なステータス・試行履歴があり、そちらが真の内容である(モジュール先頭の
+      // 説明を参照)。
+      execFileSync("git", ["checkout", "--theirs", "--", ownTaskFile], { cwd: root });
+      execFileSync("git", ["add", "--", ownTaskFile], { cwd: root });
+    }
+
+    if (decisionsIndex !== null) {
+      // stage 1(共通祖先)は add/add のとき存在しないため、取得失敗は null として扱う。
+      // stage 2/3 の取得失敗はここまでの分類と矛盾する想定外の状態なので、例外のまま
+      // 外側の catch へ伝播させる。
+      const base = readGitShowOrNull(root, `:1:${decisionsIndex}`);
+      const ours = git(["show", `:2:${decisionsIndex}`], root);
+      const theirs = git(["show", `:3:${decisionsIndex}`], root);
+      const merged = mergeDecisionsIndexText(base, ours, theirs);
+      if (merged === null) {
+        // header/footer が両側で書き換えられた等、機械的に解決できない。substantive として
+        // 諦める(ここまでに分かっている全パスを添える)
+        const abortResult = abortMerge(root);
+        if (!abortResult.ok) return { result: "wedged", stderr: abortResult.stderr };
+        return { result: "conflict", paths: knownPaths, conflictKind: "substantive" };
+      }
+      fs.writeFileSync(path.join(root, decisionsIndex), merged);
+      execFileSync("git", ["add", "--", decisionsIndex], { cwd: root });
+    }
 
     const remainingUnmerged = git(["ls-files", "-u"], root).trim();
     if (remainingUnmerged !== "") {
       throw new Error(`コンフリクト解消後も未マージのパスが残っている: ${remainingUnmerged}`);
     }
 
-    const message = mergeCommitMessage(branch, taskId, title, trailer, ownTaskFile);
+    const message = mergeCommitMessage(branch, taskId, title, trailer, { ownTaskFile, decisionsIndex });
     execFileSync("git", ["commit", "-F", "-"], {
       cwd: root,
       input: message,

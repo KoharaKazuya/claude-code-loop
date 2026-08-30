@@ -1,9 +1,10 @@
 ---
 title: "decisions/index.md の同時追記によるマージ衝突を機械的に解決する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "index.md の衝突を 3-way マージで機械的に解決。判断は D-20260830-0221-decisions-index-mechanical-merge"
 createdAt: 2026-08-30T02:12:00.000Z
 ---
 

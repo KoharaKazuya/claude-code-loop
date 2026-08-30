@@ -18,6 +18,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { buildDecisionsIndexText, parseDecisionsIndex } from "./decisions-index.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 
 /** dir 内の .md ファイル名をソート済みで返す。dir が存在しなければ空配列 */
@@ -60,50 +61,6 @@ function moveToArchive(agentDir: string, sub: string, files: string[]): number {
 
 const DECISIONS_INDEX_FILE = "index.md";
 
-const DECISIONS_INDEX_DEFAULT_HEADER =
-  "# 決定インデックス\n\nチェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。\n\n";
-
-/** `- [ ] [<ID>](<ID>.md) — <要約>` 形式の行にマッチ。要約は省略可 */
-const DECISIONS_INDEX_LINE_RE = /^- \[( |x|X)\] \[([^\]]+)\]\([^)]*\)(?:\s*—\s*(.*))?\s*$/;
-
-interface DecisionIndexEntry {
-  id: string;
-  checked: boolean;
-  summary: string;
-}
-
-/**
- * index.md のテキストを、リスト行より前(header)・リスト行(entries)・リスト行より後(footer)に
- * 分解する。人間が書き足した前後の文章を書き換えで失わないよう、header / footer はそのまま持ち回る。
- */
-function parseDecisionsIndex(text: string): {
-  header: string;
-  entries: DecisionIndexEntry[];
-  footer: string;
-} {
-  const lines = text.split("\n");
-  const entries: DecisionIndexEntry[] = [];
-  let firstListLineIdx = -1;
-  let lastListLineIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const m = DECISIONS_INDEX_LINE_RE.exec(lines[i]!);
-    if (!m) continue;
-    if (firstListLineIdx === -1) firstListLineIdx = i;
-    lastListLineIdx = i;
-    entries.push({ id: m[2]!, checked: m[1]!.toLowerCase() === "x", summary: (m[3] ?? "").trim() });
-  }
-  if (firstListLineIdx === -1) {
-    // リスト行が 1 行も無い(全件アーカイブ済みなど)場合、本文全体がヘッダ部である。
-    // ここで既定ヘッダに差し替えると人間が編集したヘッダを毎回上書きしてしまう。
-    if (text === "") return { header: DECISIONS_INDEX_DEFAULT_HEADER, entries: [], footer: "" };
-    return { header: text.endsWith("\n") ? text : text + "\n", entries: [], footer: "" };
-  }
-  const headLines = lines.slice(0, firstListLineIdx);
-  const header = headLines.length === 0 ? "" : headLines.join("\n") + "\n";
-  const footer = lines.slice(lastListLineIdx + 1).join("\n");
-  return { header, entries, footer };
-}
-
 /** decisionsDir/<id>.md の frontmatter title を 1 行要約として読む。読めない・文字列でなければ id を使う */
 function summaryFromDecisionFile(decisionsDir: string, id: string): string {
   try {
@@ -115,22 +72,6 @@ function summaryFromDecisionFile(decisionsDir: string, id: string): string {
     // 読めない場合は id にフォールバック
   }
   return id;
-}
-
-function formatDecisionsIndexLine(entry: DecisionIndexEntry): string {
-  return `- [${entry.checked ? "x" : " "}] [${entry.id}](${entry.id}.md) — ${entry.summary}`;
-}
-
-function buildDecisionsIndexText(
-  header: string,
-  entries: DecisionIndexEntry[],
-  footer: string,
-): string {
-  // リストが空になったらヘッダとフッタを連結する(次回は全体がヘッダ扱いになり、以降安定する)
-  if (entries.length === 0) return header + footer.replace(/^\n+/, "");
-  // ヘッダとリストの間は必ず空行 1 行にする(再パース時にヘッダが往復一致するため)
-  const separated = header === "" || header.endsWith("\n\n") ? header : header + "\n";
-  return separated + entries.map(formatDecisionsIndexLine).join("\n") + "\n" + footer;
 }
 
 /**
