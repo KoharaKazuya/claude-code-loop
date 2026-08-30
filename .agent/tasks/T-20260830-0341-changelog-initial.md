@@ -1,9 +1,10 @@
 ---
 title: "変更履歴ファイルを作り公開済み各版と未公開分をまとめる"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "CHANGELOG.md を新規作成し公開済み 6 版と未リリース分をまとめた。README から 2 箇所リンク済み"
 createdAt: 2026-08-30T03:41:11.303Z
 ---
 
