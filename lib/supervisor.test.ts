@@ -2298,7 +2298,7 @@ describe("commitAgentDir", () => {
     expect(headHash()).toBe(before);
   });
 
-  it("c: .agent 以外のパスがステージ済みだとコミットをスキップする", () => {
+  it("c: .agent 以外のパスがステージ済みだとコミットをスキップし、.agent はステージに残さず人間のステージも保つ", () => {
     fs.writeFileSync(path.join(dir, "outside.txt"), "human work");
     execFileSync("git", ["add", "outside.txt"], { cwd: dir });
     const agentDir = path.join(dir, ".agent");
@@ -2308,7 +2308,13 @@ describe("commitAgentDir", () => {
     const before = headHash();
     commitAgentDir("docs(agent): 運用状態を更新する", dir);
 
+    // (a) 新しいコミットが作られない
     expect(headHash()).toBe(before);
+    // (b) .agent 配下が自分のステージ(add -A)によってインデックスに残っていない
+    const cachedNames = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir }).toString();
+    expect(cachedNames).not.toContain(".agent/");
+    // (c) 人間がステージしていたファイルはステージされたまま残る
+    expect(cachedNames).toContain("outside.txt");
     const status = execFileSync("git", ["status", "--porcelain"], { cwd: dir }).toString();
     expect(status).toContain("outside.txt");
   });
@@ -2375,6 +2381,21 @@ describe("commitAgentDir", () => {
     commitAgentDir(undefined, dir);
 
     expect(headHash()).toBe(before);
+  });
+
+  it("h: .agent 配下だけが事前にステージ済みなら従来どおり正常にコミットされる", () => {
+    const agentDir = path.join(dir, ".agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "OVERVIEW.md"), "# 概要");
+    execFileSync("git", ["add", "--", ".agent"], { cwd: dir });
+
+    const before = headHash();
+    commitAgentDir("docs(agent): 運用状態を更新する", dir);
+
+    expect(headHash()).not.toBe(before);
+    expect(headFiles()).toEqual([".agent/OVERVIEW.md"]);
+    const cachedNames = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir }).toString();
+    expect(cachedNames.trim()).toBe("");
   });
 
   it("cherry-pick 進行中はコミットをスキップする", () => {

@@ -655,8 +655,13 @@ let warnedGitInProgress = false;
  * pathspec 付き commit(`-- .agent`)は gitignore 済みファイルを再ステージする事故を
  * 招くため使わない。`git add -A -- .agent` でステージした後、ステージ内容を確認し、
  * .agent/ 以外のパスが混ざっていれば(人間が並行でステージ中の作業がある)コミットを
- * スキップしてパススペックなしで commit する。失敗しても Supervisor 本体は止めず、
- * 警告ログのみ残す。
+ * スキップする。ただし add の後に初めて検査すると、スキップする場合でも自分が加えた
+ * .agent 分のステージだけが index に残ってしまい、人間が次に git commit したときに
+ * .agent/ の自動生成物を巻き込んでしまう。そのため add の前にも同じ検査を行い、
+ * 既に .agent 以外がステージ済みなら add 自体を行わずに抜ける(この時点ではインデックス
+ * を一切変更していないため戻す処理は不要)。add の後の再検査は add による巻き込みに
+ * 対する保険で、通常は起こらないが、該当したら自分が加えた分だけ index から戻す。
+ * 失敗しても Supervisor 本体は止めず、警告ログのみ残す。
  *
  * message を省略するとステージ内容から subject を生成する(何が変わったか分からない
  * 定型コミットが履歴を埋めるのを避けるため)。呼び出し側が文脈を持っている場合
@@ -673,18 +678,36 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
   try {
     const status = execFileSync("git", ["status", "--porcelain", "--", ".agent"], { cwd: root }).toString();
     if (status.trim() === "") return;
-    execFileSync("git", ["add", "-A", "--", ".agent"], { cwd: root });
-    const staged = parseNameStatus(
+
+    const before = parseNameStatus(
       execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z", "HEAD"], { cwd: root }).toString(),
     );
-    if (staged.length === 0) return;
     // rename は移動元も検査する(`docs/x.md` → `.agent/x.md` のような、人間の作業を
     // .agent/ へ引き込む形のステージを見逃さないため)
-    if (staged.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
+    if (before.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
       log("警告: .agent 以外の変更がステージされているため自動コミットをスキップする(人間の並行作業を保護)");
       return;
     }
-    const subject = message ?? safeSummarize(staged);
+
+    execFileSync("git", ["add", "-A", "--", ".agent"], { cwd: root });
+    const after = parseNameStatus(
+      execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z", "HEAD"], { cwd: root }).toString(),
+    );
+    if (after.length === 0) return;
+    if (after.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
+      log("警告: .agent 以外の変更がステージされているため自動コミットをスキップする(人間の並行作業を保護)");
+      try {
+        const beforePaths = new Set(before.map((c) => c.path));
+        const toUnstage = after.filter((c) => !beforePaths.has(c.path)).map((c) => c.path);
+        if (toUnstage.length > 0) {
+          execFileSync("git", ["reset", "-q", "HEAD", "--", ...toUnstage], { cwd: root });
+        }
+      } catch (err) {
+        log(`警告: .agent のステージを戻すのに失敗した: ${String(err)}`);
+      }
+      return;
+    }
+    const subject = message ?? safeSummarize(after);
     execFileSync("git", ["commit", "-m", withTrailer(subject)], { cwd: root });
     log(`.agent を commit した: ${subject}`);
   } catch (err) {
