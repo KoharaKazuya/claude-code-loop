@@ -4629,7 +4629,10 @@ export function pendingDecisionsSectionLines(pd: PendingDecisions): string[] {
  */
 export interface StatusData {
   tasks: Task[];
-  /** archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う) */
+  /**
+   * archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う)。
+   * アクティブ側 `tasks` と同じ ID を持つ archive タスクは二重計上を避けるため除く
+   */
   archivedCompletedCount: number;
   state: State;
   humanReview: { openBlock: HrEntry[]; openReview: HrEntry[]; answered: HrEntry[] };
@@ -4672,8 +4675,13 @@ export function collectStatusData(now: Date): StatusData {
   const state = loadState();
   const hr = parseHumanReview();
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
-  // ローテーション後も「完了 X/N」が累積の実績を反映するようにする
-  const archivedCompletedCount = loadArchivedTasks().filter((t) => t.status === "completed").length;
+  // ローテーション後も「完了 X/N」が累積の実績を反映するようにする。
+  // 片付けが移動先の同名ファイルとの衝突で移動を見送ると同じ ID が両側に残るため、
+  // アクティブ側にある ID は archive 側から除いて二重計上を防ぐ
+  const activeTaskIds = new Set(tasks.map((t) => t.id));
+  const archivedCompletedCount = loadArchivedTasks().filter(
+    (t) => t.status === "completed" && !activeTaskIds.has(t.id),
+  ).length;
   const overview = loadOverview();
   const humanReview = classifyHumanReview(hr);
 
