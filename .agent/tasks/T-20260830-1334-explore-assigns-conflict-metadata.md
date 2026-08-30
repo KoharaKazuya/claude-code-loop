@@ -4,7 +4,8 @@ status: completed
 priority: 3
 dependencies: [T-20260830-1334-task-conflict-metadata-scheduling]
 retries: 0
-note: "PROMPT.md・探索プロンプト・docs・CHANGELOG を更新し、1407 の直列化依存を conflicts へ置き換えた"
+conflictRetries: 1
+note: "マージ衝突が続くため ready に戻す(1/5)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-1407-narrow-readonly-git-deny-patterns.md)(元: -)"
 createdAt: 2026-08-30T13:34:03.651Z
 ---
 
@@ -59,3 +60,11 @@ createdAt: 2026-08-30T13:34:03.651Z
 - `lib/prompt/PROMPT.md` と `lib/settings.template.json` の deny 一覧の一致は
   `lib/deny-consistency.test.ts` が機械検証している。今回は deny を触らないが、
   PROMPT.md を編集するので `npm test` で確認すること。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T14:16:43.591Z, ccloop 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/tasks/T-20260830-1407-narrow-readonly-git-deny-patterns.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
