@@ -2,7 +2,8 @@
 title: "読み取り専用の git サブコマンドを禁止一覧から外す"
 status: ready
 priority: 3
-dependencies: [T-20260830-1334-explore-assigns-conflict-metadata]
+dependencies: []
+conflicts: [T-20260830-1334-explore-assigns-conflict-metadata, T-20260830-1413-status-conflict-held-count-truncated]
 retries: 0
 createdAt: 2026-08-30T14:07:09.352Z
 ---
@@ -58,3 +59,16 @@ createdAt: 2026-08-30T14:07:09.352Z
 - 上記 3 ファイルが揃って更新され、`npm test` / lint / typecheck が通る
 - 読み取り専用の 5 コマンドが通り、変更を伴う形が引き続き禁止されることをテストが検証している
 - `CHANGELOG.md` の「## 未リリース」節に利用者の言葉で 1 行追加(挙動の変更に当たる)
+
+## 注意(直列化の方法を 2026-08-30T14:13:32.219Z に見直した)
+
+当初は `lib/prompt/PROMPT.md` の同時編集を避けるため `dependencies` で
+`T-20260830-1334-explore-assigns-conflict-metadata` の完了を待つ形にしていた。しかし必要なのは
+**順序ではなく同時実行の回避**であり、`dependencies` は「相手が completed になるまで起動しない」と
+いう過剰な制約だった(`lib/supervisor.ts:2114-2116` / `2298` が順序を強制する)。
+`conflicts` が使えるようになったので、そちらへ置き換えた。`conflicts` は対称に効くため
+(`lib/supervisor.ts:2300-2313`)相手のタスクファイルを編集する必要はなく、相手が実行中でない限り
+このタスクは先に実行されてよい。両者が触る PROMPT.md の箇所は別の節(こちらは deny 一覧、
+相手はタスク frontmatter の説明と探索手順)なので、どちらが先でも構わない。
+`CHANGELOG.md` の「## 未リリース」節を取り合う `T-20260830-1413-status-conflict-held-count-truncated`
+も `conflicts` に加えてある。
