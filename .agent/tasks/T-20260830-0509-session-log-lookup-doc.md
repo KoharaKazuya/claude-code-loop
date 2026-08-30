@@ -1,8 +1,9 @@
 ---
 title: "セッションログの追い方が説明書から失われている"
-status: ready
+status: completed
 priority: 3
 retries: 0
+note: "README に「セッションログを追う」節を新設し、supervisor.ts のコメントの参照先を実在する節に直した"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
