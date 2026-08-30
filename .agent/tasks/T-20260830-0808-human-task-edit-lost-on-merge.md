@@ -2,8 +2,9 @@
 title: "実行中のタスクファイルを人間が編集すると、衝突の自動解消で黙って捨てられる"
 status: ready
 priority: 4
-dependencies: [T-20260830-0621-conflict-retry-always-reconflicts]
+dependencies: [T-20260830-0825-rescue-conflict-retry-work]
 retries: 0
+note: "依存を張り替えた。元の依存 T-20260830-0621-conflict-retry-always-reconflicts は failed だが、その成果は T-20260830-0825-rescue-conflict-retry-work が main へ取り込む"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 

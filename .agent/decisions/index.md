@@ -2,6 +2,8 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0825-cross-repo-ratelimit-declined](D-20260830-0825-cross-repo-ratelimit-declined.md) — 利用上限の待機状態をリポジトリ間で共有する対応は見送る
+- [ ] [D-20260830-0825-fatal-stop-record-declined](D-20260830-0825-fatal-stop-record-declined.md) — ループの異常停止を status に残す対応は見送る
 - [x] [D-20260830-0801-ratelimit-under-timeout-evidence](D-20260830-0801-ratelimit-under-timeout-evidence.md) — タイムアウトに隠れた利用上限は stderr の文言だけを根拠に判定する
 - [x] [D-20260830-0757-split-hint-covers-max-turns](D-20260830-0757-split-hint-covers-max-turns.md) — 分割を促す申し送りは時間切れとターン上限の両方に出す
 - [x] [D-20260830-0730-conflict-resolution-anchor-strategy](D-20260830-0730-conflict-resolution-anchor-strategy.md) — マージ衝突の解消は main 先端との差分アンカーを避けて行う

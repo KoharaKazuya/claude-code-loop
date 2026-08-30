@@ -1,6 +1,6 @@
 ---
 title: "ループが自分から止まったことを status に残すか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T06:21:28.294Z
 ---
