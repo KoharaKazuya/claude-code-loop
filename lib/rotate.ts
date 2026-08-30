@@ -182,14 +182,29 @@ export function rotateResultIsEmpty(result: RotateResult): boolean {
   );
 }
 
+export interface RotateOptions {
+  /**
+   * ローテーション対象から外すタスク ID の集合(走行中のタスクセッションが担当しているもの)。
+   * 対象は tasks のみ。走行中タスクの記録ファイルを main 側で動かすと、そのタスクのブランチが
+   * 同じファイルを更新しているため、後の自動マージが modify/delete の衝突になる。decisions /
+   * human-review は走行中セッションが「終わったもの」を書き換える経路が無く、除外しなくても
+   * 衝突しないため対象にしない(意図的に粒度を細かくしていない)。
+   */
+  excludeTaskIds?: ReadonlySet<string>;
+}
+
 /**
  * agentDir(通常 .agent/)配下のローテーションを実行する。
  * state.json など本モジュールが扱わないファイルには一切触れない。
  * 移動先に同名ファイルが既にある場合は上書きせずスキップし、`conflicts` に積んで報告する。
  */
-export function rotate(agentDir: string): RotateResult {
+export function rotate(agentDir: string, options: RotateOptions = {}): RotateResult {
   const tasksDir = path.join(agentDir, "tasks");
-  const tasksToArchive = listMdFiles(tasksDir).filter((f) => statusOf(tasksDir, f) === "completed");
+  const tasksToArchive = listMdFiles(tasksDir).filter(
+    (f) =>
+      statusOf(tasksDir, f) === "completed" &&
+      !(options.excludeTaskIds?.has(f.slice(0, -".md".length)) ?? false),
+  );
   const tasksResult = moveToArchive(agentDir, "tasks", tasksToArchive);
 
   const decisionsResult = rotateDecisions(agentDir);

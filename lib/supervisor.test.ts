@@ -74,6 +74,7 @@ import {
   retryContextSection,
   type RunningSessionState,
   runExploreSession,
+  runHousekeeping,
   runningSessionLines,
   runRotate,
   selfHostedLibDir,
@@ -2636,6 +2637,96 @@ describe("runRotate", () => {
     expect(fs.readFileSync(path.join(archiveTasksDir, "T-001.md"), "utf8")).toBe(
       serializeFrontmatter({ status: "completed" }, "archive 側の本文"),
     );
+  });
+});
+
+describe("runHousekeeping", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-housekeeping-"));
+    useRepoRoot(dir);
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("走行中のタスクセッションがあっても、走行中でない completed タスクは archive へ移動する", () => {
+    const tasksDir = repoPaths().tasksDir;
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(path.join(tasksDir, "T-done.md"), serializeFrontmatter({ status: "completed" }, "本文"));
+    fs.writeFileSync(path.join(tasksDir, "T-running.md"), serializeFrontmatter({ status: "completed" }, "本文"));
+
+    const state = {
+      runningSessions: [{ kind: "task" as const, taskId: "T-running", startedAt: new Date().toISOString() }],
+      lastExploreAt: null,
+      rateLimit: { resumeAt: null },
+      sessionCount: 0,
+      updatedAt: null,
+    };
+
+    runHousekeeping(state);
+
+    expect(fs.existsSync(path.join(repoPaths().archiveDir, "tasks", "T-done.md"))).toBe(true);
+    expect(fs.existsSync(path.join(tasksDir, "T-done.md"))).toBe(false);
+  });
+
+  it("走行中タスクの記録は completed でも .agent/tasks/ に残る", () => {
+    const tasksDir = repoPaths().tasksDir;
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(path.join(tasksDir, "T-running.md"), serializeFrontmatter({ status: "completed" }, "本文"));
+
+    const state = {
+      runningSessions: [{ kind: "task" as const, taskId: "T-running", startedAt: new Date().toISOString() }],
+      lastExploreAt: null,
+      rateLimit: { resumeAt: null },
+      sessionCount: 0,
+      updatedAt: null,
+    };
+
+    runHousekeeping(state);
+
+    expect(fs.existsSync(path.join(tasksDir, "T-running.md"))).toBe(true);
+    expect(fs.existsSync(path.join(repoPaths().archiveDir, "tasks", "T-running.md"))).toBe(false);
+  });
+
+  it("走行中のタスクセッションがあっても decisions/index.md のリコンサイルは走る([x] の判断が archive へ移動する)", () => {
+    const decisionsDir = repoPaths().decisionsDir;
+    fs.mkdirSync(decisionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(decisionsDir, "D-20260101-0000-a.md"),
+      serializeFrontmatter({ title: "判断 A" }, "本文"),
+    );
+    fs.writeFileSync(
+      path.join(decisionsDir, "index.md"),
+      [
+        "# 決定インデックス",
+        "",
+        "チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。",
+        "",
+        "- [x] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A",
+        "",
+      ].join("\n"),
+    );
+
+    // 除外は tasks だけに効くので、走行中セッションがあっても decisions は片付く
+    const state = {
+      runningSessions: [{ kind: "task" as const, taskId: "T-running", startedAt: new Date().toISOString() }],
+      lastExploreAt: null,
+      rateLimit: { resumeAt: null },
+      sessionCount: 0,
+      updatedAt: null,
+    };
+
+    runHousekeeping(state);
+
+    expect(fs.existsSync(path.join(repoPaths().archiveDir, "decisions", "D-20260101-0000-a.md"))).toBe(true);
+    const indexText = fs.readFileSync(path.join(decisionsDir, "index.md"), "utf8");
+    expect(indexText).not.toContain("D-20260101-0000-a");
   });
 });
 
