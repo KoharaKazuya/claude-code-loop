@@ -1,9 +1,10 @@
 ---
 title: ".agent 自動コミットのスキップ時にステージを元へ戻す"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "add の前にステージ状況を検査して早期 return する方式で修正。回帰テスト追加、typecheck/lint/test 通過"
 createdAt: 2026-08-30T03:18:17.730Z
 ---
 
