@@ -1,10 +1,12 @@
 ---
 title: "異常終了した探索セッションが人間の入力を消費しないようにする"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "瞬時クラッシュした探索は入力を消費せず、再探索は exploreDue でのみ成立させる形で修正した"
 createdAt: 2026-08-30T04:13:00.000Z
+updatedAt: 2026-08-30T04:26:16.066Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。
@@ -52,3 +54,24 @@ createdAt: 2026-08-30T04:13:00.000Z
 crash-backoff の閾値・停止条件そのものを変える必要が出たと判断した場合は実装せず、判断を
 `.agent/decisions/` に記録したうえでこのタスクを `blocked` にし、`.agent/human-review/`
 (`importance: BLOCK`)で確認を取る。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T04:26:16.066Z, セッション記録)
+- 確認済みの事実: コミット 07bdcd3 で実装。切り分けは既存の瞬時クラッシュ判定を共有する形に
+  統一し(`isFastCrash` を `lib/supervisor.ts` に切り出し)、瞬時クラッシュ時のみ
+  `inputsHash`/`goalHash`/`answeredKeys` を更新しない。歯止めは
+  `lib/scheduler.ts` の `idleCooldownPassed` を「瞬時クラッシュ直後は inputsDirty による
+  クールダウン免除を無効化」へ変更。判断は
+  `.agent/decisions/D-20260830-0423-explore-fast-crash-input-consumption.md`。
+  テストは scheduler の分岐 3 件・`isFastCrash` 4 件・配線(`isFastCrash` + `planLoopStep`)3 件を
+  追加し、コミット 07bdcd3 に含まれている。同コミットの内容で
+  `npm run typecheck` / `npm run lint` / `npm run test`(29 files / 858 tests)がすべて成功。
+  停止条件(crash-backoff の閾値・idle-exit)は変更していないため BLOCK は不要と判断した。
+  reviewer のレビューを受け、記述の不整合 2 件(architecture.md の crash-backoff の節が修正前の
+  説明のまま / 抑制がプロセス内限定である点の説明誤り)をコミット 67b29da で修正した。
+  修正後も 3 つの検証コマンドがすべて成功することを確認済み。
+- 未検証の推測: なし。
+- 次の試行への提案: `runExploreSession` と `mainLoop` の実配線(瞬時クラッシュ時に state が
+  書かれないこと)は結合テストが無い(rate limit の配線など既存も同様で、このタスク固有の
+  後退ではない)。mainLoop の統合テストを整える機会があれば併せて拾うとよい。

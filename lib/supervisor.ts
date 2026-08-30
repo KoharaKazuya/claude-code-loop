@@ -902,6 +902,14 @@ let criticalSection = 0;
 const FAST_CRASH_MS = 10_000;
 
 /**
+ * 「瞬時クラッシュ」判定: タイムアウトは含めない。壁時計時間 wallMs が FAST_CRASH_MS 未満で
+ * exitCode !== 0 のまま終わった = 起動直後に落ちた疑いが濃いものを指す。
+ */
+export function isFastCrash(res: SessionResult, wallMs: number): boolean {
+  return !res.timedOut && res.exitCode !== 0 && wallMs < FAST_CRASH_MS;
+}
+
+/**
  * fastCrashStreak の次の値を、1 セッションの結果から計算する。finishTaskSession から
  * 判定ロジックだけを切り出したもの(単体テストで検証できるようにするため)。判定順序は
  * finishTaskSession の結果分類(6. 結果の分類: タイムアウト → レートリミット → それ以外)と
@@ -915,7 +923,7 @@ const FAST_CRASH_MS = 10_000;
 export function nextFastCrashStreak(current: number, res: SessionResult, wallMs: number, rateLimited: boolean): number {
   if (res.timedOut) return 0;
   if (rateLimited) return current;
-  if (res.exitCode !== 0 && wallMs < FAST_CRASH_MS) return current + 1;
+  if (isFastCrash(res, wallMs)) return current + 1;
   return 0;
 }
 
@@ -948,8 +956,9 @@ export function fastCrashStreakAfterWait(
  * 探索セッションの瞬時クラッシュは意図的に数えない。理由は 2 つ:
  *   - 数えても効かない: crash-backoff(scheduler.ts 優先度 5)は「実行可能タスクがある」ことを
  *     発火条件にするため、探索しか走らない状況では加算しても抑制は起きない。その状況でも
- *     探索は瞬時クラッシュ時に lastExploreAt と入力ハッシュを更新済みで、次周回の探索条件が
- *     成立しない。ループは空回りせず idle-exit か待機へ落ちる。
+ *     探索は瞬時クラッシュ時に入力ハッシュを更新せず(未消費のまま次回へ持ち越す)、
+ *     lastExploreFastCrashed により、同じプロセスの中では exploreDue(minInterval)が経過するまで
+ *     次周回の探索条件が成立しない。ループは空回りせず idle-exit か待機へ落ちる。
  *   - 数えると害がある: タスクセッションが健全でも探索固有の失敗だけでタスク起動を抑制し、
  *     停止分岐(scheduler.ts 優先度 1)の衝突解消まで諦めさせてしまう。
  */
@@ -2743,12 +2752,14 @@ function startTaskSession(
  * reason: なぜ探索セッションを起動するのか(ログにそのまま表示する)。ctx: プロンプトへ注入する差分内訳
  * 戻り値の rateLimited は、呼び出し元が「rate limit による中断は探索完了として扱わない」
  * (mainDirty・空振り判定を更新せず、解除後に再試行させる)ために使う。
+ * 戻り値の fastCrashed は、呼び出し元が「探索は何もしていない」扱いにして次の探索へ
+ * クールダウン(exploreDue)を課すために使う(rateLimited のときは常に false)。
  */
 async function runExploreSession(
   config: Config,
   reason: string,
   ctx: ExploreContext,
-): Promise<{ rateLimited: boolean }> {
+): Promise<{ rateLimited: boolean; fastCrashed: boolean }> {
   const startedAt = new Date().toISOString();
   const state = loadState();
   state.lastExploreAt = startedAt;
@@ -2757,6 +2768,7 @@ async function runExploreSession(
   saveState(state);
 
   let rateLimited = false;
+  let fastCrashed = false;
   try {
     log(`${styleText("cyan", "▶")} 探索セッションを開始: ${reason}`);
     const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
@@ -2771,19 +2783,28 @@ async function runExploreSession(
       // 探索が成功した = レートリミットは回復している
       clearRateLimit();
       recordPermissionDenials("explore", res, repoPaths().root);
-      // このセッションが現在の入力(GOAL.md・answered な Review)を確認済みとして記録する。
-      // レートリミット時は更新せず、復帰後に再度取り込ませる
-      const st = loadState();
-      st.inputsHash = hashInputs();
-      st.goalHash = currentGoalHash();
-      st.answeredKeys = currentAnsweredKeys();
-      saveState(st);
+      const wallMs = Date.now() - new Date(startedAt).getTime();
+      fastCrashed = isFastCrash(res, wallMs);
+      if (!fastCrashed) {
+        // このセッションが現在の入力(GOAL.md・answered な Review)を確認済みとして記録する。
+        // レートリミット時・瞬時クラッシュ時は更新せず、次回に再度取り込ませる
+        const st = loadState();
+        st.inputsHash = hashInputs();
+        st.goalHash = currentGoalHash();
+        st.answeredKeys = currentAnsweredKeys();
+        saveState(st);
+      }
       if (res.exitCode === 0) {
         log(`${styleText("green", "✔")} 探索セッション終了 (session ${sessionId(res)})`);
       } else {
         log(
           `${styleText("red", "✖")} 探索セッションが異常終了 (exitCode=${res.exitCode}, session ${sessionId(res)})${stderrTail(res)}`,
         );
+        if (fastCrashed) {
+          log(
+            "人間の入力(GOAL.md / Human Review の回答)は未取り込みのままにする。次の探索が取り込む",
+          );
+        }
       }
     }
   } finally {
@@ -2791,7 +2812,7 @@ async function runExploreSession(
     st.runningSessions = st.runningSessions.filter((s) => s.kind !== "explore");
     saveState(st);
   }
-  return { rateLimited };
+  return { rateLimited, fastCrashed: rateLimited ? false : fastCrashed };
 }
 
 /**
@@ -3261,6 +3282,11 @@ export async function mainLoop(): Promise<void> {
   // 永続化しない)。true の間は exploreDue のクールダウンを課し、
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
   let lastExploreYieldedNothing = false;
+  // 直前の探索セッションが瞬時クラッシュで終わったか(プロセス内フラグ、永続化しない)。
+  // 永続化しない = この抑制は再起動で完全に外れる(意図的)。ccloop run を打ち直すのは、人間が
+  // クラッシュの原因を直して再開したときであり、そこで minInterval を待たせる意味がないため。
+  // 未取り込みの入力(inputsDirty)が残っていれば、再起動後の初回周回で即座に再探索する。
+  let lastExploreFastCrashed = false;
   // 停止 (clean) 指示の後、衝突解消のために起動したタスク ID(プロセス内フラグ、永続化しない)。
   // タスクごとに停止後 1 回までに制限し、解消セッションが再び衝突しても停止が無限に延びないようにする。
   const conflictResumeLaunched = new Set<string>();
@@ -3404,6 +3430,7 @@ export async function mainLoop(): Promise<void> {
           Date.now() - new Date(state.lastExploreAt).getTime() >= config.explore.minIntervalMs,
         neverExplored: state.lastExploreAt === null,
         lastExploreYieldedNothing,
+        lastExploreFastCrashed,
         pendingSnoozeCount: snoozedCount,
         rateLimitedUntilMs,
         idlePollMs: config.idlePollMs,
@@ -3463,16 +3490,18 @@ export async function mainLoop(): Promise<void> {
         // ループ先頭の drainCompletedSessions()(同期実行)による自動マージ時なので、
         // この await の区間で main にタスクが増えるのは探索セッション自身の仕業に限られる。
         const taskIdsBefore = new Set(loadTasks().map((t) => t.id));
-        const { rateLimited } = await runExploreSession(config, reason, {
+        const { rateLimited, fastCrashed } = await runExploreSession(config, reason, {
           trigger: action.trigger,
           goalChanged,
           newAnsweredIds,
           runningTasks: runningTaskSummaries(state),
         });
+        lastExploreFastCrashed = fastCrashed;
         const yielded = loadTasks().some((t) => !taskIdsBefore.has(t.id));
-        // rate limit による中断は探索完了として扱わない(解除後に再試行させる)。
-        // その場合は main の変化(mainDirty)も空振り判定も更新しない(中断前の状態を引きずらせない)
-        if (!rateLimited) {
+        // rate limit による中断・瞬時クラッシュは探索完了として扱わない(解除後・クールダウン後に
+        // 再試行させる)。その場合は main の変化(mainDirty)も空振り判定も更新しない
+        // (中断前の状態を引きずらせない)
+        if (!rateLimited && !fastCrashed) {
           mainChangedSinceExplore = false;
           lastExploreYieldedNothing = !yielded;
         }

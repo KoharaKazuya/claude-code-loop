@@ -64,6 +64,10 @@ export interface LoopInput {
   /** 直前に完了した探索セッションが新規タスクを 1 件も登録しなかったか(プロセス内で追跡)。
    * true の間は exploreDue のクールダウンを課し、空振り探索の即時連鎖を防ぐ */
   lastExploreYieldedNothing: boolean;
+  /** 直前の探索セッションが瞬時クラッシュで終わったか。true の間は inputsDirty による
+   * クールダウンの免除を無効にする(未消費の入力が残るため、免除したままだと
+   * クラッシュする探索を全速で繰り返す) */
+  lastExploreFastCrashed: boolean;
   /** ready・依存充足・未実行だがスヌーズ中で runnable から外れているタスクの数
    * (自動終了の判定で「時間が来れば復帰するタスクがある」ことを示すために使う) */
   pendingSnoozeCount: number;
@@ -134,7 +138,9 @@ export const STOP_REASON = {
  *      A) アイドル: 実行可能タスクが無く、前回探索以降に main か入力が変化した(または未探索)。
  *         直前の探索が空振りだった場合は、クールダウン(exploreDue)が経過するまで再探索しない
  *         (空振り探索の即時連鎖を抑制する)。ただし新しい人間の入力(inputsDirty)には
- *         このクールダウンを掛けない。
+ *         このクールダウンを掛けない。ただし直前の探索が瞬時クラッシュだった場合は、
+ *         inputsDirty による免除も効かない(未消費の入力を持ち越すため、免除すると
+ *         クラッシュする探索を全速で繰り返してしまう)。
  *      B) 定期見直し: 実行可能タスクはあるが、前回探索から minInterval が経過し、かつ
  *         main か入力が変化している。タスクを消化し続ける間も全体を見直すための経路。
  *    いずれも free > 0 が前提。走っているタスクセッションは止めない(drain しない)。
@@ -197,8 +203,12 @@ export function planLoopStep(input: LoopInput): LoopAction {
   //    直前の探索が空振りだったときだけクールダウンを課す。ただし新しい人間の入力
   //    (inputsDirty)にはクールダウンを掛けない: 空振りクールダウンは「同じ入力での再探索」を
   //    抑えるためのものであり、空振り直後に書かれた GOAL / Human Review の回答を
-  //    未取り込みのまま idle-exit させてしまうのは目的から外れるため
-  const idleCooldownPassed = !input.lastExploreYieldedNothing || input.exploreDue || input.inputsDirty;
+  //    未取り込みのまま idle-exit させてしまうのは目的から外れるため。
+  //    ただし直前の探索が瞬時クラッシュだった場合は、inputsDirty による免除も無効にする:
+  //    クラッシュした探索は入力を未消費のまま持ち越すため、免除すると同じ入力で
+  //    クラッシュする探索を時間経過(exploreDue)を待たずに全速で繰り返してしまう。
+  const idleCooldownPassed =
+    input.exploreDue || (!input.lastExploreFastCrashed && (!input.lastExploreYieldedNothing || input.inputsDirty));
   const idleExplore = idle && (dirty || input.neverExplored) && idleCooldownPassed;
   // B) 定期見直し: タスクを消化中でも、minInterval が経過し main/入力が変化していれば見直す
   const periodicExplore = !idle && dirty && input.exploreDue;
