@@ -229,8 +229,13 @@ export type MergeOutcome =
   | { result: "conflict"; paths: string[]; conflictKind?: ConflictKind }
   | { result: "blocked"; reason: string }
   /** `git merge --abort` 自体が失敗し、main がマージ途中のまま残ってしまった状態。
-   *  stderr にその abort 失敗の内容を持つ(呼び出し側はこれをそのままログへ出す)。 */
-  | { result: "wedged"; stderr: string };
+   *  stderr にその abort 失敗の内容を持つ(呼び出し側はこれをそのままログへ出す)。
+   *  step/conflictKind/cause は resolveMechanically 内のどの経路で abort に至ったかを
+   *  示す文脈情報(本番インシデントの原因調査で経路が特定できなかったことを踏まえて追加)。 */
+  | { result: "wedged"; stderr: string; step?: WedgedStep; conflictKind?: ConflictKind; cause?: string };
+
+/** どのステップで abort に至ったか(wedged のログに添える文脈) */
+export type WedgedStep = "substantive-conflict" | "decisions-index" | "unexpected-error";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd }).toString();
@@ -252,34 +257,66 @@ function gitPathAbs(root: string, gitRelPath: string): string {
   return path.isAbsolute(out) ? out : path.join(root, out);
 }
 
+/** abort 再試行の待ち方。テストから短縮できるよう注入可能にしている */
+export type AbortRetryPolicy = { attempts: number; delayMs: number };
+export const DEFAULT_ABORT_RETRY_POLICY: AbortRetryPolicy = { attempts: 3, delayMs: 1100 };
+
+/**
+ * `ms` ミリ秒だけ同期的にブロックして待つ。abortMerge は呼び出し元 resolveMechanically が
+ * 同期関数であるため同期のまま保つ必要があり、setTimeout ベースの非同期待機は使えない。
+ * racy git(マージ直後は index 書き込みと後続の stat が同一秒になり得るため stat 情報が
+ * 信用されない状態)を秒境界を跨いで解消するための待機であり、実質的に 1 スレッドの
+ * ビジーウェイトを Atomics.wait に肩代わりさせている。
+ */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * `git merge --abort` を試みる。失敗(例: マージでステージされたファイルが作業ツリー上で
  * 変更されて `not uptodate` になっている場合)は stderr を添えて呼び出し側へ伝える
  * (以前は例外を握りつぶしてベストエフォート扱いにしており、abort が失敗して main が
  * マージ途中のまま残っても誰も気づけなかった)。
+ *
+ * マージ直後の即 abort は index の stat 情報が信用されず(racy git)
+ * "Entry '...' not uptodate. Cannot merge." で abort が失敗することがある(実運用で発生)。
+ * `update-index -q --refresh` による緩和だけでは足りず、同一秒内の再試行では racy な
+ * 状態が解消しないことがあったため、秒境界を跨ぐ待機を挟んで再試行する。再試行するのは
+ * racy-git 起因(stderr に "not uptodate" を含む)の失敗のときだけで、それ以外
+ * (例: そもそも進行中の merge がない)は待たずに即座に失敗を返す。
  */
-function abortMerge(root: string): { ok: true } | { ok: false; stderr: string } {
-  // マージ直後の即 abort は index の stat 情報が信用されず(racy git)
-  // "Entry '...' not uptodate. Cannot merge." で reset --merge が失敗することがある
-  // (実運用で発生)。先に stat 情報を更新してから abort する。refresh 自体の失敗は
-  // 差分があるだけでも非ゼロ終了するため無視してよい。
-  try {
-    execFileSync("git", ["update-index", "-q", "--refresh"], { cwd: root });
-  } catch {
-    // 無視(refresh は前処理にすぎない)
+export function abortMerge(root: string, policy: AbortRetryPolicy = DEFAULT_ABORT_RETRY_POLICY): { ok: true } | { ok: false; stderr: string } {
+  let lastStderr = "";
+  for (let attempt = 1; attempt <= policy.attempts; attempt++) {
+    if (attempt > 1) sleepSync(policy.delayMs);
+
+    // refresh 自体の失敗は差分があるだけでも非ゼロ終了するため無視してよい。
+    try {
+      execFileSync("git", ["update-index", "-q", "--refresh"], { cwd: root });
+    } catch {
+      // 無視(refresh は前処理にすぎない)
+    }
+
+    try {
+      execFileSync("git", ["merge", "--abort"], { cwd: root });
+      return { ok: true };
+    } catch (err) {
+      lastStderr = extractStderr(err);
+      if (!lastStderr.includes("not uptodate")) {
+        return { ok: false, stderr: lastStderr };
+      }
+      // racy-git 起因の失敗。次のループで待機してから再試行する。
+    }
   }
-  try {
-    execFileSync("git", ["merge", "--abort"], { cwd: root });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, stderr: extractStderr(err) };
-  }
+  const suffix = policy.attempts > 1 ? `(${policy.attempts} 回試行して失敗)` : "";
+  return { ok: false, stderr: suffix ? `${lastStderr} ${suffix}` : lastStderr };
 }
 
 /** マージ進行中でなければ何もせず ok。進行中なら abortMerge を試みてその結果を返す */
-function abortMergeIfInProgress(root: string): { ok: true } | { ok: false; stderr: string } {
+function abortMergeIfInProgress(root: string, policy?: AbortRetryPolicy): { ok: true } | { ok: false; stderr: string } {
   if (!fs.existsSync(gitPathAbs(root, "MERGE_HEAD"))) return { ok: true };
-  return abortMerge(root);
+  return abortMerge(root, policy);
 }
 
 /**
@@ -299,7 +336,8 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     if (classification.kind === "substantive") {
       knownPaths = classification.paths;
       const abortResult = abortMerge(root);
-      if (!abortResult.ok) return { result: "wedged", stderr: abortResult.stderr };
+      if (!abortResult.ok)
+        return { result: "wedged", stderr: abortResult.stderr, step: "substantive-conflict", conflictKind: "substantive" };
       return { result: "conflict", paths: classification.paths, conflictKind: knownKind };
     }
 
@@ -330,7 +368,8 @@ export function resolveMechanically(root: string, branch: string, taskId: string
         // header/footer が両側で書き換えられた等、機械的に解決できない。substantive として
         // 諦める(ここまでに分かっている全パスを添える)
         const abortResult = abortMerge(root);
-        if (!abortResult.ok) return { result: "wedged", stderr: abortResult.stderr };
+        if (!abortResult.ok)
+          return { result: "wedged", stderr: abortResult.stderr, step: "decisions-index", conflictKind: knownKind };
         return { result: "conflict", paths: knownPaths, conflictKind: "substantive" };
       }
       fs.writeFileSync(path.join(root, decisionsIndexPath), merged);
@@ -358,12 +397,21 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     });
 
     return { result: "renumbered", resolved };
-  } catch {
+  } catch (err) {
     // 想定外の例外。作業ツリーを壊れたまま残さないよう merge 進行中なら abort してから
     // conflict として返す(ここまでに分かっているパスがあれば添える)。abort 自体が
-    // 失敗した場合は main がマージ途中のまま残ってしまうため wedged として伝える
+    // 失敗した場合は main がマージ途中のまま残ってしまうため wedged として伝える。
+    // cause には想定外の例外自体の内容を積む(以前は catch {} で握りつぶしており、本番
+    // インシデントでどの経路で abort に至ったか特定できなかったため)。
     const abortResult = abortMergeIfInProgress(root);
-    if (!abortResult.ok) return { result: "wedged", stderr: abortResult.stderr };
+    if (!abortResult.ok)
+      return {
+        result: "wedged",
+        stderr: abortResult.stderr,
+        step: "unexpected-error",
+        conflictKind: knownKind,
+        cause: extractStderr(err),
+      };
     return { result: "conflict", paths: knownPaths, conflictKind: knownKind };
   }
 }
