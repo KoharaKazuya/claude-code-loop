@@ -206,6 +206,19 @@ export interface RunningSessionState {
   taskFileChanged?: boolean;
 }
 
+/** 起動時復旧が worktree・ブランチを畳む前に書き残す「これから残す記録」。
+ *  削除と記録の間で強制終了されても、次回起動時にこれを再生して痕跡を残す */
+export interface PendingRecoveryNote {
+  taskId: string;
+  /** 畳む対象のブランチ名。再生時に「まだ残っていないか」の判定に使う */
+  branch: string;
+  reason: string;
+  at: string;
+  extraLines?: string[];
+  /** 未コミット差分の退避結果(あれば)。記録の後に試行履歴へ追記する内容 */
+  leftovers?: { patchFile: string; paths: string[] };
+}
+
 interface State {
   /** 実行中セッションの一覧。探索セッションも並列枠を 1 つ消費するため、
    * タスクセッションと探索セッションの合計が parallel.maxSessions を超えることはない
@@ -240,6 +253,9 @@ interface State {
   stopMode?: StopMode;
   sessionCount: number;
   updatedAt: string | null;
+  /** 起動時復旧が worktree・ブランチの削除・改名の前に書き残した、再生待ちの記録の一覧。
+   * 次回起動時にブランチ・worktree が既に無ければ再生して消す(recoverOrphanBranch 参照) */
+  pendingRecoveryNotes?: PendingRecoveryNote[];
 }
 
 // ---------- ファイル IO(すべて同期・アトミック書き込み) ----------
@@ -486,6 +502,40 @@ function normalizeRunningSessions(r: Record<string, unknown>): RunningSessionSta
   return [];
 }
 
+/** PendingRecoveryNote 1 件分のゆるい検証。taskId / branch / reason / at が非空文字列でなければ
+ *  要素ごと落とす(壊れた 1 件のために配列全体を捨てない) */
+function normalizePendingRecoveryNote(raw: unknown): PendingRecoveryNote | null {
+  const r = isPlainObject(raw) ? raw : {};
+  if (typeof r.taskId !== "string" || r.taskId === "") return null;
+  if (typeof r.branch !== "string" || r.branch === "") return null;
+  if (typeof r.reason !== "string" || r.reason === "") return null;
+  if (typeof r.at !== "string" || r.at === "") return null;
+  const note: PendingRecoveryNote = { taskId: r.taskId, branch: r.branch, reason: r.reason, at: r.at };
+  if (Array.isArray(r.extraLines) && r.extraLines.every((x) => typeof x === "string")) {
+    note.extraLines = r.extraLines as string[];
+  }
+  const leftoversRaw = isPlainObject(r.leftovers) ? r.leftovers : {};
+  if (
+    typeof leftoversRaw.patchFile === "string" &&
+    Array.isArray(leftoversRaw.paths) &&
+    leftoversRaw.paths.every((x) => typeof x === "string")
+  ) {
+    note.leftovers = { patchFile: leftoversRaw.patchFile, paths: leftoversRaw.paths as string[] };
+  }
+  return note;
+}
+
+/** pendingRecoveryNotes を正規化する。配列でなければ空。要素ごとにゆるく検証し、壊れた要素は落とす */
+function normalizePendingRecoveryNotes(raw: unknown): PendingRecoveryNote[] {
+  if (!Array.isArray(raw)) return [];
+  const result: PendingRecoveryNote[] = [];
+  for (const item of raw) {
+    const note = normalizePendingRecoveryNote(item);
+    if (note !== null) result.push(note);
+  }
+  return result;
+}
+
 /** state.json の生の中身から State を組み立てる。旧スカラー形式は runningSessions へ合成する */
 export function normalizeState(raw: unknown): State {
   const r = isPlainObject(raw) ? raw : {};
@@ -509,6 +559,8 @@ export function normalizeState(raw: unknown): State {
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
   if (r.stopMode === "none" || r.stopMode === "clean") state.stopMode = r.stopMode;
+  const pendingRecoveryNotes = normalizePendingRecoveryNotes(r.pendingRecoveryNotes);
+  if (pendingRecoveryNotes.length > 0) state.pendingRecoveryNotes = pendingRecoveryNotes;
   return state;
 }
 
@@ -1174,10 +1226,15 @@ export interface StartupRecovery {
   /** finishTaskSession の後始末(worktree・ブランチの削除)が完了する前に中断され、
    * ブランチ・worktree は既に消えているが status が更新されないまま残っていたタスク数 */
   interruptedFinishes: number;
+  /** recoverOrphanBranch が worktree・ブランチを畳む前に書いたマーカーが残ったまま
+   * 中断され、次回起動時にその記録を再生したタスク数 */
+  resumedRecoveryNotes: number;
 }
 
 export function startupRecoveryTotal(r: StartupRecovery): number {
-  return r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes;
+  return (
+    r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes + r.resumedRecoveryNotes
+  );
 }
 
 /**
@@ -1338,13 +1395,13 @@ function recordStartupRecoveryNote(
   config: Config,
   taskId: string,
   opts: { reason: string; at: string; extraLines?: string[] },
-): void {
+): boolean {
   const t = loadTaskIn(root, taskId);
   if (t === null) {
     log(`警告: ${taskId} のタスクファイルが見つからないため復旧の記録を残せない`);
-    return;
+    return false;
   }
-  if (t.status === "completed" || t.status === "failed") return;
+  if (t.status === "completed" || t.status === "failed") return false;
   recordFailure(t, {
     maxRetries: config.maxRetries,
     maxConflictRetries: config.maxConflictRetries,
@@ -1357,6 +1414,33 @@ function recordStartupRecoveryNote(
   }
   saveTaskIn(root, t);
   log(`recover: ${taskId} -> ${t.status} (retries=${t.retries})`);
+  return true;
+}
+
+/**
+ * これから worktree・ブランチを畳んで記録を残す taskId のマーカーを state.json へ書く。
+ * 削除と記録の間で強制終了された場合、次回起動時にこのマーカーを再生して痕跡を残す
+ * (resumeInterruptedRecoveryNotes 参照)。同じ taskId の既存マーカーは置き換える。
+ */
+function writePendingRecoveryNote(root: string, note: PendingRecoveryNote): void {
+  const state = loadStateIn(root);
+  const notes = (state.pendingRecoveryNotes ?? []).filter((n) => n.taskId !== note.taskId);
+  notes.push(note);
+  state.pendingRecoveryNotes = notes;
+  saveStateIn(root, state);
+}
+
+/** taskId の再生待ちマーカーを取り除く。記録が正常に済んだ後・退避に失敗してブランチが
+ *  残ったままの後始末の両方で呼ぶ(いずれの場合も同じマーカーを残し続ける意味は無い) */
+function clearPendingRecoveryNote(root: string, taskId: string): void {
+  const state = loadStateIn(root);
+  const notes = state.pendingRecoveryNotes;
+  if (notes === undefined) return;
+  const filtered = notes.filter((n) => n.taskId !== taskId);
+  if (filtered.length === notes.length) return;
+  if (filtered.length > 0) state.pendingRecoveryNotes = filtered;
+  else delete state.pendingRecoveryNotes;
+  saveStateIn(root, state);
 }
 
 /**
@@ -1424,16 +1508,24 @@ function recoverOrphanBranch(
     } else {
       const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
       const parked = parkedBranchNameFor(taskId, now);
+      const note: PendingRecoveryNote = {
+        taskId,
+        branch,
+        reason: conflictReason,
+        at,
+        extraLines: [`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`],
+      };
+      // 改名の前にマーカーを書く。改名と記録の間で強制終了されても、次回起動時に
+      // branch(改名前の名前)がもう存在しないことから改名済みと判り、記録を再生できる
+      writePendingRecoveryNote(root, note);
       try {
         renameBranch(root, branch, parked);
         counts.parked += 1;
         log(`${taskId}: worktree が無く衝突したためブランチを ${parked} へ退避した`);
-        recordStartupRecoveryNote(root, config, taskId, {
-          reason: conflictReason,
-          at,
-          extraLines: [`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`],
-        });
+        recordStartupRecoveryNote(root, config, taskId, note);
+        clearPendingRecoveryNote(root, taskId);
       } catch (err) {
+        clearPendingRecoveryNote(root, taskId); // 退避できていない = ブランチは残っている
         log(`警告: ${taskId} のブランチ退避に失敗した: ${String(err)}`);
       }
     }
@@ -1442,21 +1534,13 @@ function recoverOrphanBranch(
 
   // merged / renumbered / nothing-to-merge: 成果は main 側にあるので worktree とブランチを畳む
   const salvage = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : ({ kind: "none" } as const);
-  if (salvage.kind === "failed") {
-    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
-  } else {
-    if (worktreeExists) removeWorktree(root, worktree);
-    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
-  }
-  if (outcome.result !== "nothing-to-merge") {
-    counts.recoveredMerges += 1;
-    log(`${taskId}: 中断していたタスクの成果を回収した`);
-  }
 
   // マージ後のタスクファイルが completed なら、セッションは実質やり切っている。
   // その場合に retries を進めると、完了済みのタスクに失敗の記録が残ってしまう
   // (この判定は recordStartupRecoveryNote 側が持つ)
-  recordStartupRecoveryNote(root, config, taskId, {
+  const note: PendingRecoveryNote = {
+    taskId,
+    branch,
     reason:
       outcome.result === "nothing-to-merge"
         ? "セッションが中断された(ブランチに成果は残っていなかった)"
@@ -1468,7 +1552,26 @@ function recoverOrphanBranch(
             `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
           ]
         : undefined,
-  });
+  };
+  if (salvage.kind === "saved") {
+    note.leftovers = { patchFile: salvage.patchFile, paths: salvage.paths };
+  }
+  // worktree・ブランチの削除の前にマーカーを書く。削除と記録の間で強制終了されても、
+  // 次回起動時に branch も worktree も無いことから削除済みと判り、記録を再生できる
+  writePendingRecoveryNote(root, note);
+
+  if (salvage.kind === "failed") {
+    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+  } else {
+    if (worktreeExists) removeWorktree(root, worktree);
+    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  }
+  if (outcome.result !== "nothing-to-merge") {
+    counts.recoveredMerges += 1;
+    log(`${taskId}: 中断していたタスクの成果を回収した`);
+  }
+
+  recordStartupRecoveryNote(root, config, taskId, note);
 
   const leftovers = salvage.kind === "saved" ? salvage : null;
   if (leftovers !== null) {
@@ -1480,6 +1583,76 @@ function recoverOrphanBranch(
       saveTaskIn(root, t);
       log(`${taskId}: 未コミット差分を ${leftovers.patchFile} へ退避し試行履歴へ記録した(${leftovers.paths.length} 件)`);
     }
+  }
+  clearPendingRecoveryNote(root, taskId);
+}
+
+/**
+ * 未コミット差分の退避結果を試行履歴へ追記する(recoverOrphanBranch の該当処理と同じ手順)。
+ * taskId が見つからない場合は警告のみ。
+ */
+function appendLeftoversRecord(
+  root: string,
+  taskId: string,
+  at: string,
+  leftovers: { patchFile: string; paths: string[] },
+): void {
+  const t = loadTaskIn(root, taskId);
+  if (t === null) {
+    log(`警告: 未コミット差分を記録しようとしたが ${taskId} が見つからない`);
+    return;
+  }
+  t.body = appendUncommittedDiffRecord(t.body, { at, patchFile: leftovers.patchFile, paths: leftovers.paths });
+  saveTaskIn(root, t);
+  log(`${taskId}: 未コミット差分を ${leftovers.patchFile} へ退避し試行履歴へ記録した(${leftovers.paths.length} 件)`);
+}
+
+/**
+ * recoverOrphanBranch が worktree・ブランチを畳む前に書き残したマーカー(pendingRecoveryNotes)を
+ * 走査し、削除が完了しているのに記録が残っていないものを再生する。
+ *
+ * ブランチか worktree がまだ存在する場合は、削除より前に中断されたケースなので触らない
+ * (孤児ブランチ回収(2〜3)が改めて処理する)。
+ *
+ * 再生したタスクは handled へ入れる。後段の中断検出(5〜6)が同じ中断に対して二重に
+ * 失敗を計上し、retries を余分に消費するのを防ぐため。
+ */
+function resumeInterruptedRecoveryNotes(
+  root: string,
+  config: Config,
+  counts: StartupRecovery,
+  handled: Set<string>,
+): void {
+  const state = loadStateIn(root);
+  const notes = state.pendingRecoveryNotes;
+  if (notes === undefined || notes.length === 0) return;
+
+  const branchNames = new Set(listAgentBranches(root).map((b) => b.branch));
+  const remaining: PendingRecoveryNote[] = [];
+  for (const note of notes) {
+    const worktree = worktreePathFor(config.parallel.worktreeDir, note.taskId);
+    if (branchNames.has(note.branch) || fs.existsSync(worktree)) {
+      // 削除の前に中断された。マーカーは残し、孤児ブランチ回収に任せる
+      remaining.push(note);
+      continue;
+    }
+    const recorded = recordStartupRecoveryNote(root, config, note.taskId, {
+      reason: note.reason,
+      at: note.at,
+      extraLines: note.extraLines,
+    });
+    handled.add(note.taskId);
+    if (recorded) {
+      counts.resumedRecoveryNotes += 1;
+      if (note.leftovers !== undefined) appendLeftoversRecord(root, note.taskId, note.at, note.leftovers);
+    }
+    // 記録の成否によらずマーカーは取り除く(同じ痕跡を毎回書き続けないため)
+  }
+
+  if (remaining.length !== notes.length) {
+    if (remaining.length > 0) state.pendingRecoveryNotes = remaining;
+    else delete state.pendingRecoveryNotes;
+    saveStateIn(root, state);
   }
 }
 
@@ -1495,6 +1668,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     parked: 0,
     legacyWorking: 0,
     interruptedFinishes: 0,
+    resumedRecoveryNotes: 0,
   };
 
   // 1. main に残った中断マージ
@@ -1526,7 +1700,13 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     }
   }
 
-  // 4. 旧バージョンが status: working のまま残したタスク(現行の Supervisor は working を書かない)
+  // 4. recoverOrphanBranch が削除・改名の前に書き残したマーカーのうち、削除は完了したのに
+  //    記録が残っていないものを再生する。孤児ブランチ回収(2〜3)の直後、かつ後段(5)が
+  //    state を読み直す前に行うこと(後にすると 5 が読んだ古い state の保存でここでの
+  //    マーカー削除が巻き戻る)
+  resumeInterruptedRecoveryNotes(root, config, counts, handled);
+
+  // 5. 旧バージョンが status: working のまま残したタスク(現行の Supervisor は working を書かない)
   for (const t of loadTasksIn(root)) {
     if (t.status !== "working" || handled.has(t.id)) continue;
     counts.legacyWorking += 1;
@@ -1541,7 +1721,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     log(`recover: ${t.id} working -> ${t.status} (retries=${t.retries})`);
   }
 
-  // 5. finishTaskSession は phase を "finishing" にしてから main へのマージ・worktree/ブランチの
+  // 6. finishTaskSession は phase を "finishing" にしてから main へのマージ・worktree/ブランチの
   //    削除・結果の記録(recordFailure 等)を順に進める。worktree とブランチの削除が終わった
   //    「直後」、結果を記録する「前」に強制終了されると、成果は main に入っているのに
   //    タスクファイルの status は ready のまま残る。ブランチも worktree も既に無いため孤児
@@ -1582,7 +1762,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     });
   }
 
-  // 6. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
+  // 7. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
   //    supervisor ソースのハッシュを記録し、稼働中プロセスとソースの乖離を status で検出できるようにする
   //    (変化が無いときに書かないのは、内容を語らない state.json だけのコミットを増やさないため)
   let stateChanged = false;
