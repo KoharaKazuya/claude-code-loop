@@ -65,6 +65,7 @@ updatedAt: 2026-08-30T04:54:35.542Z
   6 variant 全網羅と、`mainLoop` が拒否時に `state.runningSessions` を書き換えない回帰テスト。
   検証は `npm run typecheck` / `npm run lint` / `npm test`(31 files 949 tests)すべて成功。
   判定方針は `.agent/decisions/D-20260830-0453-startup-guard-refusal-policy.md` に記録した。
+  reviewer サブエージェントのレビューは APPROVE。指摘(警告の接頭辞)は 2868beb で対応済み。
 - 未検証の推測: 実プロセス 2 本を同時起動する E2E 確認は行っていない(ユニット/統合テストのみ)。
   非 Linux 環境では `procStartToken` が取れず PID 使い回しで誤って拒否する可能性が残るが、
   `--force` で回避できる。
