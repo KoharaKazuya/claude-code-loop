@@ -61,19 +61,21 @@ export function defaultWorktreeDir(root: string, env: NodeJS.ProcessEnv = proces
  * config.json が全く無い場合に使う完全な既定値。`lib/migrations.ts` の `V1_DEFAULTS`
  * (= `lib/templates/agent/config.json` と同じ値)をそのまま使う。
  * parallel.worktreeDir / parallel.linkPaths だけは root(・env)依存のためここで計算する。
+ * ネストしたオブジェクトは複製して返す。`V1_DEFAULTS` の実体を共有すると、呼び出し側が
+ * 返り値を書き換えたときに以降の既定値まで変わってしまうため。
  */
 export function defaultConfig(root: string, env: NodeJS.ProcessEnv = process.env): Config {
   return {
     claudeCommand: V1_DEFAULTS.claudeCommand as string,
     model: V1_DEFAULTS.model as string,
-    escalation: V1_DEFAULTS.escalation as Config["escalation"],
+    escalation: { ...(V1_DEFAULTS.escalation as Config["escalation"]) },
     permissionMode: V1_DEFAULTS.permissionMode as string,
     maxRetries: V1_DEFAULTS.maxRetries as number,
     taskTimeoutMs: V1_DEFAULTS.taskTimeoutMs as number,
     maxTurns: V1_DEFAULTS.maxTurns as number,
-    rateLimit: V1_DEFAULTS.rateLimit as Config["rateLimit"],
-    explore: V1_DEFAULTS.explore as Config["explore"],
-    triage: V1_DEFAULTS.triage as Config["triage"],
+    rateLimit: { ...(V1_DEFAULTS.rateLimit as Config["rateLimit"]) },
+    explore: { ...(V1_DEFAULTS.explore as Config["explore"]) },
+    triage: { ...(V1_DEFAULTS.triage as Config["triage"]) },
     idlePollMs: V1_DEFAULTS.idlePollMs as number,
     parallel: {
       maxSessions: (V1_DEFAULTS.parallel as { maxSessions: number }).maxSessions,
@@ -190,7 +192,7 @@ export function normalizeConfig(raw: unknown, root: string, env: NodeJS.ProcessE
   const issues = validateConfig(raw);
   if (issues.length > 0) {
     const lines = issues.map((m) => `  - ${m}`).join("\n");
-    throw new Error(`${AGENT_DIR_NAME}/config.json の内容がおかしい。次の項目を手で直すこと:\n${lines}`);
+    throw new Error(`${AGENT_DIR_NAME}/config.json の内容がおかしい。次の項目を手で修正すること:\n${lines}`);
   }
   const r = raw as Record<string, unknown>;
 
@@ -242,7 +244,7 @@ export function loadConfigFrom(root: string, env: NodeJS.ProcessEnv = process.en
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return defaultConfig(root, env);
     throw new Error(
-      `${AGENT_DIR_NAME}/config.json を JSON として読めない: ${String((err as Error)?.message ?? err)}。手で直すこと`,
+      `${AGENT_DIR_NAME}/config.json を JSON として読めない: ${String((err as Error)?.message ?? err)}。手で修正すること`,
     );
   }
   return normalizeConfig(raw, root, env);
