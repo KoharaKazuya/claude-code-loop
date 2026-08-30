@@ -3,7 +3,8 @@ title: "マージ衝突の再試行が必ずまた衝突し、タスクのやり
 status: ready
 priority: 2
 dependencies: []
-retries: 0
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.finish.test.ts)(元: -)"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -74,3 +75,11 @@ Supervisor が残した記録から確認できる)。
 - 取り残された成果の救出は `T-20260830-0621-rescue-max-turns-work` が別途行う。本タスクは
   再発防止だけを扱う。両者は同じファイル(`lib/supervisor.ts`)に触れる可能性があるので、
   救出が先に main へ入ってから着手するのが望ましい。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T07:58:07.813Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.finish.test.ts)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
