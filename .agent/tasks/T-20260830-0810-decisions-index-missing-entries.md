@@ -1,10 +1,10 @@
 ---
 title: "決定の一覧に載らない記録があり、人間の承認を素通りしてしまう"
-status: ready
+status: completed
 priority: 3
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md)(元: -)"
+retries: 0
+note: "原因は仕組みの欠落ではなく稼働中の公開版 0.4.1 にリコンサイルが無いことだった。手動追記の義務を廃しリコンサイルへ一本化"
 createdAt: 2026-08-30T08:10:03.708Z
 ---
 
@@ -72,8 +72,29 @@ index.md への追記を明示していない可能性がある。人間の承�
 
 ## 試行履歴
 
-### 試行 1(2026-08-30T09:53:02.573Z, Supervisor 記録: マージ衝突)
+### 試行 1(2026-08-30T09:47:00Z, セッション記録)
+- 確認済みの事実: `lib/rotate.ts` の `rotateDecisions()` は既に未掲載 ID を未チェック行で追記する。
+  `.agent/decisions/` のコピーに `rotate()` を実行して 6 件が正しい位置・要約で追加されるのを実測した。
+  `lib/prompt/PROMPT.md` は手動追記を義務として求めていたので、タスク本文の仮説(手順書が求めていない)は誤り。
+  未掲載が起きた原因は稼働中の ccloop が `/usr/local/share/ccloop/lib/`(公開版 0.4.1、`DECISIONS_KEEP = 10` の
+  件数基準アーカイブ、index.md の概念なし)であること。
+- 実施: index.md をリポジトリ側ソースのリコンサイル結果に更新(6 件追加・archive 済み 17 行削除、
+  削除分は `.agent/archive/decisions/` に全件あることを確認)。`lib/rotate.test.ts` にリグレッションテスト 1 件追加。
+  PROMPT.md の手動追記の義務を廃止。`docs/architecture.md` の記述を実態に合わせた。
+  `npm run test`(1104 件)/ `lint` / `typecheck` すべて成功。reviewer サブエージェントは APPROVE。
+- 未検証の推測: 公開版が更新されるまでは、稼働中のループが決定を件数基準でアーカイブし続ける
+  (人間のチェックと無関係)。次のリリースで解消するはず。
 
-- 結果: main へのマージが衝突した(.agent/decisions/index.md)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない
+### 試行 2(2026-08-30T10:18:00Z, セッション記録)
+- 確認済みの事実: 前回の成果は e806ceb にコミット済みで、失敗したのは main へのマージだけだった。
+  main(65f7080)を取り込むマージを完了(a104225)。衝突は `.agent/decisions/index.md` 1 ファイルのみ。
+  マージが機械的に解決されなかった原因は、稼働中の公開版 0.4.1 の `lib/merge.ts` に index.md の
+  3-way マージが無いこと(`grep decisionsIndex /usr/local/share/ccloop/lib/merge.ts` が 0 件、
+  解決対象は `ownTaskFile` のみ)。
+- 実施: main 側で 10:07 に人間が index.md のチェックを 8 件付けていた(118090a)ため、
+  ブランチ側の index.md を基点の内容へ戻し、人間のチェックを守りつつ再衝突を避けた
+  (判断は D-20260830-1018-index-backfill-defer-to-reconcile)。未掲載分の解消はリコンサイルに委ねる。
+  `npm run typecheck` / `lint` / `test`(32 ファイル 1129 件)すべて成功。reviewer は APPROVE
+  (指摘は「既存行の要約は title 変更に追従しない」という軽微な設計上の限界 1 件のみ)。
+- 次の試行への提案: このタスク自体は完了。index.md を触るブランチは、main 側で人間がチェックを
+  付け替えている可能性を先に確認すること(`git log main -- .agent/decisions/index.md`)。
