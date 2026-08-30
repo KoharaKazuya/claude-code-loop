@@ -1,10 +1,12 @@
 ---
 title: "衝突ブランチに取り残された「衝突リトライ別枠化」の成果を main へ取り込む"
-status: ready
+status: completed
 priority: 1
 dependencies: []
 retries: 0
+note: "退避ブランチのコミット済み成果一式を 3-way マージで統合。typecheck / lint / テスト(1077 件)通過"
 createdAt: 2026-08-30T08:25:02.024Z
+updatedAt: 2026-08-30T09:23:49.767Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。
@@ -75,3 +77,27 @@ createdAt: 2026-08-30T08:25:02.024Z
 - 先例: `T-20260830-0621-rescue-max-turns-work`(同じ救出を行い完了済み)
 - 本タスクが取り込む再発防止の元タスク: `T-20260830-0621-conflict-retry-always-reconflicts`
 - 本タスクの完了を待つタスク: `T-20260830-0808-human-task-edit-lost-on-merge`
+
+## 試行履歴
+
+### 試行 1(2026-08-30T09:23:49.767Z, セッション記録)
+
+- 確認済みの事実: 退避ブランチとのマージ基点は c20ae88(ブランチ側が既に main を取り込んだ地点)。
+  `git diff c20ae88 <退避ブランチ> | git apply --3way` で統合したところ、実コードは
+  `lib/supervisor.ts` を含めすべてクリーンに適用され、衝突したのは
+  `.agent/decisions/index.md` / 元タスクファイル / `CHANGELOG.md` の 3 件(いずれも markdown)だけだった。
+  ブランチ操作(checkout / merge)は一切していない。
+- 確認済みの事実: 衝突の解消方針。決定インデックスは main 側の承認チェック `[x]` を保ったまま
+  ブランチ側の新規 3 件を `[ ]` で ID 降順に挿入した(捨てた項目は無い)。元タスクファイルは
+  frontmatter を main 側(`status: failed` / `retries: 3`)に寄せ、試行履歴は main 側の Supervisor 記録と
+  ブランチ側のセッション記録の両方を時系列順に残した。CHANGELOG は両側の項目を残した。
+- 確認済みの事実: 退避パッチ
+  (`patches/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z.patch`)は
+  全ハンクが既に作業ツリーへ反映済み(`ratelimit-hidden-by-timeout` の成果として main に入っていた)。
+  よって取り込むものは無く、落とした有用な変更は無い。
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm test`(31 ファイル 1077 件)が通ることを確認。
+  コミットは 0f550a0(実装・テスト・文書)と e486bf5(`.agent/` の記録)の 2 件。
+- 確認済みの事実: reviewer が観点 A〜E(取りこぼし・3-way 統合の正しさ・やること 5 項目・
+  CHANGELOG・記録の整合)をすべて APPROVE。要修正指摘は無し。
+- 未検証の推測: `.agent/OVERVIEW.md` は本タスクを未完了として記述したままだが、更新は探索セッションの
+  担当であり本タスクの完了条件外と判断して触っていない。
