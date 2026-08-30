@@ -192,6 +192,34 @@ describe("mergeCommitMessage", () => {
     );
   });
 
+  it("resolved.ownTaskFileDiscarded があれば本文に main 側の破棄差分を含める", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      ownTaskFileDiscarded: "@@ -1 +1 @@\n-main content\n+ours content",
+    });
+    expect(message).toContain("タスクファイルはブランチ側を採用: .agent/tasks/T-001.md");
+    expect(message).toContain("この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):");
+    expect(message).toContain("@@ -1 +1 @@\n-main content\n+ours content");
+  });
+
+  it("ownTaskFileDiscarded が 61 行超えなら 60 行で切り詰め、省略の注記を付ける", () => {
+    const lines = Array.from({ length: 61 }, (_, i) => `line ${i}`);
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      ownTaskFileDiscarded: lines.join("\n"),
+    });
+    expect(message).toContain("line 59");
+    expect(message).not.toContain("line 60");
+    expect(message).toContain("... (残り 1 行は省略。git diff で確認できる)");
+  });
+
+  it("ownTaskFileDiscarded が無ければ破棄の記述は出ない", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+    });
+    expect(message).not.toContain("破棄した");
+  });
+
   it("Merge で始まる subject は commit-msg フックの Conventional Commits 検査対象外になる形式である", () => {
     const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER);
     expect(message.split("\n")[0]).toMatch(/^Merge /);
@@ -406,13 +434,49 @@ describe("mergeAgentBranch", () => {
 
     expect(outcome.result).toBe("renumbered");
     if (outcome.result !== "renumbered") throw new Error("unreachable");
-    expect(outcome.resolved).toEqual({ ownTaskFile: ".agent/tasks/T-042.md", decisionsIndex: null });
+    // main 側にも実質的な変更(base "base\n" → "main(Supervisor)が書いた失敗記録\n")があるため、
+    // ownTaskFileDiscarded にその差分が残る(具体的な差分本文は discardedOursDiff/
+    // mergeCommitMessage 側のテストで別途検証する)。
+    expect(outcome.resolved).toEqual({
+      ownTaskFile: ".agent/tasks/T-042.md",
+      decisionsIndex: null,
+      ownTaskFileDiscarded: expect.any(String),
+    });
     expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-042.md"), "utf8")).toBe(
       "branch(セッション)が書いた最終状態\n",
     );
     expect(git(["ls-files", "-u"]).trim()).toBe("");
     expect(git(["status", "--porcelain"]).trim()).toBe("");
     expect(git(["log", "-1", "--pretty=%B"])).toContain("タスクファイルはブランチ側を採用: .agent/tasks/T-042.md");
+  });
+
+  it("own-task-file の衝突で main 側だけにあった変更を破棄しても、マージコミットのメッセージに差分として残る(人間の手編集が黙って消えないことの確認)", () => {
+    writeFile(".agent/tasks/T-043.md", "base\n");
+    commitAll("init: 基点タスクファイルを追加する");
+    git(["branch", "agent/T-043"]);
+
+    writeFile(".agent/tasks/T-043.md", "人間が main 側で直接編集した内容\n");
+    commitAll("docs(agent): main 側の編集(人間による手編集を模す)");
+
+    git(["checkout", "agent/T-043"]);
+    writeFile(".agent/tasks/T-043.md", "branch(セッション)が書いた最終状態\n");
+    commitAll("docs(agent): branch 側の最終状態");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-043", "T-043", "own-task-file の破棄記録", TRAILER);
+
+    expect(outcome.result).toBe("renumbered");
+    if (outcome.result !== "renumbered") throw new Error("unreachable");
+
+    // 既存挙動は維持: ファイル内容はブランチ側のまま
+    expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-043.md"), "utf8")).toBe(
+      "branch(セッション)が書いた最終状態\n",
+    );
+
+    // main 側にだけあった行が破棄記録としてマージコミットのメッセージに残る
+    const message = git(["log", "-1", "--pretty=%B"]);
+    expect(message).toContain("人間が main 側で直接編集した内容");
+    expect(message).toContain("この解消で main 側の以下の変更を破棄した(ブランチ側の内容で確定した):");
   });
 
   const DECISIONS_HEADER =
@@ -516,7 +580,12 @@ describe("mergeAgentBranch", () => {
 
     expect(outcome.result).toBe("renumbered");
     if (outcome.result !== "renumbered") throw new Error("unreachable");
-    expect(outcome.resolved).toEqual({ ownTaskFile: ".agent/tasks/T-030.md", decisionsIndex: indexPath });
+    // main 側にも実質的な変更があるため ownTaskFileDiscarded が付く(差分本文は別テストで検証)
+    expect(outcome.resolved).toEqual({
+      ownTaskFile: ".agent/tasks/T-030.md",
+      decisionsIndex: indexPath,
+      ownTaskFileDiscarded: expect.any(String),
+    });
     expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-030.md"), "utf8")).toBe(
       "branch(セッション)が書いた最終状態\n",
     );
@@ -689,7 +758,12 @@ describe("mergeAgentBranch", () => {
     }
     expect(outcome.result).toBe("renumbered");
     if (outcome.result !== "renumbered") throw new Error("unreachable");
-    expect(outcome.resolved).toEqual({ ownTaskFile: taskPath, decisionsIndex: null });
+    // main 側の失敗記録にも実質的な差分があるため ownTaskFileDiscarded が付く(差分本文は別テストで検証)
+    expect(outcome.resolved).toEqual({
+      ownTaskFile: taskPath,
+      decisionsIndex: null,
+      ownTaskFileDiscarded: expect.any(String),
+    });
 
     // CHANGELOG.md は union マージにより両側の追記行がどちらも残る
     const changelog = fs.readFileSync(path.join(dir, "CHANGELOG.md"), "utf8");
