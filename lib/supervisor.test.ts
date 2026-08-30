@@ -5488,6 +5488,207 @@ describe("recoverStartupIn", () => {
     expect(t.retries).toBe(0);
     expect(t.body).not.toContain("## 試行履歴");
   });
+
+  it("R: pendingRecoveryNotes のマーカーは、ブランチも worktree も無ければ次回起動時に記録を再生する", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(1);
+    expect(t.body).toContain("## 試行履歴");
+    expect(t.body).toContain("セッションが中断された(ブランチの成果は main へ回収済み)");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("S: leftovers 付きのマーカーは試行履歴に未コミット差分の記録も残す", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+            leftovers: { patchFile: "/tmp/T-001-leftover.patch", paths: ["foo.txt"] },
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    const t = readTask("T-001");
+    expect(t.body).toContain("未コミット差分");
+    expect(t.body).toContain("/tmp/T-001-leftover.patch");
+    expect(t.body).toContain("`foo.txt`");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("T: 孤児ブランチ回収が見送られている間はマーカーがあってもブランチが残っていれば再生しない", () => {
+    // main のマージが進行中の状況を作り、孤児ブランチ回収(2〜3)自体を丸ごと見送らせる。
+    // これにより「新段階がブランチ存在をそれ自身で確認しているか」だけを検証できる
+    // (handled 経由の見送りと区別するため。O と同じ手口)
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+    git(["branch", "side"]);
+    git(["checkout", "side"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side\n");
+    git(["commit", "-am", "side で書き換える"]);
+    git(["checkout", "main"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "main 側\n");
+    git(["commit", "-am", "main 側で書き換える"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "result.txt"), "成果\n"),
+      "成果を追加する",
+    );
+    removeWorktree(dir, wt);
+
+    try {
+      git(["merge", "side"]);
+    } catch {
+      // 人間が手で始めたマージが衝突したまま残っている状況
+    }
+    expect(mergeInProgress(dir)).toBe(true);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    expect(branchExists("agent/T-001")).toBe(true);
+    const t = readTask("T-001");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown[] };
+    expect(state.pendingRecoveryNotes).toHaveLength(1);
+  });
+
+  it("U: マーカー対象のタスクが completed なら記録は書かずマーカーだけ消す", () => {
+    writeTaskFile(dir, "T-001", serializeFrontmatter({ title: "タスク", status: "completed", retries: 0 }, "本文"));
+    git(["add", "-A"]);
+    git(["commit", "-m", "completed にする"]);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    const t = readTask("T-001");
+    expect(t.status).toBe("completed");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("V: 通常の孤児ブランチ回収が最後まで走った後は pendingRecoveryNotes が残らない", () => {
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "result.txt"), "成果\n"),
+      "成果を追加する",
+    );
+    removeWorktree(dir, wt);
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.recoveredMerges).toBe(1);
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("W: pendingRecoveryNotes と phase finishing の runningSessions が同じタスクに残っていても、記録も retries も二重に進まない", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          { kind: "task", taskId: "T-001", phase: "finishing", startedAt: "2026-08-16T08:00:00.000Z" },
+        ],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(counts.interruptedFinishes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.retries).toBe(1);
+    expect(t.body).toContain("### 試行 1(");
+    expect(t.body).not.toContain("### 試行 2(");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
 });
 
 describe("newTaskId", () => {

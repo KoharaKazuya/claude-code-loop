@@ -1,9 +1,10 @@
 ---
 title: "起動時復旧が削除と記録の間で強制終了されると、成果が「未着手」のまま痕跡なく消える"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-1053-rescue-finish-interrupt-recovery-work]
 retries: 0
+note: "削除・改名の直前に state へ記録内容のマーカーを残し、次回起動時に再生する方式で塞いだ。回帰テスト 6 件を追加"
 createdAt: 2026-08-30T09:34:06.873Z
 ---
 
