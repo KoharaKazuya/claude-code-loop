@@ -4,7 +4,7 @@ status: failed
 priority: 3
 dependencies: []
 retries: 3
-note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0829-finish-crash-leaves-no-trace.md, lib/supervisor.ts)(元: 失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-0829-finish-cra…)"
+note: "成果は T-20260830-1053-rescue-finish-interrupt-recovery-work が main へ取り込み済み。実装・テスト・判断記録・変更履歴に取り残しは無い"
 createdAt: 2026-08-30T08:29:36.812Z
 ---
 

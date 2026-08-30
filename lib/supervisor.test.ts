@@ -5288,6 +5288,140 @@ describe("recoverStartupIn", () => {
     // 上書きされ、この文字列のままにはならない
     expect(fs.readFileSync(taskFilePath, "utf8")).toBe("external tamper\n");
   });
+
+  it("N: 後始末(finishTaskSession)の途中で中断され、ブランチも worktree も消えたタスクは ready のまま試行履歴を残す", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          { kind: "task", taskId: "T-001", phase: "finishing", startedAt: "2026-08-16T08:00:00.000Z" },
+          // running phase は後始末に入っていないため対象外であることも確かめる
+          { kind: "task", taskId: "T-999", phase: "running", startedAt: "2026-08-16T08:00:00.000Z" },
+        ],
+        sessionCount: 1,
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.interruptedFinishes).toBe(1);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(1);
+    expect(t.body).toContain("## 試行履歴");
+    expect(t.body).toContain("後始末の途中で中断された");
+    expect(t.body).toContain("git log");
+  });
+
+  it("O: phase finishing でもブランチが残っていれば孤児ブランチ回収に任せ、記録もretriesの二重加算もしない", () => {
+    // main のマージが進行中の状況を作り、孤児ブランチ回収(2〜3)自体を丸ごと見送らせる。
+    // これにより「新段階がブランチ存在をそれ自身で確認しているか」だけを検証できる
+    // (handled 経由の見送りと区別するため)。
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+    git(["branch", "side"]);
+    git(["checkout", "side"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side\n");
+    git(["commit", "-am", "side で書き換える"]);
+    git(["checkout", "main"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "main 側\n");
+    git(["commit", "-am", "main 側で書き換える"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "result.txt"), "成果\n"),
+      "成果を追加する",
+    );
+    removeWorktree(dir, wt);
+
+    try {
+      git(["merge", "side"]);
+    } catch {
+      // 人間が手で始めたマージが衝突したまま残っている状況
+    }
+    expect(mergeInProgress(dir)).toBe(true);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          { kind: "task", taskId: "T-001", phase: "finishing", startedAt: "2026-08-16T08:00:00.000Z" },
+        ],
+        sessionCount: 1,
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.interruptedFinishes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    expect(branchExists("agent/T-001")).toBe(true);
+    const t = readTask("T-001");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+  });
+
+  it("P: phase finishing でもタスクが completed / blocked で決着済みなら何も書き換えない", () => {
+    writeTaskFile(
+      dir,
+      "T-001",
+      serializeFrontmatter({ title: "タスク", status: "blocked", retries: 0, note: "人間の判断待ち" }, "本文"),
+    );
+    git(["add", "-A"]);
+    git(["commit", "-m", "blocked にする"]);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          { kind: "task", taskId: "T-001", phase: "finishing", startedAt: "2026-08-16T08:00:00.000Z" },
+        ],
+        sessionCount: 1,
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.interruptedFinishes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    const t = readTask("T-001");
+    expect(t.status).toBe("blocked");
+    expect(t.retries).toBe(0);
+    expect(t.note).toBe("人間の判断待ち");
+    expect(t.body).not.toContain("## 試行履歴");
+  });
+
+  it("Q: phase finishing でも taskFileChanged: true が記録されていれば成果が main に入っている可能性が高いので何も書き換えない", () => {
+    // T-001 は beforeEach が status: ready / retries: 0 で作成済み。セッションが
+    // 「未完了なので ready に戻して note に進捗を書く」正当な終わり方をした直後
+    // (マージ済み・ブランチ/worktree 削除済み・分類前)に強制終了された状況を模す
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          {
+            kind: "task",
+            taskId: "T-001",
+            phase: "finishing",
+            startedAt: "2026-08-16T08:00:00.000Z",
+            taskFileChanged: true,
+          },
+        ],
+        sessionCount: 1,
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.interruptedFinishes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+  });
 });
 
 describe("newTaskId", () => {
