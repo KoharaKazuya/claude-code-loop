@@ -2,7 +2,9 @@
 title: "書庫への移動が同名ファイルを無警告で上書きして記録を失う"
 status: ready
 priority: 3
-retries: 0
+dependencies: []
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -)"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
@@ -34,3 +36,11 @@ CLI 経由の新規作成は `disambiguateId`(`lib/ids.ts`)が `.agent/archive/`
 - 衝突が起きたことが実行ログから分かる
 - `npm run` 経由の typecheck / lint / test がすべて通る
 - `CHANGELOG.md` の「## 未リリース」に 1 行足す
+
+## 試行履歴
+
+### 試行 1(2026-08-30T05:27:18.267Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
