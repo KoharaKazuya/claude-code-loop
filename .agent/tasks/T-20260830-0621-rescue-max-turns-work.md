@@ -1,9 +1,10 @@
 ---
 title: "衝突ブランチに取り残されたターン上限の修正を main へ取り込む"
-status: ready
+status: completed
 priority: 1
 dependencies: []
 retries: 0
+note: "5 ファイルを main へ取り込み検証済み。衝突ブランチ agent/conflict/T-20260830-0537-max-turns-not-failure-20260830T061327Z は取り込み済みなので人間が削除してよい"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -82,3 +83,19 @@ main に上記 5 ファイル相当の変更が入り、検証が通り、コミ
 
 - 3 回とも同じ理由で衝突した構造的な原因は `T-20260830-0621-conflict-retry-always-reconflicts`
   で扱う。本タスクは取り残された成果の救出だけを行う。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T07:31:30Z, セッション記録)
+- 確認済みの事実: `git diff main...agent/conflict/...` で 5 ファイル分のパッチを作り `git apply --3way`
+  で取り込んだ。`lib/supervisor.ts` / `lib/supervisor.finish.test.ts` / `docs/compatibility.md` /
+  `.agent/decisions/D-20260830-0546-is-error-treated-as-failure.md` は無衝突。`CHANGELOG.md` のみ
+  「## 未リリース」節末尾で衝突したため、両側の追加行を両方残す形で手で解消した。
+- 確認済みの事実: `git diff agent/conflict/... -- <上記 4 ファイル>` にターン上限関連の差分は無く、
+  元ブランチと内容が一致している。`npm run typecheck` / `npm run lint` / `npm test`
+  (31 files / 1018 tests)すべて成功。
+- 確認済みの事実: 元ブランチの `.agent/decisions/index.md` にあった行は取り込み対象外だったため、
+  D-20260830-0546 の行を手で追記した。
+- 次の試行への提案: 衝突ブランチ
+  `agent/conflict/T-20260830-0537-max-turns-not-failure-20260830T061327Z` の内容は main へ
+  取り込み済みなので、人間が削除してよい(セッションはブランチ削除ができない)。

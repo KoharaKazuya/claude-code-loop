@@ -312,4 +312,89 @@ describe("finishTaskSession", () => {
     expect(t.body).toContain("## 試行履歴");
     expect(t.body).toContain("agent/conflict/T-001");
   });
+
+  it("(e) ターン数上限: exitCode 0 でマージも成功するが、結果 JSON の is_error/subtype で失敗として記録する", () => {
+    const wt = createSessionWorktree("T-001");
+    // セッションが status を completed へ書き換えてコミットした状態を再現する
+    // (taskFileChanged / statusUnchanged による安全網ではなく、ターン上限判定で失敗になることを確認する)
+    writeTaskFile(
+      wt,
+      "T-001",
+      serializeFrontmatter({ title: "タスク", status: "completed", retries: 0 }, "完了しました"),
+    );
+    commit(wt, "status を completed にする");
+
+    seedRunningSession("T-001", branchNameFor("T-001"), wt);
+
+    const ctx: TaskSessionContext = {
+      task: makeTask(),
+      model: "opus",
+      branch: branchNameFor("T-001"),
+      worktree: wt,
+      launchStatus: "ready",
+      resuming: false,
+      startedAt: NOW.toISOString(),
+    };
+    const res: SessionResult = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        terminal_reason: "max_turns",
+        session_id: "sess-max-turns",
+      }),
+      stderr: "",
+    };
+
+    finishTaskSession(config(), ctx, res);
+
+    const t = readTask("T-001");
+    expect(t.retries).toBe(1);
+    expect(t.status).toBe("ready");
+    expect(t.body).toContain("ターン上限");
+    expect(t.body).toContain("## 試行履歴");
+  });
+
+  it("(f) is_error: true(ターン上限以外の subtype): 失敗として記録する", () => {
+    const wt = createSessionWorktree("T-001");
+    writeTaskFile(
+      wt,
+      "T-001",
+      serializeFrontmatter({ title: "タスク", status: "completed", retries: 0 }, "完了しました"),
+    );
+    commit(wt, "status を completed にする");
+
+    seedRunningSession("T-001", branchNameFor("T-001"), wt);
+
+    const ctx: TaskSessionContext = {
+      task: makeTask(),
+      model: "opus",
+      branch: branchNameFor("T-001"),
+      worktree: wt,
+      launchStatus: "ready",
+      resuming: false,
+      startedAt: NOW.toISOString(),
+    };
+    const res: SessionResult = {
+      exitCode: 0,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        session_id: "sess-other-error",
+      }),
+      stderr: "",
+    };
+
+    finishTaskSession(config(), ctx, res);
+
+    const t = readTask("T-001");
+    expect(t.retries).toBe(1);
+    expect(t.status).toBe("ready");
+    expect(t.body).toContain("error_during_execution");
+    expect(t.body).toContain("## 試行履歴");
+  });
 });
