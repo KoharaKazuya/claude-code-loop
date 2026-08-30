@@ -11,7 +11,7 @@ import {
   type ProbeFn,
 } from "./doctor.ts";
 import { applyInit, planInit } from "./init.ts";
-import { createPaths, type Paths } from "./paths.ts";
+import { AGENT_DIR_NAME, createPaths, type Paths } from "./paths.ts";
 
 const HOME = import.meta.dirname;
 
@@ -115,6 +115,20 @@ describe("collectChecks", () => {
     expect(agent.detail).toContain("手で修正すること");
   });
 
+  it("config.json の項目が不正でも doctor は落ちず、失敗したチェックとして表示する", () => {
+    applyInit(paths, planInit(paths, HOME));
+    const config = JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(paths.configPath, JSON.stringify({ ...config, maxTurns: "not-a-number" }) + "\n");
+
+    const results = collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe });
+
+    const configCheck = find(results, `${AGENT_DIR_NAME}/config.json`);
+    expect(configCheck.ok).toBe(false);
+    expect(configCheck.detail).toContain("maxTurns");
+    // claudeCommand が読めないため既定の "claude" へフォールバックして他のチェックは続行する
+    expect(find(results, "claude").name).toBe("claude (claude)");
+  });
+
   it("schemaVersion が古ければ ✗ と --upgrade の案内を出す", () => {
     applyInit(paths, planInit(paths, HOME));
     fs.writeFileSync(paths.configPath, JSON.stringify({ model: "opus" }) + "\n");
@@ -165,7 +179,10 @@ describe("collectChecks", () => {
 
   it("config の claudeCommand を差し替えるとそのコマンドを診断する", () => {
     applyInit(paths, planInit(paths, HOME));
-    fs.writeFileSync(paths.configPath, JSON.stringify({ schemaVersion: 1, claudeCommand: "my-claude" }) + "\n");
+    // claudeCommand 以外の項目は雛形どおり(完全な config)を維持したまま 1 項目だけ差し替える。
+    // normalizeConfig は必須項目が揃っていない config を例外にするため、部分的な config は書けない
+    const config = JSON.parse(fs.readFileSync(paths.configPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(paths.configPath, JSON.stringify({ ...config, claudeCommand: "my-claude" }) + "\n");
     const probed: string[] = [];
     const probe: ProbeFn = (command) => {
       probed.push(command);

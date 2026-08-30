@@ -3271,7 +3271,15 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
   generateSettings(repoPaths());
   // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
   generateSystemPrompt(repoPaths());
-  const config = loadConfig();
+  // config.json の内容が壊れていると loadConfig が例外を投げる。未捕捉のまま投げさせると
+  // スタックトレースだけが出て `ccloop run` が落ちるので、ここで捕まえて人間向けメッセージだけ出す。
+  let config: Config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    log(`fatal: ${String((err as Error)?.message ?? err)}`);
+    return;
+  }
   // `ccloop status` がループ本体の生死を判定できるよう、起動時点の生存記録を書く
   // (以降はタイマーの心拍で heartbeatAt を更新する)
   const runnerStartedAt = new Date().toISOString();
