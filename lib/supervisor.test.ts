@@ -28,6 +28,7 @@ import {
   fastCrashStreakAfterWait,
   formatElapsed,
   installedSourceDriftLines,
+  isFastCrash,
   isInstalledSourceDrifted,
   isSnoozed,
   isSupervisorSourceStale,
@@ -1934,6 +1935,28 @@ describe("buildSessionMetrics", () => {
   });
 });
 
+describe("isFastCrash", () => {
+  function res(overrides: Partial<SessionResult> = {}): SessionResult {
+    return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
+  }
+
+  it("異常終了・FAST_CRASH_MS 未満なら瞬時クラッシュとみなす", () => {
+    expect(isFastCrash(res({ exitCode: 1 }), 1_000)).toBe(true);
+  });
+
+  it("タイムアウトなら瞬時クラッシュとみなさない", () => {
+    expect(isFastCrash(res({ exitCode: 1, timedOut: true }), 1_000)).toBe(false);
+  });
+
+  it("正常終了(exitCode 0)なら瞬時クラッシュとみなさない", () => {
+    expect(isFastCrash(res({ exitCode: 0 }), 1_000)).toBe(false);
+  });
+
+  it("FAST_CRASH_MS 以上かかった異常終了は瞬時クラッシュとみなさない", () => {
+    expect(isFastCrash(res({ exitCode: 1 }), 10_000)).toBe(false);
+  });
+});
+
 describe("nextFastCrashStreak", () => {
   function res(overrides: Partial<SessionResult> = {}): SessionResult {
     return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
@@ -2011,6 +2034,7 @@ describe("crash-backoff の配線(planLoopStep + fastCrashStreak 更新関数)",
       exploreDue: false,
       neverExplored: false,
       lastExploreYieldedNothing: false,
+      lastExploreFastCrashed: false,
       pendingSnoozeCount: 0,
       rateLimitedUntilMs: null,
       idlePollMs: 60_000,
@@ -2050,6 +2074,76 @@ describe("crash-backoff の配線(planLoopStep + fastCrashStreak 更新関数)",
       loopInput({ runnableTaskIds: ["T-001"], runningCount: 0, maxSessions: 1, fastCrashStreak: streak }),
     );
     expect(action).toEqual({ type: "launch", taskIds: ["T-001"] });
+  });
+});
+
+/**
+ * isFastCrash と scheduler.planLoopStep を実際の mainLoop と同じ順序(セッション結果 → isFastCrash
+ * → lastExploreFastCrashed → 次周回の planLoopStep)で組み合わせ、探索側の配線を検証する。
+ * 個々の関数の単体テストとは別に、「瞬時クラッシュした探索が本当に次の即時再探索を止めるか」
+ * という結合上の懸念を確認するためのもの。
+ */
+describe("探索の瞬時クラッシュの配線(isFastCrash + planLoopStep)", () => {
+  function loopInput(over: Partial<LoopInput> = {}): LoopInput {
+    return {
+      now: new Date("2026-08-16T00:00:00.000Z"),
+      stopMode: "none",
+      mainDirtyOutsideAgent: false,
+      runningCount: 0,
+      maxSessions: 1,
+      runnableTaskIds: [],
+      conflictResumeTaskIds: [],
+      inputsDirty: false,
+      mainDirty: false,
+      triageEnabled: false,
+      triageAttempted: false,
+      exploreEnabled: true,
+      exploreRunning: false,
+      exploreDue: false,
+      neverExplored: false,
+      lastExploreYieldedNothing: false,
+      lastExploreFastCrashed: false,
+      pendingSnoozeCount: 0,
+      rateLimitedUntilMs: null,
+      idlePollMs: 60_000,
+      fastCrashStreak: 0,
+      ...over,
+    };
+  }
+
+  function res(overrides: Partial<SessionResult> = {}): SessionResult {
+    return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
+  }
+
+  it("起動直後に落ちた探索は、未消費の入力があってもクールダウン未経過中は再探索させない", () => {
+    // 瞬時クラッシュは入力を消費しないぶん、再探索は時間経過でしか成立させない
+    const lastExploreFastCrashed = isFastCrash(res({ exitCode: 1 }), 1_000);
+    expect(lastExploreFastCrashed).toBe(true);
+
+    const action = planLoopStep(
+      loopInput({ inputsDirty: true, exploreDue: false, lastExploreFastCrashed }),
+    );
+    expect(action.type).not.toBe("explore");
+  });
+
+  it("起動直後に落ちた探索でも、クールダウン(exploreDue)経過後は再探索する", () => {
+    const lastExploreFastCrashed = isFastCrash(res({ exitCode: 1 }), 1_000);
+    expect(lastExploreFastCrashed).toBe(true);
+
+    const action = planLoopStep(
+      loopInput({ inputsDirty: true, exploreDue: true, lastExploreFastCrashed }),
+    );
+    expect(action).toEqual({ type: "explore", trigger: "idle" });
+  });
+
+  it("締め切りによるタイムアウトは瞬時クラッシュ扱いにならず、従来どおり即時再探索の免除が効く", () => {
+    const lastExploreFastCrashed = isFastCrash(res({ exitCode: 1, timedOut: true }), 1_000);
+    expect(lastExploreFastCrashed).toBe(false);
+
+    const action = planLoopStep(
+      loopInput({ inputsDirty: true, exploreDue: false, lastExploreFastCrashed }),
+    );
+    expect(action).toEqual({ type: "explore", trigger: "idle" });
   });
 });
 

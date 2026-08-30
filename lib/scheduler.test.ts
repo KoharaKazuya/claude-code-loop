@@ -31,6 +31,7 @@ function input(over: Partial<LoopInput> = {}): LoopInput {
     exploreDue: false,
     neverExplored: false,
     lastExploreYieldedNothing: false,
+    lastExploreFastCrashed: false,
     pendingSnoozeCount: 0,
     rateLimitedUntilMs: null,
     idlePollMs: 60_000,
@@ -268,6 +269,32 @@ describe("planLoopStep", () => {
       it("直前の探索が空振りでもクールダウンが経過していれば再探索する", () => {
         expect(
           planLoopStep(input({ mainDirty: true, lastExploreYieldedNothing: true, exploreDue: true })),
+        ).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("直前の探索が瞬時クラッシュなら、新しい人間の入力があってもクールダウン未経過中は再探索しない", () => {
+        const action = planLoopStep(
+          input({ inputsDirty: true, lastExploreFastCrashed: true, exploreDue: false }),
+        );
+        expect(action.type).not.toBe("explore");
+      });
+
+      it("直前の探索が瞬時クラッシュでも、クールダウン(exploreDue)が経過していれば再探索する", () => {
+        expect(
+          planLoopStep(input({ inputsDirty: true, lastExploreFastCrashed: true, exploreDue: true })),
+        ).toEqual({ type: "explore", trigger: "idle" });
+      });
+
+      it("回帰: 瞬時クラッシュでなければ、新しい人間の入力による免除は従来どおり効く", () => {
+        expect(
+          planLoopStep(
+            input({
+              inputsDirty: true,
+              lastExploreFastCrashed: false,
+              lastExploreYieldedNothing: true,
+              exploreDue: false,
+            }),
+          ),
         ).toEqual({ type: "explore", trigger: "idle" });
       });
 
