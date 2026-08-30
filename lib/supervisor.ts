@@ -35,6 +35,7 @@ import * as path from "node:path";
 import { styleText } from "node:util";
 import { normalizeConfig, type Config } from "./config.ts";
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
+import { usageOf } from "./help.ts";
 import { buildId, disambiguateId, isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
@@ -3497,9 +3498,7 @@ export function cmdAdd(argv: string[]): void {
   const positional = positionalArgs(argv);
   const title = positional[0];
   if (!title) {
-    console.error(
-      '使い方: supervisor.ts add "タイトル" [--desc 説明] [--priority N] [--deps a,b] [--model 名] [--slug slug]',
-    );
+    console.error(usageOf("add"));
     process.exit(1);
   }
   const opt = (name: string): string | undefined => {

@@ -118,3 +118,16 @@ ccloop 自身のバージョンを表示する。リポジトリに紐づかな�
 
 オプション: なし`,
 };
+
+/**
+ * サブコマンドのヘルプ文字列から、先頭の「使い方: ...」ブロック(最初の空行まで)だけを取り出す。
+ * エラーメッセージ等で使い方だけを簡潔に出したい場合に使う(help.ts と表記がずれないようにするため)。
+ * 未知のサブコマンドを渡した場合は例外を投げる(呼び出し側の誤り検出のため)。
+ */
+export function usageOf(sub: string): string {
+  const help = SUBCOMMAND_HELP[sub];
+  if (help === undefined) {
+    throw new Error(`未知のサブコマンド: ${sub}`);
+  }
+  return help.split("\n\n")[0];
+}
