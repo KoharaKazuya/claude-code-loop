@@ -76,11 +76,24 @@ describe("worktree-create hook", () => {
     fs.writeFileSync(path.join(repo, SHARED_DIR_NAME, "marker.txt"), "x");
 
     // worktreeDir / linkPaths を明示指定し、既定値(state ディレクトリ配下)に頼らず
-    // テストが生成物を確実に把握・削除できるようにする
+    // テストが生成物を確実に把握・削除できるようにする。
+    // normalizeConfig は必須項目が揃っていない config を例外にするため、parallel 以外の
+    // 必須項目もすべて満たした完全な config を書く
     fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
     fs.writeFileSync(
       path.join(repo, ".agent", "config.json"),
-      JSON.stringify({ parallel: { worktreeDir, linkPaths: [SHARED_DIR_NAME] } }),
+      JSON.stringify({
+        claudeCommand: "claude",
+        model: "opus",
+        permissionMode: "auto",
+        maxRetries: 3,
+        taskTimeoutMs: 2400000,
+        maxTurns: 150,
+        rateLimit: { backoffMs: 300000 },
+        explore: { enabled: true, minIntervalMs: 3600000 },
+        idlePollMs: 60000,
+        parallel: { worktreeDir, linkPaths: [SHARED_DIR_NAME] },
+      }),
     );
   });
 

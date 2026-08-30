@@ -145,10 +145,20 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
   const git = probe("git", ["--version"]);
   const nodeError = checkNodeVersion(nodeVersion);
   // claude の起動コマンドは config で差し替えられる。実際に使われるコマンドを診断する。
-  // config.json が無い・claudeCommand を持たない場合(normalizeConfig は既定値を埋めない)は
-  // 素の "claude" にフォールバックする。診断は `.agent/` 未配置でも動く必要があるため
-  const configured = opts.paths === null ? undefined : loadConfigFrom(opts.paths.root).claudeCommand;
-  const claudeCommand = typeof configured === "string" && configured !== "" ? configured : "claude";
+  // config.json が無い場合は素の "claude" にフォールバックする。診断は `.agent/` 未配置でも
+  // 動く必要があるため。config.json はあるが項目が不正な場合は loadConfigFrom が例外を投げるので、
+  // doctor が落ちないよう捕まえて「失敗したチェック」として表示する(claudeCommand の判定は
+  // "claude" へフォールバックし、他のチェックは続行する)。
+  let claudeCommand = "claude";
+  let configError: string | null = null;
+  if (opts.paths !== null) {
+    try {
+      const configured = loadConfigFrom(opts.paths.root).claudeCommand;
+      claudeCommand = typeof configured === "string" && configured !== "" ? configured : "claude";
+    } catch (err) {
+      configError = String((err as Error)?.message ?? err);
+    }
+  }
   const claude = probe(claudeCommand, ["--version"]);
 
   const results: CheckResult[] = [];
@@ -180,6 +190,9 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
     required: true,
   });
   results.push(checkAgentDir(opts.paths));
+  if (configError !== null) {
+    results.push({ name: `${AGENT_DIR_NAME}/config.json の内容`, ok: false, detail: configError, required: true });
+  }
   if (opts.paths === null) {
     results.push({ name: "state ディレクトリ", ok: false, detail: "対象リポジトリが不明のため確認できない", required: true });
   } else {

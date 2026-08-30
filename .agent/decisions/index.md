@@ -3,11 +3,11 @@
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
 - [ ] [D-20260830-0614-invalid-task-files-in-action-section](D-20260830-0614-invalid-task-files-in-action-section.md) — status が不正なタスクファイルは「要対応」節の 1 セクションとして出す
-- [ ] [D-20260830-0439-liveness-unreadable-record](D-20260830-0439-liveness-unreadable-record.md) — 生存記録の壊れた JSON・型不正は「読めなかった」側に寄せる
-- [ ] [D-20260830-0423-explore-fast-crash-input-consumption](D-20260830-0423-explore-fast-crash-input-consumption.md) — 探索の入力消費を打ち切る基準は「瞬時クラッシュ」で切る
-- [ ] [D-20260830-0410-explore-crash-out-of-scope](D-20260830-0410-explore-crash-out-of-scope.md) — 探索セッションの瞬時クラッシュは crash-backoff の対象に含めない
-- [ ] [D-20260830-0311-deny-prompt-consistency-granularity](D-20260830-0311-deny-prompt-consistency-granularity.md) — deny リストと PROMPT.md の一致は対応表 + inline code トークンの集合比較で検査する
-- [ ] [D-20260830-0303-phase4-consent-granularity](D-20260830-0303-phase4-consent-granularity.md) — フェーズ 4 の個別確認をリリースノート粒度で運用する
+- [x] [D-20260830-0439-liveness-unreadable-record](D-20260830-0439-liveness-unreadable-record.md) — 生存記録の壊れた JSON・型不正は「読めなかった」側に寄せる
+- [x] [D-20260830-0423-explore-fast-crash-input-consumption](D-20260830-0423-explore-fast-crash-input-consumption.md) — 探索の入力消費を打ち切る基準は「瞬時クラッシュ」で切る
+- [x] [D-20260830-0410-explore-crash-out-of-scope](D-20260830-0410-explore-crash-out-of-scope.md) — 探索セッションの瞬時クラッシュは crash-backoff の対象に含めない
+- [x] [D-20260830-0311-deny-prompt-consistency-granularity](D-20260830-0311-deny-prompt-consistency-granularity.md) — deny リストと PROMPT.md の一致は対応表 + inline code トークンの集合比較で検査する
+- [x] [D-20260830-0303-phase4-consent-granularity](D-20260830-0303-phase4-consent-granularity.md) — フェーズ 4 の個別確認をリリースノート粒度で運用する
 - [x] [D-20260830-0251-installed-source-drift-always-on](D-20260830-0251-installed-source-drift-always-on.md) — 自己ホスト時の乖離警告は常時点灯を許容する
 - [x] [D-20260830-0236-phase-assessment-and-single-gate](D-20260830-0236-phase-assessment-and-single-gate.md) — ccloop 自身はフェーズ 4 と見なし、遡及ゲートは 1 通に集約する
 - [x] [D-20260830-0221-decisions-index-mechanical-merge](D-20260830-0221-decisions-index-mechanical-merge.md) — decisions/index.md のマージ衝突を 3-way マージで機械的に解決する
