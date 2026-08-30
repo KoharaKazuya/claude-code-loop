@@ -161,6 +161,8 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 
 詳細は [docs/compatibility.md](docs/compatibility.md) を参照。
 
+各バージョンで何が入ったかは [CHANGELOG.md](CHANGELOG.md) にまとまっている。
+
 ## 診断
 
 `ccloop doctor` で git / Node.js / `claude` CLI の有無、`.agent/` の存在と `schemaVersion`、state
@@ -204,6 +206,7 @@ lock はコンテナ再ビルド時に devcontainer CLI が解決し直す。
 
 ## ドキュメント
 
+- [CHANGELOG.md](CHANGELOG.md) — 各バージョンの変更点(利用者から見て何が変わったか)
 - [docs/architecture.md](docs/architecture.md) — 設計上の判断とその理由
 - [docs/compatibility.md](docs/compatibility.md) — 互換性の運用方針と既知の制約
 - [lib/prompt/PROMPT.md](lib/prompt/PROMPT.md) — 自律実行セッション共通ルール(system prompt として注入される本体)
