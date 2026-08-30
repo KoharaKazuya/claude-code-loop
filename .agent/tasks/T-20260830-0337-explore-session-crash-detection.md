@@ -1,9 +1,10 @@
 ---
 title: "探索セッションが瞬時クラッシュし続ける場合の検知有無を確定する"
-status: ready
+status: completed
 priority: 5
 dependencies: []
 retries: 0
+note: "意図的なスコープと確定(D-20260830-0410)。実装は変更せず理由をコメント・docs・テストで固定。別欠陥は T-20260830-0413 へ切り出し"
 createdAt: 2026-08-30T03:37:51.554Z
 ---
 
