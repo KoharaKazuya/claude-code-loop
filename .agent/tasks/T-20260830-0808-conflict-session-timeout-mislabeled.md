@@ -3,8 +3,8 @@ title: "衝突解消セッションが時間切れになると、失敗理由が
 status: ready
 priority: 3
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md, lib/supervisor.ts)(元: -)"
+retries: 2
+note: "失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md, lib/supervisor.ts)(元: -))"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
@@ -59,4 +59,10 @@ createdAt: 2026-08-30T08:08:20.118Z
 
 - 結果: main へのマージが衝突した(CHANGELOG.md, lib/supervisor.ts)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 2(2026-08-30T09:14:55.178Z, Supervisor 記録: 中断復旧)
+
+- 結果: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md)
+- セッションは終了処理を実行できていない。作業がコミット済み・未コミットのまま残っている可能性がある。`git log --oneline -10` と `git status` で現状を確認してから再開すること
 - この記録は機械的検出のみで、失敗原因の分析ではない
