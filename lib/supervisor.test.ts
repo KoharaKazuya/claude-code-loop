@@ -141,6 +141,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     priority: 3,
     dependencies: [],
     retries: 0,
+    conflictRetries: 0,
     createdAt: "2026-08-01T00:00:00.000Z",
     body: "本文",
     ...overrides,
@@ -154,6 +155,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     escalation: { model: "claude-fable-5", afterRetries: 2 },
     permissionMode: "auto",
     maxRetries: 3,
+    maxConflictRetries: 5,
     taskTimeoutMs: 2400000,
     maxTurns: 0,
     rateLimit: { backoffMs: 300000 },
@@ -633,6 +635,7 @@ describe("taskFromFile", () => {
       priority: 2,
       dependencies: ["T-001", "T-002"],
       retries: 1,
+      conflictRetries: 0,
       note: "進捗メモ",
       model: "sonnet",
       createdAt: "2026-08-01T00:00:00.000Z",
@@ -661,6 +664,7 @@ describe("taskFromFile", () => {
       priority: 3,
       dependencies: [],
       retries: 0,
+      conflictRetries: 0,
       createdAt: "2026-08-01T00:00:00.000Z",
       body: "本文",
     });
@@ -694,6 +698,7 @@ describe("taskFromFile", () => {
       priority: 3,
       dependencies: [],
       retries: 0,
+      conflictRetries: 0,
       createdAt: "",
       body: "本文",
     });
@@ -716,6 +721,7 @@ describe("taskFromFile", () => {
       priority: 3,
       dependencies: [],
       retries: 0,
+      conflictRetries: 0,
       createdAt: "",
       body: "本文",
     });
@@ -732,6 +738,7 @@ describe("taskFromFile", () => {
       priority: 3,
       dependencies: [],
       retries: 0,
+      conflictRetries: 0,
       createdAt: "",
       body: "本文",
     });
@@ -786,6 +793,29 @@ describe("taskFrontmatter 往復", () => {
     const restored = taskFromFile(dir, `${original.id}.md`);
 
     expect(restored).toEqual(original);
+  });
+
+  it("conflictRetries が 0 でなければ frontmatter に書き出され、往復一致する", () => {
+    const original = makeTask({
+      id: "T-012",
+      retries: 0,
+      conflictRetries: 3,
+    });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+    expect(text).toContain("conflictRetries: 3");
+    fs.writeFileSync(path.join(dir, `${original.id}.md`), text);
+    const restored = taskFromFile(dir, `${original.id}.md`);
+
+    expect(restored).toEqual(original);
+  });
+
+  it("conflictRetries が 0 のときは frontmatter に書き出さない(既存タスクファイルに無駄な行を増やさない)", () => {
+    const original = makeTask({ id: "T-013", conflictRetries: 0 });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+
+    expect(text).not.toContain("conflictRetries");
   });
 
   it("試行履歴入りの body も往復一致する", () => {
@@ -946,7 +976,13 @@ describe("recordFailure", () => {
   it("上限未満のときは ready に戻し、retries を 1 増やす", () => {
     const t = makeTask({ retries: 0 });
 
-    recordFailure(t, { maxRetries: 3, reason: "タイムアウト(1000ms)", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "タイムアウト(1000ms)",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.status).toBe("ready");
     expect(t.retries).toBe(1);
@@ -957,7 +993,13 @@ describe("recordFailure", () => {
   it("上限に達したときは failed にする", () => {
     const t = makeTask({ retries: 2 });
 
-    recordFailure(t, { maxRetries: 3, reason: "claude が異常終了", kind: "crash", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "claude が異常終了",
+      kind: "crash",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.status).toBe("failed");
     expect(t.retries).toBe(3);
@@ -967,7 +1009,13 @@ describe("recordFailure", () => {
   it("note に前 note が (元: ...) として含まれる", () => {
     const t = makeTask({ retries: 0, note: "前回の note" });
 
-    recordFailure(t, { maxRetries: 3, reason: "理由", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "理由",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.note).toContain("(元: 前回の note)");
   });
@@ -975,7 +1023,13 @@ describe("recordFailure", () => {
   it("前 note が undefined のときは (元: -) になる", () => {
     const t = makeTask({ retries: 0, note: undefined });
 
-    recordFailure(t, { maxRetries: 3, reason: "理由", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "理由",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.note).toContain("(元: -)");
   });
@@ -984,7 +1038,13 @@ describe("recordFailure", () => {
     const longNote = "あ".repeat(100);
     const t = makeTask({ retries: 0, note: longNote });
 
-    recordFailure(t, { maxRetries: 3, reason: "理由", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "理由",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.note).toContain(`(元: ${"あ".repeat(80)}…)`);
     expect(t.note).not.toContain("あ".repeat(81));
@@ -993,7 +1053,13 @@ describe("recordFailure", () => {
   it("body に ## 試行履歴 と ### 試行 1 が追加される", () => {
     const t = makeTask({ retries: 0, body: "本文" });
 
-    recordFailure(t, { maxRetries: 3, reason: "理由", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "理由",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.body).toContain("## 試行履歴");
     expect(t.body).toContain("### 試行 1(");
@@ -1002,8 +1068,20 @@ describe("recordFailure", () => {
   it("2 回連続で呼ぶと見出しは 1 つのままエントリが 2 つ増える", () => {
     const t = makeTask({ retries: 0, body: "本文" });
 
-    recordFailure(t, { maxRetries: 5, reason: "1 回目", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
-    recordFailure(t, { maxRetries: 5, reason: "2 回目", kind: "crash", at: "2026-08-14T01:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 5,
+      maxConflictRetries: 5,
+      reason: "1 回目",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
+    recordFailure(t, {
+      maxRetries: 5,
+      maxConflictRetries: 5,
+      reason: "2 回目",
+      kind: "crash",
+      at: "2026-08-14T01:00:00.000Z",
+    });
 
     expect(t.body.match(/## 試行履歴/g)).toHaveLength(1);
     expect(t.body).toContain("### 試行 1(");
@@ -1013,9 +1091,117 @@ describe("recordFailure", () => {
   it("kind=timeout の定型文(git log 確認)が body に含まれる", () => {
     const t = makeTask({ retries: 0, body: "本文" });
 
-    recordFailure(t, { maxRetries: 3, reason: "理由", kind: "timeout", at: "2026-08-14T00:00:00.000Z" });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "理由",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
 
     expect(t.body).toContain("git log --oneline -10");
+  });
+
+  it("kind=merge-conflict のときは retries を増やさず conflictRetries を 1 増やす", () => {
+    const t = makeTask({ retries: 0, conflictRetries: 0 });
+
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "マージが衝突した",
+      kind: "merge-conflict",
+      at: "2026-08-14T00:00:00.000Z",
+    });
+
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
+    expect(t.status).toBe("ready");
+    expect(t.note).toContain("マージ衝突が続くため ready に戻す(1/5)");
+  });
+
+  it("maxRetries を超えない範囲でマージ衝突を繰り返しても failed にならない(本来のやり直し回数を食わない)", () => {
+    const t = makeTask({ retries: 0, conflictRetries: 0 });
+
+    // maxRetries は 1(= 1 回でも本来の失敗が起きれば即 failed になる厳しい設定)だが、
+    // 起きているのは全てマージ衝突なので retries は増えず、failed にもならない
+    for (let i = 0; i < 4; i++) {
+      recordFailure(t, {
+        maxRetries: 1,
+        maxConflictRetries: 5,
+        reason: `衝突 ${i + 1} 回目`,
+        kind: "merge-conflict",
+        at: "2026-08-14T00:00:00.000Z",
+      });
+    }
+
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(4);
+    expect(t.status).toBe("ready");
+  });
+
+  it("conflictRetries が maxConflictRetries に達したら failed になる", () => {
+    const t = makeTask({ retries: 0, conflictRetries: 4 });
+
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "マージが衝突した",
+      kind: "merge-conflict",
+      at: "2026-08-14T00:00:00.000Z",
+    });
+
+    expect(t.status).toBe("failed");
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(5);
+    expect(t.note).toContain("マージ衝突が上限(5)に達した");
+  });
+
+  it("kind=merge-conflict 以外では従来どおり retries が増え conflictRetries は変わらない", () => {
+    const t = makeTask({ retries: 0, conflictRetries: 2 });
+
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "タイムアウト",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
+
+    expect(t.retries).toBe(1);
+    expect(t.conflictRetries).toBe(2);
+  });
+
+  it("試行履歴のエントリ番号は retries と conflictRetries の合計で通し番号になる", () => {
+    const t = makeTask({ retries: 0, conflictRetries: 0, body: "本文" });
+
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "1 回目(通常失敗)",
+      kind: "timeout",
+      at: "2026-08-14T00:00:00.000Z",
+    });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "2 回目(マージ衝突)",
+      kind: "merge-conflict",
+      at: "2026-08-14T01:00:00.000Z",
+    });
+    recordFailure(t, {
+      maxRetries: 3,
+      maxConflictRetries: 5,
+      reason: "3 回目(通常失敗)",
+      kind: "timeout",
+      at: "2026-08-14T02:00:00.000Z",
+    });
+
+    expect(t.retries).toBe(2);
+    expect(t.conflictRetries).toBe(1);
+    expect(t.body).toContain("### 試行 1(");
+    expect(t.body).toContain("### 試行 2(");
+    expect(t.body).toContain("### 試行 3(");
+    expect(t.body.match(/## 試行履歴/g)).toHaveLength(1);
   });
 });
 
@@ -1046,6 +1232,25 @@ describe("retryContextSection", () => {
     const [section] = retryContextSection(config, task);
 
     expect(section).toContain("直前の失敗: 記録なし");
+  });
+
+  it("retries=0 でも conflictRetries>0 なら注入する(衝突での試行も過去試行として扱う)", () => {
+    const config = makeConfig({ maxRetries: 3, maxConflictRetries: 5 });
+    const task = makeTask({ retries: 0, conflictRetries: 2 });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).toContain("3 回目の試行");
+    expect(section).toContain("マージ衝突 2 回(上限 5)");
+  });
+
+  it("conflictRetries=0 のときはマージ衝突の表記を含まない", () => {
+    const config = makeConfig({ maxRetries: 3 });
+    const task = makeTask({ retries: 1, conflictRetries: 0 });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).not.toContain("マージ衝突");
   });
 
   it("直前の失敗が timeout のときは分割を促す文言を含む", () => {

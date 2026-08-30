@@ -104,8 +104,8 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
 
   retry: `使い方: ccloop [--repo <path>] retry <タスクID>
 
-failed / blocked のタスクを再実行対象に戻す: status を ready に、retries を 0 にする
-(snoozeUntil が設定されていれば併せて解除する)。実行中のタスクは対象外。
+failed / blocked のタスクを再実行対象に戻す: status を ready に、retries と conflictRetries を
+0 にする(snoozeUntil が設定されていれば併せて解除する)。実行中のタスクは対象外。
 戻す前に、そのタスクの直前の失敗理由(note と本文の「## 試行履歴」の最後の記録)を表示する。
 
 オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,

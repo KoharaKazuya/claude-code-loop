@@ -559,7 +559,9 @@ describe("ccloop retry(子プロセスで検証)", () => {
     const result = run(["retry", id]);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0)。`);
+    expect(result.stdout).toContain(
+      `タスク ${id} を再実行対象に戻しました(status: ready / retries: 0 / conflictRetries: 0)。`,
+    );
     const text = fs.readFileSync(path.join(tasksDir, `${id}.md`), "utf8");
     expect(text).toContain("status: ready");
     expect(text).toContain("retries: 0");

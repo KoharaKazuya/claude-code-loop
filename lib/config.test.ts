@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig, defaultWorktreeDir, loadConfigFrom, normalizeConfig, validateConfig } from "./config.ts";
-import { V1_DEFAULTS } from "./migrations.ts";
+import { V1_DEFAULTS, V2_DEFAULTS } from "./migrations.ts";
 import { stateDirFor } from "./paths.ts";
 
 /** このリポジトリのルート(lib/ の 1 つ上) */
@@ -46,6 +46,7 @@ describe("defaultConfig", () => {
     expect(config.escalation).toEqual(V1_DEFAULTS.escalation);
     expect(config.permissionMode).toEqual(V1_DEFAULTS.permissionMode);
     expect(config.maxRetries).toEqual(V1_DEFAULTS.maxRetries);
+    expect(config.maxConflictRetries).toEqual(V2_DEFAULTS.maxConflictRetries);
     expect(config.taskTimeoutMs).toEqual(V1_DEFAULTS.taskTimeoutMs);
     expect(config.maxTurns).toEqual(V1_DEFAULTS.maxTurns);
     expect(config.rateLimit).toEqual(V1_DEFAULTS.rateLimit);
@@ -66,6 +67,7 @@ describe("defaultConfig", () => {
     expect(config.escalation).toEqual(template.escalation);
     expect(config.permissionMode).toEqual(template.permissionMode);
     expect(config.maxRetries).toEqual(template.maxRetries);
+    expect(config.maxConflictRetries).toEqual(template.maxConflictRetries);
     expect(config.taskTimeoutMs).toEqual(template.taskTimeoutMs);
     expect(config.maxTurns).toEqual(template.maxTurns);
     expect(config.rateLimit).toEqual(template.rateLimit);
@@ -153,8 +155,10 @@ describe("validateConfig", () => {
     expect(issues.some((m) => m.includes("escalation"))).toBe(true);
   });
 
-  it("triage / parallel / schemaVersion は検査しない(既存の寛容な正規化に任せる)", () => {
-    const issues = validateConfig(validRaw({ triage: "broken", parallel: 123, schemaVersion: "x" }));
+  it("triage / parallel / schemaVersion / maxConflictRetries は検査しない(既存の寛容な正規化に任せる)", () => {
+    const issues = validateConfig(
+      validRaw({ triage: "broken", parallel: 123, schemaVersion: "x", maxConflictRetries: "broken" }),
+    );
     expect(issues).toEqual([]);
   });
 });
@@ -241,6 +245,22 @@ describe("normalizeConfig", () => {
   it("triage.model が空文字・非文字列なら既定の haiku にする", () => {
     expect(normalizeConfig(validRaw({ triage: { model: "" } }), root).triage.model).toBe("haiku");
     expect(normalizeConfig(validRaw({ triage: { model: 1 } }), root).triage.model).toBe("haiku");
+  });
+
+  it("maxConflictRetries が無い既存の config.json 形式は既定値 5 で埋める", () => {
+    const config = normalizeConfig(validRaw(), root);
+    expect(config.maxConflictRetries).toBe(5);
+  });
+
+  it("maxConflictRetries を明示すればそれを使う", () => {
+    const config = normalizeConfig(validRaw({ maxConflictRetries: 10 }), root);
+    expect(config.maxConflictRetries).toBe(10);
+  });
+
+  it("maxConflictRetries が数値でない・負数なら既定値 5 にする", () => {
+    expect(normalizeConfig(validRaw({ maxConflictRetries: "5" }), root).maxConflictRetries).toBe(5);
+    expect(normalizeConfig(validRaw({ maxConflictRetries: -1 }), root).maxConflictRetries).toBe(5);
+    expect(normalizeConfig(validRaw({ maxConflictRetries: 1.5 }), root).maxConflictRetries).toBe(5);
   });
 
   it("不正な config は例外を投げ、メッセージに問題の項目名を含む", () => {

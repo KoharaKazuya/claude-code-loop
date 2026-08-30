@@ -15,7 +15,7 @@
  */
 
 /** ツール本体が理解する最新のスキーマ版数 */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * schemaVersion 0 → 1 で「あるべき」top-level キーと既定値。
@@ -35,6 +35,15 @@ export const V1_DEFAULTS: Readonly<Record<string, unknown>> = {
   triage: { enabled: true, model: "haiku" },
   idlePollMs: 60_000,
   parallel: { maxSessions: 4 },
+};
+
+/**
+ * schemaVersion 1 → 2 で「あるべき」top-level キーと既定値。
+ * 1→2 も 0→1 と同じくフィールド追加のみの移行であり、既存の値は決して書き換えない。
+ * 値は `lib/templates/agent/config.json` と同じで、テストで一致を検査している。
+ */
+export const V2_DEFAULTS: Readonly<Record<string, unknown>> = {
+  maxConflictRetries: 5,
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -90,6 +99,22 @@ const MIGRATIONS: readonly Migration[] = [
       }
       next.schemaVersion = 1;
       changes.push("schemaVersion を 1 に設定");
+      return { config: next, changes };
+    },
+  },
+  {
+    from: 1,
+    to: 2,
+    apply(config) {
+      const changes: string[] = [];
+      const next: Record<string, unknown> = { ...config };
+      for (const [key, value] of Object.entries(V2_DEFAULTS)) {
+        if (Object.hasOwn(config, key)) continue;
+        next[key] = value;
+        changes.push(`${key} を既定値で追加: ${JSON.stringify(value)}`);
+      }
+      next.schemaVersion = 2;
+      changes.push("schemaVersion を 2 に設定");
       return { config: next, changes };
     },
   },
