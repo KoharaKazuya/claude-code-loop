@@ -231,6 +231,18 @@ ccloop は `.ts` をビルドせず Node の型ストリップ機能で直接実
 成果物の生成・配布を気にしなくてよい)。この前提により、実行環境には型ストリップが既定で有効な
 Node.js のバージョン(24 以上、または 22.18 以上)が要る。
 
+## テスト実行元セッションの環境変数を継承しない理由
+
+このリポジトリは ccloop 自身で自律運用されているため、`npm test` を実行するセッション自体が
+`CLAUDE_AGENT_SESSION_KIND` / `CLAUDE_AGENT_AUTONOMOUS` / `CLAUDE_AGENT_TASK_ID` などの環境変数を
+持っている。テストコードは Supervisor が spawn する hook やコマンドの挙動を検証するために子プロセスを
+起動するが、その env を素の `process.env` から組み立てると、実行元セッションが持つこれらの変数が
+そのまま漏れ込み、被テストコード側の「セッション種別による分岐」を検証意図と無関係に変えてしまう。
+
+そのため vitest の setupFiles(`lib/test-setup.ts`)で `CLAUDE_AGENT_*` を一括削除し、各テストが
+明示的に指定した値だけが子プロセスに渡るようにしている。これにより `npm test` は実行元セッションの
+状態(対話セッションか、どのタスクを担当しているか等)に依存せず再現可能になる。
+
 ## `.agent/` 記録ファイルの ID を連番でなく日時 + slug にする理由
 
 `.agent/tasks/` `.agent/decisions/` `.agent/human-review/` の ID(= ファイル名)は

@@ -1,9 +1,10 @@
 ---
 title: "テストが親セッションの CLAUDE_AGENT_* を継承して失敗する問題を直す"
-status: ready
+status: completed
 priority: 1
 dependencies: []
 retries: 0
+note: "lib/test-setup.ts で CLAUDE_AGENT_* を一括削除。自律実行セッション内の素の npm test で 767 件全通過"
 createdAt: 2026-08-30T02:54:00.229Z
 ---
 
