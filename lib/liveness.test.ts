@@ -4,13 +4,17 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearRunnerRecord,
+  describeLoopLiveness,
   evaluateLoopLiveness,
   isProcessAlive,
   parseProcStatStartTime,
   readRunnerRecord,
   writeRunnerRecord,
   type RunnerRecord,
+  type RunnerRecordRead,
 } from "./liveness.ts";
+
+const asRead = (r: RunnerRecord): RunnerRecordRead => ({ kind: "record", record: r });
 
 describe("evaluateLoopLiveness", () => {
   const NOW = new Date("2026-08-30T12:00:00.000Z");
@@ -28,12 +32,25 @@ describe("evaluateLoopLiveness", () => {
   }
 
   it("記録が無ければ stopped/no-record", () => {
-    const result = evaluateLoopLiveness(null, NOW, { hostname: HOST, isAlive: () => true });
+    const result = evaluateLoopLiveness({ kind: "absent" }, NOW, { hostname: HOST, isAlive: () => true });
     expect(result).toEqual({ status: "stopped", reason: "no-record" });
   });
 
+  it("記録が読めなければ isAlive が true でも unknown/record-unreadable", () => {
+    const result = evaluateLoopLiveness(
+      { kind: "unreadable", detail: "内容が JSON として壊れています" },
+      NOW,
+      { hostname: HOST, isAlive: () => true },
+    );
+    expect(result).toEqual({
+      status: "unknown",
+      reason: "record-unreadable",
+      detail: "内容が JSON として壊れています",
+    });
+  });
+
   it("ホスト名が一致しなければ isAlive が true でも unknown/foreign-host が優先される", () => {
-    const result = evaluateLoopLiveness(record({ host: "other-host" }), NOW, {
+    const result = evaluateLoopLiveness(asRead(record({ host: "other-host" })), NOW, {
       hostname: HOST,
       isAlive: () => true,
     });
@@ -42,13 +59,13 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("同ホストだが異常終了で記録が残ったまま(PID が存在しない)なら stopped/process-gone", () => {
-    const result = evaluateLoopLiveness(record(), NOW, { hostname: HOST, isAlive: () => false });
+    const result = evaluateLoopLiveness(asRead(record()), NOW, { hostname: HOST, isAlive: () => false });
     expect(result).toMatchObject({ status: "stopped", reason: "process-gone", pid: 1234 });
   });
 
   it("同ホスト・PID 存在・心拍がしきい値を超えて古ければ unknown/heartbeat-stale", () => {
     const result = evaluateLoopLiveness(
-      record({ heartbeatAt: "2026-08-30T11:00:00.000Z" }), // 1 時間前
+      asRead(record({ heartbeatAt: "2026-08-30T11:00:00.000Z" })), // 1 時間前
       NOW,
       { hostname: HOST, isAlive: () => true },
     );
@@ -56,7 +73,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("同ホスト・PID 存在・心拍が新しければ running", () => {
-    const result = evaluateLoopLiveness(record(), NOW, { hostname: HOST, isAlive: () => true });
+    const result = evaluateLoopLiveness(asRead(record()), NOW, { hostname: HOST, isAlive: () => true });
     expect(result).toEqual({
       status: "running",
       pid: 1234,
@@ -66,7 +83,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("heartbeatAt がパースできない文字列なら unknown/heartbeat-stale", () => {
-    const result = evaluateLoopLiveness(record({ heartbeatAt: "not-a-date" }), NOW, {
+    const result = evaluateLoopLiveness(asRead(record({ heartbeatAt: "not-a-date" })), NOW, {
       hostname: HOST,
       isAlive: () => true,
     });
@@ -76,7 +93,7 @@ describe("evaluateLoopLiveness", () => {
   it("しきい値の下限は 5 分。heartbeatIntervalMs=1000 でも 4 分前の心拍なら running", () => {
     const fourMinutesAgo = new Date(NOW.getTime() - 4 * 60_000).toISOString();
     const result = evaluateLoopLiveness(
-      record({ heartbeatIntervalMs: 1_000, heartbeatAt: fourMinutesAgo }),
+      asRead(record({ heartbeatIntervalMs: 1_000, heartbeatAt: fourMinutesAgo })),
       NOW,
       { hostname: HOST, isAlive: () => true },
     );
@@ -84,7 +101,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("procStartToken が記録と食い違えば PID の使い回しとみなし stopped/process-gone", () => {
-    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+    const result = evaluateLoopLiveness(asRead(record({ procStartToken: "111" })), NOW, {
       hostname: HOST,
       isAlive: () => true,
       readProcStartToken: () => "222",
@@ -93,7 +110,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("procStartToken が記録と一致すれば従来どおり running", () => {
-    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+    const result = evaluateLoopLiveness(asRead(record({ procStartToken: "111" })), NOW, {
       hostname: HOST,
       isAlive: () => true,
       readProcStartToken: () => "111",
@@ -102,7 +119,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("記録に procStartToken が無ければ照合をスキップして従来どおりの判定になる", () => {
-    const result = evaluateLoopLiveness(record(), NOW, {
+    const result = evaluateLoopLiveness(asRead(record()), NOW, {
       hostname: HOST,
       isAlive: () => true,
       readProcStartToken: () => "222", // 現在値は取れるが記録に無いので使われない
@@ -111,7 +128,7 @@ describe("evaluateLoopLiveness", () => {
   });
 
   it("現在の procStartToken が取れない(null)場合も照合をスキップして従来どおりの判定になる", () => {
-    const result = evaluateLoopLiveness(record({ procStartToken: "111" }), NOW, {
+    const result = evaluateLoopLiveness(asRead(record({ procStartToken: "111" })), NOW, {
       hostname: HOST,
       isAlive: () => true,
       readProcStartToken: () => null,
@@ -172,19 +189,25 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
       heartbeatIntervalMs: 3_000,
     };
     writeRunnerRecord(file, rec);
-    expect(readRunnerRecord(file)).toEqual(rec);
+    expect(readRunnerRecord(file)).toEqual({ kind: "record", record: rec });
   });
 
-  it("存在しないファイルは null", () => {
-    expect(readRunnerRecord(path.join(dir, "nope.json"))).toBeNull();
+  it("存在しないファイルは kind: absent", () => {
+    expect(readRunnerRecord(path.join(dir, "nope.json"))).toEqual({ kind: "absent" });
   });
 
-  it("壊れた JSON は null", () => {
+  it("ディレクトリを指すパス(EISDIR)は kind: unreadable", () => {
+    const result = readRunnerRecord(dir);
+    expect(result.kind).toBe("unreadable");
+  });
+
+  it("壊れた JSON は kind: unreadable", () => {
     fs.writeFileSync(file, "{ not json");
-    expect(readRunnerRecord(file)).toBeNull();
+    const result = readRunnerRecord(file);
+    expect(result).toEqual({ kind: "unreadable", detail: "内容が JSON として壊れています" });
   });
 
-  it("pid が文字列など不正なら null", () => {
+  it("pid が文字列など不正なら kind: unreadable", () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
@@ -195,7 +218,8 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
         heartbeatIntervalMs: 3_000,
       }),
     );
-    expect(readRunnerRecord(file)).toBeNull();
+    const result = readRunnerRecord(file);
+    expect(result).toEqual({ kind: "unreadable", detail: "記録の形式が想定と異なります" });
   });
 
   it("procStartToken を含めて write したものを read すると同じ内容が戻る", () => {
@@ -208,10 +232,10 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
       procStartToken: "98765",
     };
     writeRunnerRecord(file, rec);
-    expect(readRunnerRecord(file)).toEqual(rec);
+    expect(readRunnerRecord(file)).toEqual({ kind: "record", record: rec });
   });
 
-  it("procStartToken が文字列以外(不正な型)なら null", () => {
+  it("procStartToken が文字列以外(不正な型)なら kind: unreadable", () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
@@ -223,7 +247,8 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
         procStartToken: 98765,
       }),
     );
-    expect(readRunnerRecord(file)).toBeNull();
+    const result = readRunnerRecord(file);
+    expect(result).toEqual({ kind: "unreadable", detail: "記録の形式が想定と異なります" });
   });
 
   it("heartbeatIntervalMs が欠落していたら 60_000 で補われる", () => {
@@ -236,10 +261,10 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
         host: "host-a",
       }),
     );
-    expect(readRunnerRecord(file)).toMatchObject({ heartbeatIntervalMs: 60_000 });
+    expect(readRunnerRecord(file)).toMatchObject({ record: { heartbeatIntervalMs: 60_000 } });
   });
 
-  it("clear した後は null", () => {
+  it("clear した後は kind: absent", () => {
     writeRunnerRecord(file, {
       pid: 4321,
       startedAt: "2026-08-30T10:00:00.000Z",
@@ -248,7 +273,19 @@ describe("readRunnerRecord / writeRunnerRecord / clearRunnerRecord", () => {
       heartbeatIntervalMs: 3_000,
     });
     clearRunnerRecord(file);
-    expect(readRunnerRecord(file)).toBeNull();
+    expect(readRunnerRecord(file)).toEqual({ kind: "absent" });
+  });
+});
+
+describe("describeLoopLiveness", () => {
+  it("record-unreadable は「不明」を含み detail を含む文言になる", () => {
+    const text = describeLoopLiveness({
+      status: "unknown",
+      reason: "record-unreadable",
+      detail: "内容が JSON として壊れています",
+    });
+    expect(text).toContain("不明");
+    expect(text).toContain("内容が JSON として壊れています");
   });
 });
 

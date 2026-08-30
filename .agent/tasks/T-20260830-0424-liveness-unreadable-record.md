@@ -1,9 +1,10 @@
 ---
 title: "生存記録が読めないときは「動いていません」ではなく「不明」と出す"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "読み取り結果を absent / unreadable / record に分け、読めない場合は unknown/record-unreadable にした"
 createdAt: 2026-08-30T04:24:47.276Z
 ---
 
