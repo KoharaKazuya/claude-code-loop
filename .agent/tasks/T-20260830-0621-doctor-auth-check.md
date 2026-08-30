@@ -1,9 +1,10 @@
 ---
 title: "ccloop doctor に Claude へのログイン状態の確認を足す"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "claude auth status --json で判定。疑わしいときは必須にしない倒し方。typecheck/lint/test 通過"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 

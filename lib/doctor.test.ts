@@ -4,7 +4,9 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type CheckResult,
+  checkClaudeAuth,
   collectChecks,
+  type CommandProbe,
   formatCheck,
   hasRequiredFailure,
   probeCommand,
@@ -15,8 +17,14 @@ import { AGENT_DIR_NAME, createPaths, type Paths } from "./paths.ts";
 
 const HOME = import.meta.dirname;
 
-/** 全コマンドが存在する環境を模した probe */
-const okProbe: ProbeFn = (command) => ({ ok: true, output: `${command} 1.2.3` });
+/** 全コマンドが存在する環境を模した probe(ログイン済みの `claude auth status --json` も含む) */
+const okProbe: ProbeFn = (command, args) => {
+  if (args[0] === "auth") {
+    const stdout = JSON.stringify({ loggedIn: true, authMethod: "claude.ai" });
+    return { ok: true, output: stdout, stdout };
+  }
+  return { ok: true, output: `${command} 1.2.3` };
+};
 
 function find(results: CheckResult[], prefix: string): CheckResult {
   const hit = results.find((r) => r.name.startsWith(prefix));
@@ -44,9 +52,36 @@ describe("collectChecks", () => {
 
     expect(results.filter((r) => !r.ok)).toEqual([]);
     expect(hasRequiredFailure(results)).toBe(false);
-    for (const name of ["対象リポジトリ", "git", "node", "claude", ".agent/", "state ディレクトリ", "CCLOOP_HOME"]) {
+    for (const name of [
+      "対象リポジトリ",
+      "git",
+      "node",
+      "claude",
+      "claude ログイン状態",
+      ".agent/",
+      "state ディレクトリ",
+      "CCLOOP_HOME",
+    ]) {
       expect(find(results, name).ok).toBe(true);
     }
+  });
+
+  it("claude の --version probe が失敗すればログイン状態の項目は現れない", () => {
+    applyInit(paths, planInit(paths, HOME));
+    const probe: ProbeFn = (command) =>
+      command === "git" ? { ok: true, output: "git version 2.43.0" } : { ok: false, output: "ENOENT" };
+
+    const results = collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe });
+
+    expect(results.some((r) => r.name === "claude ログイン状態")).toBe(false);
+  });
+
+  it("claude の --version probe が成功すればログイン状態の項目が現れる", () => {
+    applyInit(paths, planInit(paths, HOME));
+
+    const results = collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe, env: {} });
+
+    expect(results.some((r) => r.name === "claude ログイン状態")).toBe(true);
   });
 
   it("claude が無ければ ✗ になり、終了コード 1 の条件を満たす", () => {
@@ -223,6 +258,109 @@ describe("collectChecks", () => {
 
     expect(probed).toContain("my-claude");
     expect(find(results, "claude").name).toBe("claude (my-claude)");
+  });
+});
+
+describe("checkClaudeAuth", () => {
+  function probeOf(stdout: string): CommandProbe {
+    return { ok: true, output: stdout.trim().split("\n")[0] ?? "", stdout: stdout.trim() };
+  }
+
+  it("JSON を parse できなければ判定できない扱いにし、必須にしない", () => {
+    const result = checkClaudeAuth(probeOf("not json"), {});
+
+    expect(result.name).toBe("claude ログイン状態");
+    expect(result.ok).toBe(false);
+    expect(result.required).toBe(false);
+  });
+
+  it("loggedIn が boolean でなければ判定できない扱いにし、必須にしない", () => {
+    const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: "yes" })), {});
+
+    expect(result.ok).toBe(false);
+    expect(result.required).toBe(false);
+  });
+
+  it("loggedIn: true ならログイン済みとして ok/必須", () => {
+    const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), {});
+
+    expect(result.ok).toBe(true);
+    expect(result.required).toBe(true);
+    expect(result.detail).toContain("claude.ai");
+  });
+
+  it("loggedIn: false でも JSON の apiKeySource があれば問題として扱わない", () => {
+    const result = checkClaudeAuth(
+      probeOf(JSON.stringify({ loggedIn: false, apiKeySource: "ANTHROPIC_API_KEY" })),
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.required).toBe(true);
+    expect(result.detail).toContain("ANTHROPIC_API_KEY");
+  });
+
+  it("loggedIn: false でも API キー系の環境変数があれば問題として扱わない", () => {
+    const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: false })), {
+      ANTHROPIC_API_KEY: "sk-xxx",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.required).toBe(true);
+  });
+
+  it("JSON として妥当だがオブジェクトでない出力でも例外を投げず判定できない扱いにする", () => {
+    for (const raw of ["null", "[]", "42", '"text"']) {
+      const result = checkClaudeAuth(probeOf(raw), {});
+
+      expect(result.ok).toBe(false);
+      expect(result.required).toBe(false);
+    }
+  });
+
+  it("明示的に無効化された CLAUDE_CODE_USE_BEDROCK は手がかりとして数えない", () => {
+    for (const value of ["0", "false", "False"]) {
+      const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: false })), {
+        CLAUDE_CODE_USE_BEDROCK: value,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.required).toBe(true);
+    }
+  });
+
+  it("有効な CLAUDE_CODE_USE_BEDROCK は手がかりとして数える", () => {
+    const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: false })), {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("loggedIn: false で手がかりが無ければ未ログインとして必須の ✗ にする", () => {
+    const result = checkClaudeAuth(probeOf(JSON.stringify({ loggedIn: false })), {});
+
+    expect(result.ok).toBe(false);
+    expect(result.required).toBe(true);
+    expect(result.detail).toContain("claude auth login");
+  });
+
+  it("output の 1 行目だけでは壊れる複数行 JSON でも stdout 全文から parse できる", () => {
+    const json = JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }, null, 2);
+    const probe: CommandProbe = { ok: true, output: json.split("\n")[0] ?? "", stdout: json };
+
+    const result = checkClaudeAuth(probe, {});
+
+    expect(result.ok).toBe(true);
+    expect(result.required).toBe(true);
+  });
+
+  it("stdout が無ければ output(1 行目)を代わりに使う", () => {
+    const probe: CommandProbe = { ok: true, output: JSON.stringify({ loggedIn: true }) };
+
+    const result = checkClaudeAuth(probe, {});
+
+    expect(result.ok).toBe(true);
   });
 });
 

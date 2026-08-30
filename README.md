@@ -175,8 +175,8 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 
 ## 診断
 
-`ccloop doctor` で git / Node.js / `claude` CLI の有無、`.agent/` の存在と `schemaVersion`、state
-ディレクトリへの書き込み可否を検査できる。
+`ccloop doctor` で git / Node.js / `claude` CLI の有無、`claude` へのログイン状態、`.agent/` の存在と
+`schemaVersion`、state ディレクトリへの書き込み可否を検査できる。
 
 ## セッションログを追う
 
