@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkNodeVersion, readConfigRaw, readVersion, splitGlobalOptions } from "./cli.ts";
-import { SUBCOMMAND_HELP, TOP_LEVEL_HELP } from "./help.ts";
+import { SUBCOMMAND_HELP, TOP_LEVEL_HELP, usageOf } from "./help.ts";
 import { createPaths, type Paths } from "./paths.ts";
 
 describe("splitGlobalOptions", () => {
@@ -258,6 +258,50 @@ describe("--help / -h(子プロセスで検証)", () => {
   it("list --help はオプション --full を含む", () => {
     const result = run(["list", "--help"]);
     expect(result.stdout).toContain("--full");
+  });
+});
+
+describe("usageOf", () => {
+  it("add の使い方ブロックは ccloop を含み supervisor.ts を含まない", () => {
+    const usage = usageOf("add");
+    expect(usage).toContain("ccloop");
+    expect(usage).not.toContain("supervisor.ts");
+  });
+
+  it("add の使い方ブロックはオプション行(--slug)まで含む複数行になる", () => {
+    const usage = usageOf("add");
+    const lines = usage.split("\n");
+    expect(lines.length).toBeGreaterThan(1);
+    expect(usage).toContain("--slug");
+  });
+
+  it("未知のサブコマンドを渡すと例外を投げる", () => {
+    expect(() => usageOf("no-such-subcommand")).toThrow();
+  });
+});
+
+describe("main: add はタイトル未指定でエラー(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-add-usage-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("`ccloop add`(タイトル無し)は exit 1 で、stderr は `使い方: ccloop` で始まり supervisor.ts を含まない", () => {
+    const res = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "add"], {
+      encoding: "utf8",
+    });
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).not.toContain("supervisor.ts");
+    expect(res.stderr.startsWith("使い方: ccloop")).toBe(true);
   });
 });
 

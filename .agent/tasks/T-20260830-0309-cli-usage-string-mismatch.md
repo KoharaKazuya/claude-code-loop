@@ -1,9 +1,10 @@
 ---
 title: "add サブコマンドのエラー文言と help.ts のコメントの不一致を解消する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "対象 1 は usageOf(\"add\") 再利用で解消。対象 2 は着手時点で既に解消済み(コメントは cli.test.ts のみ参照)のため変更なし"
 createdAt: 2026-08-30T03:09:29.734Z
 ---
 
