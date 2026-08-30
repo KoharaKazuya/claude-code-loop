@@ -2,12 +2,12 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
-- [ ] [D-20260830-0801-ratelimit-under-timeout-evidence](D-20260830-0801-ratelimit-under-timeout-evidence.md) — タイムアウトに隠れた利用上限は stderr の文言だけを根拠に判定する
-- [ ] [D-20260830-0757-split-hint-covers-max-turns](D-20260830-0757-split-hint-covers-max-turns.md) — 分割を促す申し送りは時間切れとターン上限の両方に出す
-- [ ] [D-20260830-0730-conflict-resolution-anchor-strategy](D-20260830-0730-conflict-resolution-anchor-strategy.md) — マージ衝突の解消は main 先端との差分アンカーを避けて行う
-- [ ] [D-20260830-0618-stopped-loop-running-sessions-display](D-20260830-0618-stopped-loop-running-sessions-display.md) — ループ停止時の「実行中のタスク」節は経過時間を出さず記録扱いで表示する
-- [ ] [D-20260830-0614-invalid-task-files-in-action-section](D-20260830-0614-invalid-task-files-in-action-section.md) — status が不正なタスクファイルは「要対応」節の 1 セクションとして出す
-- [ ] [D-20260830-0546-is-error-treated-as-failure](D-20260830-0546-is-error-treated-as-failure.md) — 結果 JSON の is_error は失敗として扱い、ターン上限は専用の種別に分ける
+- [x] [D-20260830-0801-ratelimit-under-timeout-evidence](D-20260830-0801-ratelimit-under-timeout-evidence.md) — タイムアウトに隠れた利用上限は stderr の文言だけを根拠に判定する
+- [x] [D-20260830-0757-split-hint-covers-max-turns](D-20260830-0757-split-hint-covers-max-turns.md) — 分割を促す申し送りは時間切れとターン上限の両方に出す
+- [x] [D-20260830-0730-conflict-resolution-anchor-strategy](D-20260830-0730-conflict-resolution-anchor-strategy.md) — マージ衝突の解消は main 先端との差分アンカーを避けて行う
+- [x] [D-20260830-0618-stopped-loop-running-sessions-display](D-20260830-0618-stopped-loop-running-sessions-display.md) — ループ停止時の「実行中のタスク」節は経過時間を出さず記録扱いで表示する
+- [x] [D-20260830-0614-invalid-task-files-in-action-section](D-20260830-0614-invalid-task-files-in-action-section.md) — status が不正なタスクファイルは「要対応」節の 1 セクションとして出す
+- [x] [D-20260830-0546-is-error-treated-as-failure](D-20260830-0546-is-error-treated-as-failure.md) — 結果 JSON の is_error は失敗として扱い、ターン上限は専用の種別に分ける
 - [x] [D-20260830-0439-liveness-unreadable-record](D-20260830-0439-liveness-unreadable-record.md) — 生存記録の壊れた JSON・型不正は「読めなかった」側に寄せる
 - [x] [D-20260830-0423-explore-fast-crash-input-consumption](D-20260830-0423-explore-fast-crash-input-consumption.md) — 探索の入力消費を打ち切る基準は「瞬時クラッシュ」で切る
 - [x] [D-20260830-0410-explore-crash-out-of-scope](D-20260830-0410-explore-crash-out-of-scope.md) — 探索セッションの瞬時クラッシュは crash-backoff の対象に含めない
