@@ -316,6 +316,7 @@ describe("status --json / list --json(子プロセスで検証)", () => {
       "taskTimeoutMs",
       "maxSessions",
       "supervisorSourceStale",
+      "installedSourceDrifted",
     ]) {
       expect(data).toHaveProperty(key);
     }

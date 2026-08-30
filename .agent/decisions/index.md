@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0251-installed-source-drift-always-on](D-20260830-0251-installed-source-drift-always-on.md) — 自己ホスト時の乖離警告は常時点灯を許容する
 - [ ] [D-20260830-0236-phase-assessment-and-single-gate](D-20260830-0236-phase-assessment-and-single-gate.md) — ccloop 自身はフェーズ 4 と見なし、遡及ゲートは 1 通に集約する
 - [ ] [D-20260830-0221-decisions-index-mechanical-merge](D-20260830-0221-decisions-index-mechanical-merge.md) — decisions/index.md のマージ衝突を 3-way マージで機械的に解決する
 - [ ] [D-20260830-0209-decisions-index-approval-archive](D-20260830-0209-decisions-index-approval-archive.md) — 決定のアーカイブ条件を件数基準から人間のチェックに変更する

@@ -26,6 +26,8 @@ import {
   type ExploreContext,
   fastCrashStreakAfterWait,
   formatElapsed,
+  installedSourceDriftLines,
+  isInstalledSourceDrifted,
   isSnoozed,
   isSupervisorSourceStale,
   loadDenyRules,
@@ -60,6 +62,8 @@ import {
   type RunningSessionState,
   runningSessionLines,
   runRotate,
+  selfHostedLibDir,
+  type SelfHostedLibDirDeps,
   sessionDeadline,
   setRepoPaths,
   skipMainWriteIfGitBusy,
@@ -1411,6 +1415,126 @@ describe("isSupervisorSourceStale", () => {
 
   it("recorded と current が異なれば変化ありと判定する", () => {
     expect(isSupervisorSourceStale("abc", "xyz")).toBe(true);
+  });
+});
+
+describe("selfHostedLibDir", () => {
+  /** files: package.json のパス → 中身の文字列。それ以外は読めない扱い */
+  const depsFrom = (files: Record<string, string>, existingPaths: Set<string>): SelfHostedLibDirDeps => ({
+    exists: (p) => existingPaths.has(p),
+    readFile: (p) => files[p] ?? null,
+  });
+
+  it("name が claude-code-loop で lib/supervisor.ts があれば lib パスを返す", () => {
+    const pkgPath = path.join("/repo", "package.json");
+    const supervisorPath = path.join("/repo", "lib", "supervisor.ts");
+    const deps = depsFrom({ [pkgPath]: JSON.stringify({ name: "claude-code-loop" }) }, new Set([supervisorPath]));
+
+    expect(selfHostedLibDir("/repo", deps)).toBe(path.join("/repo", "lib"));
+  });
+
+  it("name が claude-code-loop 以外なら null", () => {
+    const pkgPath = path.join("/repo", "package.json");
+    const supervisorPath = path.join("/repo", "lib", "supervisor.ts");
+    const deps = depsFrom({ [pkgPath]: JSON.stringify({ name: "some-other-repo" }) }, new Set([supervisorPath]));
+
+    expect(selfHostedLibDir("/repo", deps)).toBeNull();
+  });
+
+  it("package.json が読めなければ null", () => {
+    const deps = depsFrom({}, new Set([path.join("/repo", "lib", "supervisor.ts")]));
+
+    expect(selfHostedLibDir("/repo", deps)).toBeNull();
+  });
+
+  it("package.json が不正な JSON なら null", () => {
+    const pkgPath = path.join("/repo", "package.json");
+    const deps = depsFrom({ [pkgPath]: "{ not json" }, new Set([path.join("/repo", "lib", "supervisor.ts")]));
+
+    expect(selfHostedLibDir("/repo", deps)).toBeNull();
+  });
+
+  it("lib/supervisor.ts が無ければ null", () => {
+    const pkgPath = path.join("/repo", "package.json");
+    const deps = depsFrom({ [pkgPath]: JSON.stringify({ name: "claude-code-loop" }) }, new Set());
+
+    expect(selfHostedLibDir("/repo", deps)).toBeNull();
+  });
+});
+
+describe("isInstalledSourceDrifted", () => {
+  it("repoLibDir が null(自己ホストでない)なら乖離なし扱い", () => {
+    expect(
+      isInstalledSourceDrifted({ repoLibDir: null, installedHome: "/usr/local/share/ccloop/lib", repoHash: "a", installedHash: "b" }),
+    ).toBe(false);
+  });
+
+  it("repoLibDir と installedHome が一致(ソースから直接起動)なら乖離なし扱い", () => {
+    expect(
+      isInstalledSourceDrifted({
+        repoLibDir: "/repo/lib",
+        installedHome: "/repo/lib",
+        repoHash: "a",
+        installedHash: "b",
+      }),
+    ).toBe(false);
+  });
+
+  it("repoHash が空(読めず判定不能)なら乖離なし扱い", () => {
+    expect(
+      isInstalledSourceDrifted({
+        repoLibDir: "/repo/lib",
+        installedHome: "/usr/local/share/ccloop/lib",
+        repoHash: "",
+        installedHash: "b",
+      }),
+    ).toBe(false);
+  });
+
+  it("installedHash が空(読めず判定不能)なら乖離なし扱い", () => {
+    expect(
+      isInstalledSourceDrifted({
+        repoLibDir: "/repo/lib",
+        installedHome: "/usr/local/share/ccloop/lib",
+        repoHash: "a",
+        installedHash: "",
+      }),
+    ).toBe(false);
+  });
+
+  it("ハッシュが一致すれば乖離なし", () => {
+    expect(
+      isInstalledSourceDrifted({
+        repoLibDir: "/repo/lib",
+        installedHome: "/usr/local/share/ccloop/lib",
+        repoHash: "abc",
+        installedHash: "abc",
+      }),
+    ).toBe(false);
+  });
+
+  it("ハッシュが異なれば乖離ありと判定する", () => {
+    expect(
+      isInstalledSourceDrifted({
+        repoLibDir: "/repo/lib",
+        installedHome: "/usr/local/share/ccloop/lib",
+        repoHash: "abc",
+        installedHash: "xyz",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("installedSourceDriftLines", () => {
+  it("drifted が false なら空配列", () => {
+    expect(installedSourceDriftLines(false)).toEqual([]);
+  });
+
+  it("drifted が true なら 1 行返し、supervisorSourceStale の警告文言とは混同しない", () => {
+    const lines = installedSourceDriftLines(true);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("supervisor のコードが起動後に変更されている");
   });
 });
 

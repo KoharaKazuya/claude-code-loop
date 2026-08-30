@@ -2191,6 +2191,71 @@ export function isSupervisorSourceStale(recorded: string | null | undefined, cur
   return recorded !== current;
 }
 
+/** ccloop 自身(claude-code-loop)のリポジトリを判定するための package.json name */
+const CCLOOP_PACKAGE_NAME = "claude-code-loop";
+
+/** selfHostedLibDir が使う fs 依存(テストからフェイクを注入できるようにする) */
+export interface SelfHostedLibDirDeps {
+  exists(p: string): boolean;
+  /** 読めなければ null */
+  readFile(p: string): string | null;
+}
+
+/**
+ * repoRoot が ccloop 自身(claude-code-loop)のリポジトリかどうかを判定し、そうであれば
+ * リポジトリ側の lib/ の絶対パスを返す(純粋)。判定できなければ null
+ * (package.json が読めない・name が一致しない・lib/supervisor.ts が無い場合を含む、通常の
+ * 利用側リポジトリ)。インストール先(ccloopHome())との乖離検出(isInstalledSourceDrifted)に使う。
+ */
+export function selfHostedLibDir(repoRoot: string, deps: SelfHostedLibDirDeps): string | null {
+  const raw = deps.readFile(path.join(repoRoot, "package.json"));
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || (parsed as { name?: unknown }).name !== CCLOOP_PACKAGE_NAME) {
+    return null;
+  }
+  const libDir = path.join(repoRoot, "lib");
+  if (!deps.exists(path.join(libDir, "supervisor.ts"))) return null;
+  return libDir;
+}
+
+/**
+ * リポジトリの lib/(自己ホスト時のみ)とインストール済み ccloop のソースが乖離しているか(純粋)。
+ * isSupervisorSourceStale とは異なり、「run 起動時からの変化」ではなく「リポジトリと
+ * インストール先という 2 箇所のソースの不一致」を見る。乖離していれば、リポジトリの lib/ を
+ * 変更してもコンテナを再ビルドするまで稼働中の ccloop コマンドには反映されない。
+ * 判定不能・比較不能なケースはすべて「乖離なし」に倒す(誤検知で無用な警告を出さないため)。
+ */
+export function isInstalledSourceDrifted(args: {
+  repoLibDir: string | null;
+  installedHome: string;
+  repoHash: string;
+  installedHash: string;
+}): boolean {
+  const { repoLibDir, installedHome, repoHash, installedHash } = args;
+  if (repoLibDir === null) return false;
+  if (repoLibDir === installedHome) return false;
+  if (repoHash === "" || installedHash === "") return false;
+  return repoHash !== installedHash;
+}
+
+/**
+ * isInstalledSourceDrifted の結果を status 表示行に整形する。drifted が false なら空配列。
+ * isSupervisorSourceStale の警告(起動後にソースが変わった)とは別の事象を指すため、文言を
+ * 混同しないようにする。
+ */
+export function installedSourceDriftLines(drifted: boolean): string[] {
+  if (!drifted) return [];
+  return [
+    "  ※ インストール済みの ccloop がこのリポジトリの lib/ と一致していない — リポジトリの変更を ccloop コマンドに反映するにはコンテナの再ビルドが必要 (docs/architecture.md「リポジトリの lib/ 変更を ccloop コマンドへ反映する」参照)",
+  ];
+}
+
 function readGoal(): string {
   const goalPath = repoPaths().goalPath;
   return fs.existsSync(goalPath) ? fs.readFileSync(goalPath, "utf8") : "";
@@ -4144,6 +4209,17 @@ export interface StatusData {
   maxSessions: number;
   /** 起動中の supervisor のソースが、現在のソースと異なるか(再起動が必要か) */
   supervisorSourceStale: boolean;
+  /** インストール済みの ccloop がこのリポジトリの lib/ と乖離しているか(自己ホスト時のみ判定) */
+  installedSourceDrifted: boolean;
+}
+
+/** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
+function realpathOrSelf(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /**
@@ -4184,7 +4260,33 @@ export function collectStatusData(now: Date): StatusData {
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
   const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
   const metrics = loadMetrics();
-  const supervisorSourceStale = isSupervisorSourceStale(state.supervisorSourceHash, supervisorSourceHash());
+  // インストール先のハッシュは 2 つの判定(起動時からの陳腐化・リポジトリとの乖離)で共用する。
+  // 走査対象は同一ディレクトリなので、watch の毎秒ポーリングで二重に走らせない
+  const installedSourceHash = supervisorSourceHash();
+  const supervisorSourceStale = isSupervisorSourceStale(state.supervisorSourceHash, installedSourceHash);
+
+  // インストール先(ccloopHome())とリポジトリの lib/ の乖離検出。自己ホストでない
+  // (= repoLibDir が null)場合や、ソースから直接起動している場合はハッシュ計算(ディレクトリ走査)
+  // 自体が無駄なので行わない
+  const installedHome = realpathOrSelf(ccloopHome());
+  const repoLibDir = selfHostedLibDir(repoPaths().root, {
+    exists: (p) => fs.existsSync(p),
+    readFile: (p) => {
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return null;
+      }
+    },
+  });
+  const resolvedRepoLibDir = repoLibDir === null ? null : realpathOrSelf(repoLibDir);
+  const needsInstalledSourceHashCompare = resolvedRepoLibDir !== null && resolvedRepoLibDir !== installedHome;
+  const installedSourceDrifted = isInstalledSourceDrifted({
+    repoLibDir: resolvedRepoLibDir,
+    installedHome,
+    repoHash: needsInstalledSourceHashCompare ? supervisorSourceHash(resolvedRepoLibDir) : "",
+    installedHash: needsInstalledSourceHashCompare ? installedSourceHash : "",
+  });
 
   return {
     tasks,
@@ -4202,6 +4304,7 @@ export function collectStatusData(now: Date): StatusData {
     taskTimeoutMs,
     maxSessions,
     supervisorSourceStale,
+    installedSourceDrifted,
   };
 }
 
@@ -4359,6 +4462,7 @@ export function formatStatus(): string {
       "  ※ supervisor のコードが起動後に変更されている — 稼働中なら再起動(ccloop run を止めて起動し直す)しないと反映されない",
     );
   }
+  for (const l of installedSourceDriftLines(data.installedSourceDrifted)) push(l);
 
   const metrics = data.metrics;
   if (metrics.length > 0) {

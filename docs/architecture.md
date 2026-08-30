@@ -30,6 +30,27 @@ feature(参照先は `.devcontainer/devcontainer.json`。バージョンはリ�
 
 `lib/` のローカル変更は `./bin/ccloop` を直接実行して検証する。
 
+## リポジトリの lib/ 変更を ccloop コマンドへ反映する
+
+`ccloop` コマンドの実体はインストール先(`/usr/local/share/ccloop/`)にあり、このリポジトリの `lib/` を
+編集しただけでは反映されない。このリポジトリの DevContainer が使う `ccloop` も同様で、
+`.devcontainer/devcontainer.json` はバージョン固定の公開済み feature
+(`ghcr.io/koharakazuya/claude-code-loop/ccloop:x.y.z`)を参照しているため、コンテナを再ビルドしても
+インストールされるのはその公開済みバージョンであり、この checkout の `lib/` ではない。
+
+`features/ccloop/install.sh` を checkout に対して直接実行する経路は使えない。このスクリプトは
+リリースワークフロー(`.github/workflows/release.yml`)が `lib/` / `bin/` / `package.json` を
+`features/ccloop/` へコピーした後の状態を前提にしており、コピー前のローカル checkout に対して実行すると
+エラーで止まる。
+
+`lib/` の変更を実際にインストール済みの `ccloop` へ反映するには、リリース(`npm run release`)でタグを
+push し、GitHub Actions が GHCR へ新バージョンを publish したうえで、`.devcontainer/devcontainer.json` の
+feature 参照バージョンを新バージョンへ更新し、コンテナを再ビルドする必要がある。`lib/` の変更を素早く
+試すだけなら `./bin/ccloop <subcommand>` を直接実行する。
+
+`ccloop status` はインストール済みの `ccloop` とこのリポジトリの `lib/` が乖離している(自己ホスト時に
+限り判定できる)ことを検出すると警告を表示する。
+
 ## `.claude/` を要求しない
 
 利用側リポジトリに `.claude/CLAUDE.md` や `.claude/agents/reviewer.md` を置く運用も可能だが、ccloop は
