@@ -4474,6 +4474,72 @@ describe("loadPendingDecisions", () => {
     expect(pd.preview.find((d) => d.id === "D-001")?.title).toBe("D-001");
     expect(pd.preview.find((d) => d.id === "D-002")?.title).toBe("D-002");
   });
+
+  it("index.md で [x] チェック済みの決定は数えない", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), serializeFrontmatter({ title: "決定1" }, "本文"));
+    fs.writeFileSync(
+      path.join(dir, "index.md"),
+      "# 決定インデックス\n\n- [x] [D-001](D-001.md) — 決定1\n",
+    );
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.count).toBe(0);
+    expect(pd.preview).toEqual([]);
+  });
+
+  it("index.md で未チェック [ ] の決定は数える", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), serializeFrontmatter({ title: "決定1" }, "本文"));
+    fs.writeFileSync(
+      path.join(dir, "index.md"),
+      "# 決定インデックス\n\n- [ ] [D-001](D-001.md) — 決定1\n",
+    );
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.count).toBe(1);
+    expect(pd.preview).toEqual([{ id: "D-001", title: "決定1" }]);
+  });
+
+  it("index.md に行が無い決定は未承認として数える", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), serializeFrontmatter({ title: "決定1" }, "本文"));
+    fs.writeFileSync(path.join(dir, "index.md"), "# 決定インデックス\n\n");
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.count).toBe(1);
+    expect(pd.preview).toEqual([{ id: "D-001", title: "決定1" }]);
+  });
+
+  it("全件チェック済みなら count 0・preview 空になり、確認推奨のセクションも出ない", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), serializeFrontmatter({ title: "決定1" }, "本文"));
+    fs.writeFileSync(path.join(dir, "D-002.md"), serializeFrontmatter({ title: "決定2" }, "本文"));
+    fs.writeFileSync(
+      path.join(dir, "index.md"),
+      "# 決定インデックス\n\n- [x] [D-001](D-001.md) — 決定1\n- [x] [D-002](D-002.md) — 決定2\n",
+    );
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd).toEqual({ count: 0, preview: [] });
+    expect(pendingDecisionsSectionLines(pd)).toEqual([]);
+  });
+
+  it("preview の 3 件はチェック済みを除外した後から切り出す", () => {
+    for (let i = 1; i <= 6; i++) {
+      fs.writeFileSync(path.join(dir, `D-00${i}.md`), serializeFrontmatter({ title: `決定${i}` }, "本文"));
+    }
+    // ID 降順で先頭に来る 2 件をチェック済みにする
+    fs.writeFileSync(
+      path.join(dir, "index.md"),
+      "# 決定インデックス\n\n- [x] [D-006](D-006.md) — 決定6\n- [x] [D-005](D-005.md) — 決定5\n",
+    );
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.count).toBe(4);
+    expect(pd.preview.map((d) => d.id)).toEqual(["D-004", "D-003", "D-002"]);
+  });
 });
 
 describe("pendingDecisionsSectionLines", () => {

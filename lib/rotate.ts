@@ -21,7 +21,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildDecisionsIndexText, parseDecisionsIndex } from "./decisions-index.ts";
+import { buildDecisionsIndexText, DECISIONS_INDEX_FILE, parseDecisionsIndex } from "./decisions-index.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 
 /** dir 内の .md ファイル名をソート済みで返す。dir が存在しなければ空配列 */
@@ -74,8 +74,6 @@ function moveToArchive(
 }
 
 // ---------- decisions: index.md のリコンサイル & アーカイブ ----------
-
-const DECISIONS_INDEX_FILE = "index.md";
 
 /** decisionsDir/<id>.md の frontmatter title を 1 行要約として読む。読めない・文字列でなければ id を使う */
 function summaryFromDecisionFile(decisionsDir: string, id: string): string {
