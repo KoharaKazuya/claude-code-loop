@@ -1,10 +1,10 @@
 ---
 title: "ccloop status にループの生存と状態の更新時刻を表示する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(lib/supervisor.status.test.ts)(元: -)"
+retries: 0
+note: "runner.json に PID・心拍・起動トークンを記録し、status に生死と状態の更新時刻を表示"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 
@@ -50,8 +50,15 @@ createdAt: 2026-08-30T03:42:50.737Z
 
 ## 試行履歴
 
-### 試行 1(2026-08-30T04:10:13.737Z, Supervisor 記録: マージ衝突)
+### 試行 2(2026-08-30T04:24:00.000Z, セッション記録)
 
-- 結果: main へのマージが衝突した(lib/supervisor.status.test.ts)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない
+- 確認済みの事実: 前回の実装(`7182e3e`)はブランチにコミット済みだった。衝突は
+  `lib/supervisor.status.test.ts` の 1 ファイルのみで、両側がそれぞれ別のテストを追記した
+  純粋な追加同士の衝突だったため、両方を残して解消した(捨てた変更は無い)。マージは `b4f1e83`。
+- 確認済みの事実: reviewer の指摘を受け、PID 使い回しによる誤った「動いています」表示を
+  `/proc/<pid>/stat` の starttime トークン照合で塞いだ(判断は
+  `.agent/decisions/D-20260830-0424-liveness-pid-reuse-token.md`)。実機で
+  `readProcStartToken(process.pid)` が値を返し、存在しない PID で `null` を返すことを確認済み。
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm run test`(30 ファイル 880 件)が全通過。
+- 未検証の推測: 「異常終了直後に別プロセスが同じ PID を取得する」競合そのものは結合テストで
+  再現しておらず、判定ロジックを依存注入で単体検証したにとどまる。

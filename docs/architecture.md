@@ -93,8 +93,8 @@ feature(参照先は `.devcontainer/devcontainer.json`。バージョンはリ�
 
 ## 実行時状態を `~/.local/state` に置く
 
-`state.json` / `metrics.jsonl` / `permission-denials.jsonl` / `patches/` / 生成された settings・system
-prompt / `worktrees/` は、利用側リポジトリの外、XDG state ディレクトリ
+`state.json` / `metrics.jsonl` / `permission-denials.jsonl` / `runner.json` / `patches/` / 生成された
+settings・system prompt / `worktrees/` は、利用側リポジトリの外、XDG state ディレクトリ
 (`${XDG_STATE_HOME:-~/.local/state}/ccloop/<リポジトリ名>-<ハッシュ>/`)に置く。
 
 - git 管理外にしたい実行時ファイルを `.gitignore` で除外し続ける手間・漏れのリスクを無くせる。

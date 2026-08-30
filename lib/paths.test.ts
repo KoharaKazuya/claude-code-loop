@@ -156,6 +156,7 @@ describe("createPaths", () => {
       p.worktreesDir,
       p.generatedSettingsPath,
       p.generatedSystemPromptPath,
+      p.runnerPath,
     ]) {
       expect(runtime.startsWith(p.stateDir + path.sep)).toBe(true);
     }
