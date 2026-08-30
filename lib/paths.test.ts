@@ -105,17 +105,21 @@ describe("resolveRepoRoot", () => {
   });
 
   it("cwd から上方に .git が無ければエラーにする", () => {
-    // ルート直下に .git が無いことを前提にできないため、探索起点に存在しないパスを与えて
-    // 「例外の型が RepoRootNotFoundError であること」だけを確認する
+    // 一時ディレクトリの祖先に .git が無いことは環境として保証できない。どちらに転んでも
+    // 検証が空振りしないよう、祖先リポジトリの有無で期待値を切り替える
     const orphan = path.join(dir, "no-git");
     fs.mkdirSync(orphan);
-    let thrown: unknown = null;
-    try {
-      resolveRepoRoot({ cwd: orphan, env: {} });
-    } catch (err) {
-      thrown = err;
+
+    if (findGitRoot(orphan) === null) {
+      expect(() => resolveRepoRoot({ cwd: orphan, env: {} })).toThrow(RepoRootNotFoundError);
+      return;
     }
-    if (thrown !== null) expect(thrown).toBeInstanceOf(RepoRootNotFoundError);
+
+    // 祖先に .git がある環境ではエラー経路に入れないため、代わりに「.git を持つ祖先へ
+    // 解決され、.git を持たない起点そのものには解決されない」ことを検証する
+    const resolved = resolveRepoRoot({ cwd: orphan, env: {} });
+    expect(resolved).not.toBe(orphan);
+    expect(findGitRoot(resolved)).toBe(resolved);
   });
 });
 

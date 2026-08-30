@@ -544,6 +544,9 @@ describe("finishTaskSession", () => {
     const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as {
       rateLimit?: { resumeAt: string | null };
     };
-    expect(state.rateLimit?.resumeAt).not.toBeNull();
+    // rateLimit 自体が書かれていない場合 `?.` の結果は undefined になり not.toBeNull() を
+    // すり抜けるため、フィールドの存在と resumeAt が文字列であることを分けて検証する
+    expect(state.rateLimit).toBeDefined();
+    expect(typeof state.rateLimit?.resumeAt).toBe("string");
   });
 });
