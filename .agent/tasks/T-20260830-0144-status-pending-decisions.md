@@ -1,6 +1,6 @@
 ---
 title: "ccloop status に未承認の決定の件数とプレビューを表示"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-0144-decision-approval-archive]
 retries: 0

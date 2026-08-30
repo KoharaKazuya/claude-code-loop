@@ -29,6 +29,7 @@ import {
   isSnoozed,
   isSupervisorSourceStale,
   loadDenyRules,
+  loadPendingDecisions,
   loadPermissionDenials,
   mainChangedByTaskOutcome,
   newTaskId,
@@ -41,6 +42,7 @@ import {
   partitionDeniedByRules,
   patchesToPrune,
   patchTimestamp,
+  pendingDecisionsSectionLines,
   permissionDenialLines,
   permissionDenialsPathOf,
   type PermissionDenialRecord,
@@ -2804,6 +2806,106 @@ describe("permissionDenialLines", () => {
     expect(lines[0]).toBe("9x Bash(stat …)  例: stat -c %s file  最終 2026-08-16T20:39 (T-178, T-171)");
     expect(lines).toContain("…他 2 パターン 5 件");
     expect(lines.at(-1)).toContain("permissions.allow");
+  });
+});
+
+describe("loadPendingDecisions", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-pending-decisions-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ディレクトリが存在しなければ 0 件", () => {
+    expect(loadPendingDecisions(path.join(dir, "not-exist"))).toEqual({ count: 0, preview: [] });
+  });
+
+  it("D-*.md 以外(index.md・README.md・ディレクトリ)は数えない", () => {
+    for (let i = 1; i <= 5; i++) {
+      fs.writeFileSync(path.join(dir, `D-00${i}.md`), serializeFrontmatter({ title: `決定${i}` }, "本文"));
+    }
+    fs.writeFileSync(path.join(dir, "index.md"), "# index\n");
+    fs.writeFileSync(path.join(dir, "README.md"), "# readme\n");
+    // ディレクトリ名が D-*.md 相当でもファイルではないので数えない(isFile フィルタの確認)
+    fs.mkdirSync(path.join(dir, "D-999.md"));
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.count).toBe(5);
+    expect(pd.preview.some((d) => d.id === "index" || d.id === "D-999")).toBe(false);
+  });
+
+  it("preview は ID 降順(新しい順)の先頭 3 件", () => {
+    for (let i = 1; i <= 5; i++) {
+      fs.writeFileSync(path.join(dir, `D-00${i}.md`), serializeFrontmatter({ title: `決定${i}` }, "本文"));
+    }
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.preview.map((d) => d.id)).toEqual(["D-005", "D-004", "D-003"]);
+  });
+
+  it("frontmatter に title があればそれを使う", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), serializeFrontmatter({ title: "タイトルあり" }, "本文"));
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.preview).toEqual([{ id: "D-001", title: "タイトルあり" }]);
+  });
+
+  it("frontmatter が壊れている・title が無い決定は ID をそのまま title にする", () => {
+    fs.writeFileSync(path.join(dir, "D-001.md"), "not frontmatter at all");
+    fs.writeFileSync(path.join(dir, "D-002.md"), serializeFrontmatter({}, "本文"));
+
+    const pd = loadPendingDecisions(dir);
+
+    expect(pd.preview.find((d) => d.id === "D-001")?.title).toBe("D-001");
+    expect(pd.preview.find((d) => d.id === "D-002")?.title).toBe("D-002");
+  });
+});
+
+describe("pendingDecisionsSectionLines", () => {
+  it("count が 0 なら空配列を返す", () => {
+    expect(pendingDecisionsSectionLines({ count: 0, preview: [] })).toEqual([]);
+  });
+
+  it("2 件ならプレビュー 2 行と案内行のみ(「…他」行は出ない)", () => {
+    const lines = pendingDecisionsSectionLines({
+      count: 2,
+      preview: [
+        { id: "D-002", title: "決定2" },
+        { id: "D-001", title: "決定1" },
+      ],
+    });
+
+    expect(lines).toEqual([
+      "D-002: 決定2",
+      "D-001: 決定1",
+      "→ 内容を確認したら .agent/decisions/index.md のチェックボックスを [x] にすると archive へ移動",
+    ]);
+  });
+
+  it("5 件(プレビュー 3 件)ならプレビュー 3 行 + 「…他 2 件」+ 案内行", () => {
+    const lines = pendingDecisionsSectionLines({
+      count: 5,
+      preview: [
+        { id: "D-005", title: "決定5" },
+        { id: "D-004", title: "決定4" },
+        { id: "D-003", title: "決定3" },
+      ],
+    });
+
+    expect(lines).toEqual([
+      "D-005: 決定5",
+      "D-004: 決定4",
+      "D-003: 決定3",
+      "…他 2 件",
+      "→ 内容を確認したら .agent/decisions/index.md のチェックボックスを [x] にすると archive へ移動",
+    ]);
   });
 });
 

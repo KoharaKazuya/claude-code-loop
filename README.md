@@ -98,7 +98,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
   `status: ready`、`retries: 0` に手で編集する。失敗原因を放置すると再び失敗するので、原因側の修正を
   先に行うのが普通。completed タスク・closed な Review は `.agent/archive/` へ自動的に退避される
   (ローテーションはループ内で自動)。判断ファイルは `.agent/decisions/index.md` で人間がチェックを
-  付けたものだけが退避される。
+  付けたものだけが退避される。未チェックの判断が何件溜まっているかは `ccloop status` の
+  `[確認推奨]` に件数とプレビューが出る。
 - **巻き戻し**: 自律コミットは対象リポジトリの `git log` に積まれるだけで push はされない。緊急時は
   `ccloop run` を停止し、`git log` / `git diff` で確認したうえで人間が `git revert` し、経緯を
   `.agent/decisions/` に記録してから再開する。
