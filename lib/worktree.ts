@@ -190,8 +190,7 @@ export function mergeInProgress(dir: string): boolean {
 /**
  * merge・cherry-pick・revert・bisect・rebase のいずれかが進行中か。
  * supervisor.ts の同名の判定(`.git/<name>` を直接 existsSync するもの)は
- * linked worktree で `.git` がファイルになるため機能しない。これはその置き換え用だが、
- * 呼び出し側の配線はこのステップの範囲外のため、ここでは export するのみに留める。
+ * linked worktree で `.git` がファイルになるため機能しない。これはその置き換え用。
  */
 export function gitOperationInProgress(dir: string): boolean {
   const headFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"];
