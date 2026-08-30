@@ -57,7 +57,13 @@ import {
   type MergeOutcome,
   type WedgedStep,
 } from "./merge.ts";
-import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
+import {
+  compareSchemaVersion,
+  CURRENT_SCHEMA_VERSION,
+  readSchemaVersion,
+  type SchemaCompat,
+} from "./migrations.ts";
+import { AGENT_DIR_NAME, ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
@@ -5416,6 +5422,28 @@ export interface StatusData {
   invalidTaskFiles: string[];
   /** 存在しないタスク ID を依存に書いているタスク(現役にも archive にも無い依存) */
   missingDependencies: { taskId: string; title: string; missing: string[] }[];
+  /**
+   * `.agent/config.json` の schemaVersion とツールの対応版数の突き合わせ結果。
+   * config.json が無い・JSON として読めない場合は null(schemaVersion を 0 とみなすと
+   * 「設定が古い」と誤報するため、ここでは判定しない。読めないこと自体は doctor が扱う)。
+   * `tool-outdated`(ccloop 本体が古い)は `formatStatus` の表示には使わない
+   * (cli.ts のスキーマゲートが先に全コマンドを止めるため到達しない)。`--json` 利用者向けの情報。
+   */
+  configSchema: { version: number; current: number; compat: SchemaCompat } | null;
+}
+
+/**
+ * config の生データ(JSON.parse 済み)から schemaVersion の突き合わせ結果を作る。
+ * `raw` が null(ファイルが無い・読めない)なら判定しない
+ */
+export function evaluateConfigSchema(
+  raw: unknown,
+  current: number = CURRENT_SCHEMA_VERSION,
+): { version: number; current: number; compat: SchemaCompat } | null {
+  if (raw === null) return null;
+  const version = readSchemaVersion(raw);
+  const compat = compareSchemaVersion(version, current);
+  return { version, current, compat };
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -5460,6 +5488,15 @@ export function collectStatusData(now: Date): StatusData {
   } catch {
     // config が読めなければ既定値にフォールバック
   }
+  // schemaVersion の突き合わせは loadConfig とは別に生データを読んで行う。loadConfig は
+  // normalizeConfig 済みの値を返すため、そこから元の schemaVersion は取り出せない
+  let rawConfig: unknown = null;
+  try {
+    rawConfig = JSON.parse(fs.readFileSync(repoPaths().configPath, "utf8")) as unknown;
+  } catch {
+    // ファイルが無い・JSON として読めない場合は判定しない(doctor が扱う)
+  }
+  const configSchema = evaluateConfigSchema(rawConfig);
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
   const salvageFailures = loadSalvageFailures(repoPaths().root);
   const { entries: permissionDenialEntries, truncated: permissionDenialsTruncated } = loadPermissionDenials();
@@ -5532,6 +5569,7 @@ export function collectStatusData(now: Date): StatusData {
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
     invalidTaskFiles,
     missingDependencies,
+    configSchema,
   };
 }
 
@@ -5642,6 +5680,17 @@ export function formatStatus(): string {
       "`git worktree remove --force <path>` と `git branch -D agent/<タスクID>` で片付けてよい:",
     data.salvageFailures.map((f) => `${f.taskId}: ${f.worktree}\n      ${f.at} の退避が失敗: ${f.error}`),
   );
+  const configSchema = data.configSchema;
+  const configSchemaOutdated = configSchema !== null && configSchema.compat === "config-outdated";
+  // tool-outdated(ccloop 本体が古い)はここでは扱わない。設定のほうが新しい場合は cli.ts の
+  // スキーマゲートが status も含めて全コマンドを exit(1) で止めるため、この行には到達しない
+  section(
+    "要対応",
+    "設定ファイルが古い — `ccloop init --upgrade` を実行する:",
+    configSchemaOutdated
+      ? [`${AGENT_DIR_NAME}/config.json の schemaVersion ${configSchema.version} → ${configSchema.current}`]
+      : [],
+  );
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
     "確認推奨",
@@ -5664,7 +5713,8 @@ export function formatStatus(): string {
       data.salvageFailures.length +
       data.pendingDecisions.count +
       data.invalidTaskFiles.length +
-      data.missingDependencies.length ===
+      data.missingDependencies.length +
+      (configSchemaOutdated ? 1 : 0) ===
     0
   ) {
     push("\n要対応事項なし");
