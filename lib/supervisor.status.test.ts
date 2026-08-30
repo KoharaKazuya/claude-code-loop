@@ -322,6 +322,24 @@ describe("collectStatusData / formatStatus", () => {
       expect(occurrences.length).toBeLessThanOrEqual(1);
     });
   });
+
+  describe("status が不正なタスクファイル", () => {
+    it("集計・進捗の分母から除外され、要対応セクションにファイル名が出る", () => {
+      writeTask("T-ok", { status: "ready", title: "正常なタスク" });
+      writeTask("T-bad", { status: "done", title: "不正な status のタスク" });
+
+      const data = collectStatusData(NOW);
+      expect(data.tasks).toHaveLength(1);
+      expect(data.tasks[0]?.id).toBe("T-ok");
+      expect(data.invalidTaskFiles).toEqual(["T-bad.md"]);
+
+      const out = formatStatus();
+      // 進捗バーの分母は正常タスクのみ(1件)で数えられ、不正タスクは含まれない
+      expect(out).toContain("完了 0/1");
+      expect(out).toContain("T-bad.md");
+      expect(out).not.toContain("要対応事項なし");
+    });
+  });
 });
 
 describe("hrSummary", () => {

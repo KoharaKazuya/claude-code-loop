@@ -288,11 +288,13 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
 }
 
 /** dir 直下の全タスクファイルを読む。warn が真なら不正ファイルを警告する */
-function loadTasksFrom(dir: string, warn: boolean): Task[] {
+function loadTasksFrom(dir: string, warn: boolean): { tasks: Task[]; invalidFiles: string[] } {
   const tasks: Task[] = [];
+  const invalidFiles: string[] = [];
   for (const fileName of listMdFiles(dir)) {
     const task = taskFromFile(dir, fileName);
     if (task === null) {
+      invalidFiles.push(fileName);
       const full = path.join(dir, fileName);
       if (warn && !warnedInvalidFiles.has(full)) {
         warnedInvalidFiles.add(full);
@@ -302,7 +304,7 @@ function loadTasksFrom(dir: string, warn: boolean): Task[] {
     }
     tasks.push(task);
   }
-  return tasks;
+  return { tasks, invalidFiles };
 }
 
 // タスク・state の読み書きは通常、確定済みの対象リポジトリ(repoPaths())に対して行うが、起動時復旧
@@ -325,7 +327,7 @@ function patchesDirOf(root: string): string {
 }
 
 function loadTasksIn(root: string): Task[] {
-  return loadTasksFrom(tasksDirOf(root), true);
+  return loadTasksFrom(tasksDirOf(root), true).tasks;
 }
 
 function loadTasks(): Task[] {
@@ -346,7 +348,7 @@ function loadTask(id: string): Task | null {
  * ID 採番・進捗集計・依存表示の母集団に含めるための参照専用。
  */
 function loadArchivedTasks(): Task[] {
-  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false);
+  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false).tasks;
 }
 
 export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | undefined> {
@@ -4700,6 +4702,8 @@ export interface StatusData {
   installedSourceDrifted: boolean;
   /** ループ本体(ccloop run)が生きているか */
   loopLiveness: LoopLiveness;
+  /** status が不正で処理対象から外れているタスクファイル名(`.agent/tasks/` 直下) */
+  invalidTaskFiles: string[];
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -4717,7 +4721,7 @@ function realpathOrSelf(p: string): string {
  * (status は状況を見るためのものなので、他コマンドのように止めない)。
  */
 export function collectStatusData(now: Date): StatusData {
-  const tasks = loadTasks();
+  const { tasks, invalidFiles: invalidTaskFiles } = loadTasksFrom(tasksDirOf(repoPaths().root), false);
   const state = loadState();
   const hr = parseHumanReview();
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
@@ -4800,6 +4804,7 @@ export function collectStatusData(now: Date): StatusData {
     supervisorSourceStale,
     installedSourceDrifted,
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
+    invalidTaskFiles,
   };
 }
 
@@ -4873,6 +4878,11 @@ export function formatStatus(): string {
   );
   section(
     "要対応",
+    `status が不正で集計から除外されているタスクファイル — frontmatter の status を ${TASK_STATUSES.join(" / ")} のいずれかに直す:`,
+    data.invalidTaskFiles,
+  );
+  section(
+    "要対応",
     "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
     pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
   );
@@ -4900,7 +4910,8 @@ export function formatStatus(): string {
       blocked.length +
       pending.worktrees.length +
       pending.parkedBranches.length +
-      data.pendingDecisions.count ===
+      data.pendingDecisions.count +
+      data.invalidTaskFiles.length ===
     0
   ) {
     push("\n要対応事項なし");
