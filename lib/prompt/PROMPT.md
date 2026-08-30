@@ -98,14 +98,23 @@ main への統合はセッション終了後に ccloop が自動マージで行�
   場合のみ絶対ルール 6 に従い BLOCK にする。
   - `~/.claude/` `~/.ssh/` `~/.aws/` `~/.config/gh/` 配下と `.env` / `.env.*` の読み取り
   - `.agent/claude-settings.json` と `.agent/config.json` の編集
-  - `git push` / `checkout` / `switch` / `merge` / `rebase` / `reset` / `clean` / `stash` / `worktree`、
+  - `git push` / `checkout` / `switch` / `rebase` / `reset` / `clean`、
     ブランチの削除・改名(`git branch -d/-D/-m/-M`)
+  - `git merge`(変更を伴う形のみ)。同じ接頭辞でも読み取り専用の `git merge-base` /
+    `git merge-tree` は禁止されない
+  - `git stash` の変更を伴う形(引数なしの `git stash`、`-u` のようにオプションだけを付けた形、
+    `push` / `save` / `pop` / `apply` / `drop` / `clear` / `branch` / `create` / `store`)。
+    読み取り専用の `git stash list` / `git stash show` は禁止されない
+  - `git worktree` の変更を伴う形(`add` / `remove` / `move` / `prune` / `lock` / `unlock` /
+    `repair`)。読み取り専用の `git worktree list` は禁止されない
   - `sudo`
   - 生成された settings.json / system prompt(state ディレクトリ配下)への Edit(自己改変の禁止)
 - allow(classifier を経ず即時に通る)は読み取り専用のコマンドに限る: `Read` `Glob` `Grep`、
   `git status/log/diff/show/rev-parse/ls-files/blame`、`ls` `cat` `grep` `wc` `diff`。それ以外の操作
   (`npm run <script>` を含む書き込み・実行系や `Edit`/`Write` など)は allow に無くても deny に触れない
   限り実行でき、classifier の判定を経る。検証は `npm run <script>` 経由で行う。
+  上の deny から外れている読み取り専用コマンド(`git merge-base`、`git worktree list` など)も
+  allow には入っていないため、禁止はされないが classifier の判定を経る。
 - 読み出しは Read(offset/limit)、検索は Grep / Glob、退避・書き戻しは Write ツールを優先する。
   出力を絞るときはコマンド自身のオプション(`git log --oneline -5` 等)を使う。
 - 拒否されたら回避せず絶対ルール 6 に従い、より安全な代替に切り替える。classifier 判定による拒否は
@@ -140,9 +149,11 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 
 > あなたはサブエージェントである。さらに委譲せず、このタスクを自分で完結すること。
 > AskUserQuestion は使わない。
-> permissions.deny に一致する操作(git push/checkout/switch/merge/rebase/reset/clean/stash/worktree、
-> ブランチの削除・改名、sudo、`~/.claude` 等の読み取り、.agent/claude-settings.json や
-> .agent/config.json の編集など)は使わない。拒否されても代替手段で迂回しない。
+> permissions.deny に一致する操作(git push/checkout/switch/rebase/reset/clean と、変更を伴う形の
+> git merge/stash/worktree、ブランチの削除・改名、sudo、`~/.claude` 等の読み取り、
+> .agent/claude-settings.json や .agent/config.json の編集など)は使わない。読み取り専用の
+> git merge-base / git worktree list / git stash list は使ってよい。
+> 拒否されても代替手段で迂回しない。
 > 指示された範囲外のファイル・処理には触れない。
 > 検証できなかった事項は推測で埋めず、その旨を明記して報告する。
 
