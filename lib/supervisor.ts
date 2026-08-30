@@ -2886,7 +2886,7 @@ export function skipMainWriteIfGitBusy(taskId: string, root: string = repoPaths(
  * タイムアウト・クラッシュ・レートリミットで終わったセッションでもマージは必ず試みる
  * (途中までコミットされた成果を worktree に閉じ込めないため)。
  */
-function finishTaskSession(config: Config, ctx: TaskSessionContext, res: SessionResult): void {
+export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: SessionResult): void {
   const { task, model, branch, worktree } = ctx;
   const taskId = task.id;
   const now = new Date();

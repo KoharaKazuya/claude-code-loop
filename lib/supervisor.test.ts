@@ -3788,6 +3788,67 @@ describe("recoverStartupIn", () => {
       fs.rmSync(notGit, { recursive: true, force: true });
     }
   });
+
+  it("M: main の merge --abort 自体が失敗する(wedged)場合、worktree・ブランチ・タスクファイルに一切手を付けない", () => {
+    // 本番インシデントの再現(lib/merge.test.ts の resolveMechanically 直接呼び出しのテストと同根):
+    // 衝突なく自動マージされたタスクファイルが、abort 直前に作業ツリー上だけで(git を経由せず)
+    // 書き換わっていると、abort が "not uptodate" で失敗し main が固まる(wedged)。
+    // ここでは recoverStartupIn の実行経路そのものを通す必要があるため、直接 fs に書くのではなく、
+    // `git merge` の実行中に必ず発火する post-index-change フックを使ってタイミングよく再現する。
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => {
+        fs.writeFileSync(path.join(p, "conflict.txt"), "ブランチ側\n");
+        writeTaskFile(
+          p,
+          "T-001",
+          serializeFrontmatter({ title: "タスク", status: "ready", retries: 0 }, "ブランチが更新した本文"),
+        );
+      },
+      "ブランチ側で書き換える(conflict.txt と自身のタスクファイル)",
+    );
+
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "main 側\n");
+    git(["commit", "-am", "main 側で書き換える"]);
+
+    const branchHead = git(["rev-parse", "agent/T-001"]).trim();
+    const mainHead = git(["rev-parse", "HEAD"]).trim();
+
+    // conflict.txt は main/branch 双方が書き換えるので実質的な(mechanical でない)衝突になり、
+    // .agent/tasks/T-001.md は branch だけが書き換えるので衝突なく自動マージされる。
+    // core.hooksPath はリポジトリ共有設定のため worktree 側の git 呼び出し(commitAgentDir の
+    // `git status`)でも同じフックが発火しうる。dir(main)上での git merge 実行時だけタスク
+    // ファイルを書き換えたいので、フック内で cwd が dir と一致する場合のみ発火させる。
+    // このフックは git merge の実行中(コンフリクト検出後・abort 前を含む)何度も発火するが、
+    // 毎回同じ内容を書くだけなので最終状態は決定的
+    const taskFilePath = path.join(dir, ".agent", "tasks", "T-001.md");
+    fs.writeFileSync(
+      path.join(hooksDir, "post-index-change"),
+      `#!/bin/sh\nif [ "$(pwd)" = "${dir}" ]; then printf 'external tamper\\n' > "${taskFilePath}"; fi\n`,
+    );
+    fs.chmodSync(path.join(hooksDir, "post-index-change"), 0o755);
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    // main は merge --abort の失敗で固まったまま(wedged): 次回起動時の再評価に委ねる
+    expect(mergeInProgress(dir)).toBe(true);
+    expect(git(["rev-parse", "HEAD"]).trim()).toBe(mainHead);
+
+    // worktree・ブランチはどちらも触られていない
+    expect(fs.existsSync(wt)).toBe(true);
+    expect(branchExists("agent/T-001")).toBe(true);
+    expect(git(["rev-parse", "agent/T-001"]).trim()).toBe(branchHead);
+
+    // タスクファイルは(再現のためフックが直接書き換えた内容のまま)recordFailure 等で
+    // さらに書き換えられていない。もし saveTaskIn が走っていれば frontmatter 形式で
+    // 上書きされ、この文字列のままにはならない
+    expect(fs.readFileSync(taskFilePath, "utf8")).toBe("external tamper\n");
+  });
 });
 
 describe("newTaskId", () => {
