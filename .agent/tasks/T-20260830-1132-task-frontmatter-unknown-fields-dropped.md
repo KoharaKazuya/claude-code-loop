@@ -3,7 +3,8 @@ title: "タスクファイルの保存で未知の frontmatter フィールド�
 status: ready
 priority: 3
 dependencies: []
-retries: 0
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: セッションが中断された(ブランチに成果は残っていなかった)(元: -)"
 createdAt: 2026-08-30T11:32:00.000Z
 ---
 
@@ -36,3 +37,11 @@ human-review 側の `closeHumanReview` は `parseFrontmatter` の生データを
 - 未知フィールドを持つタスクファイルを `saveTask` 経由で書き換えても、そのフィールドが残ることが
   テストで確認できること
 - `ccloop retry` / `ccloop abandon` の実行で `updatedAt` が消えないこと
+
+## 試行履歴
+
+### 試行 1(2026-08-30T11:29:11.397Z, ccloop 記録: 中断復旧)
+
+- 結果: セッションが中断された(ブランチに成果は残っていなかった)
+- セッションは終了処理を実行できていない。作業がコミット済み・未コミットのまま残っている可能性がある。`git log --oneline -10` と `git status` で現状を確認してから再開すること
+- この記録は機械的検出のみで、失敗原因の分析ではない
