@@ -1,7 +1,8 @@
 ---
 title: "読み取り専用の git コマンドを禁止から外してよいか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-1407-narrow-readonly-git-deny-patterns]
 createdAt: 2026-08-30T14:03:37.232Z
 ---
 
