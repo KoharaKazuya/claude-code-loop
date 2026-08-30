@@ -1748,6 +1748,27 @@ describe("buildExplorePrompt", () => {
     expect(prompt).toContain("status: open");
   });
 
+  it("回答の判定はチェックボックス方式で指示し、旧 `対応:` マーカーには言及しない", () => {
+    // `対応:` は closeHumanReview が処理結果を書き足す記法であって、人間の回答マーカーではない。
+    // 探索セッションへの指示が旧表記に戻ると、現行テンプレートに存在しない目印を探すことになる。
+    const prompt = buildExplorePrompt(ctx({}));
+    // GOAL.md の本文が混ざらないよう、指示部分だけを取り出して検証する
+    const section = prompt.slice(prompt.indexOf("## 探索セッション"));
+
+    expect(section).toContain("対応不要(このままクローズしてよい)");
+    expect(section).toContain("回答を下に書いた");
+    expect(section).not.toContain("対応:");
+    expect(section).not.toContain("対応：");
+  });
+
+  it("回答があっても新規タスク化が不要なら closed にしてよいことを指示する", () => {
+    // Stage 2 の close/task/escalate と揃え、「回答あり → 必ず新タスク」の 2 択にしない
+    const prompt = buildExplorePrompt(ctx({}));
+
+    expect(prompt).toContain("新規タスク化が不要なら");
+    expect(prompt).toContain("タスクを作らずに closed にする");
+  });
+
   it("deadline を渡すとその時刻がプロンプトに含まれる", () => {
     const prompt = buildExplorePrompt(ctx({ deadline: "2026-08-21T12:34:56.000Z" }));
 
