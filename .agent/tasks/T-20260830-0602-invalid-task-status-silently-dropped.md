@@ -1,9 +1,10 @@
 ---
 title: "status が不正なタスクファイルが集計から黙って消え、watch では痕跡も残らない"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "不正な status のファイルを StatusData.invalidTaskFiles に載せ、要対応節に表示するようにした"
 createdAt: 2026-08-30T06:02:18.660Z
 ---
 
