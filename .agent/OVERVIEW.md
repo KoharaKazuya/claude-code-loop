@@ -1,6 +1,6 @@
 ---
-updatedAt: 2026-08-30T13:54:37.114Z
-completed: 80
+updatedAt: 2026-08-30T14:04:16.547Z
+completed: 82
 total: 85
 ---
 
@@ -8,35 +8,34 @@ total: 85
 
 GOAL の「現在の目標」に挙がっていた作業(decisions アーカイブの人間承認化、`ccloop status` への
 未承認決定の表示、人間の確認・介入の導線)はいずれも消化済み。現在フェーズは 4(思いつく改善すべて)。
-**人間の手が要る残務はゼロ**(`ccloop status` は「要対応事項なし」)。前進は **フェーズ 4 の確認
-トピックに回答をもらうこと**と**確認不要で拾える修理**の両輪で決まるが、確認トピックは在庫も
-回答待ちも空である。
+前進は **フェーズ 4 の確認トピックに回答をもらうこと**と**確認不要で拾える修理**の両輪で決まる。
+現在、確認トピックが 1 件回答待ち(`HR-20260830-1403-topic-readonly-git-subcommands`)。
 
-## いま登録されているタスク(ready 5 件、うち 3 件は実行中)
+## いま登録されているタスク(ready 3 件、うち 2 件は実行中)
 
 `conflicts`(競合するタスクを同時に走らせない仕組み)の 2 件が主線。人間が指定した方式は
 「探索セッションが競合しそうなタスクを判断し、依存と同じようにタスクへメタデータを持たせ、
-タスク選択時に同時実行しない」。巨大ファイルの分割は選ばれなかったので蒸し返さない。
+タスク選択時に同時実行しない」(巨大ファイルの分割は選ばれなかった)。
 
 - `-1334-task-conflict-metadata-scheduling`(p2、実行中)— `conflicts` フィールドとタスク選択の実装。
 - `-1334-explore-assigns-conflict-metadata`(p3)— 探索セッションが `conflicts` を付ける指示を
   `lib/prompt/PROMPT.md` と探索プロンプトへ定着させる。これが無いとフィールドは空のまま。
   上の実装に `dependencies` で直列化済み(両者とも `lib/supervisor.ts` を触るため)。
-- `-1346-paths-test-conditional-assertion`(p3、実行中)— `lib/paths.test.ts:107-119` が条件付き
-  アサーションで、例外が投げられない環境ではアサーション 0 回のまま緑になる。
-- `-1346-node-engines-doctor-consistency`(p3、実行中)— `package.json` の `engines.node` と
-  `lib/doctor.ts` の `checkNodeVersion` が独立にハードコードされており突き合わせが無い。
-- `-1354-git-operation-in-progress-coverage`(p3)— `lib/worktree.ts` の `gitOperationInProgress`
-  の 6 条件のうち `REVERT_HEAD` / `BISECT_LOG` / `rebase-merge` / `rebase-apply` の 4 条件が
-  全 1215 件のテストで一度も再現されていない(今回の探索で発見)。触るのは `lib/worktree.test.ts` だけ。
-
-テスト品質の 3 件は互いにも走行中タスクにも触るファイルが重ならないので直列化していない。
+- `-1354-git-operation-in-progress-coverage`(p3、実行中)— `lib/worktree.ts` の
+  `gitOperationInProgress` の 6 条件のうち 4 条件がテストで一度も再現されていない件。
+  触るのは `lib/worktree.test.ts` だけ。
 
 ## 探索の収穫は薄い(実物観察は掘り尽くしに近い)
 
-過去 4 回の探索はほぼ収穫ゼロで、拾えるのはテスト品質の小粒ばかりになっている。
-`npm test` 1215 件全通過・lint / typecheck / `check:version` すべて警告ゼロ。
-**無理にひねり出さず「収穫ゼロ」を正直に記録するほうがよい。**
+過去 5 回の探索はほぼ収穫ゼロで、拾えるのはテスト品質の小粒ばかり。`npm test` 1215 件全通過・
+lint / typecheck / `check:version` すべて警告ゼロ。**無理にひねり出さず「収穫ゼロ」を正直に
+記録するほうがよい。**
+
+**運用記録を起点にした探索は 1 回やって当たりが 1 件**(下記の禁止一覧の件)。ただし
+`metrics.jsonl` は 24 件・全件成功、`permission-denials.jsonl` は 3 件しかなく傾向は読めない。
+件数が増えるまで再集計しても新しい発見は出ない見込み。記録済みの拒否 3 件(`cd` 2 件・
+`git log | head` 1 件)は複合コマンドが classifier に回されたもので、うち 2 件は worktree の外や
+main 側の `.agent/` を触ろうとした**妥当な拒否**。PROMPT の案内不足ではないのでタスク化しない。
 
 **タスク化しなかった**もの(再提案しないこと): レートリミット再試行の待機 `1100ms` が
 `lib/merge.ts` と `lib/supervisor.ts` に別々にハードコードされている件(どちらも「git の秒境界を
@@ -53,8 +52,10 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 - 現在フェーズ: **4(思いつく改善すべて)**。フェーズ 1〜3 の遡及確認は `HR-20260830-0236` で回答済み。
 - 確認の線引きは `D-20260830-0303-phase4-consent-granularity` に記録済み。要点は
   「利用者向けリリースノートに 1 行として載る粒度なら確認を取る」。不具合の修理・テストの追加・
-  表記不一致の解消は**確認を取らずにタスク化してよい**(今回の 2 件はこれに当たる)。
-- 回答待ち: **0 件(枠は 4 件まで空いている)**。ただし**トピックの在庫も空**で、今回も新規提出なし。
+  表記不一致の解消は**確認を取らずにタスク化してよい**。
+- 回答待ち: **1 件 / 枠 4 件**。`HR-20260830-1403-topic-readonly-git-subcommands`
+  (禁止一覧の前方一致が広すぎて、見るだけの git コマンドまで巻き添えで禁止されている件。
+  緩める変更なので人間の同意が必須)。回答が来たらタスク化する。
 - 見送りになったトピック(再提案しないこと): 禁止操作の監査記録 / 空振り時の探索間隔の自動延長 /
   肩代わりされた失敗タスクの自動片付け / 巨大ファイルの分割 / ループの異常停止を status に残す /
   利用上限の待機をリポジトリ間で共有する / タスクに「最後に動いた時刻」を記録して status に出す /
@@ -63,25 +64,20 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 
 ## 突き合わせ済みで食い違いが無いことを確認した範囲(同じ調査を繰り返さないための記録)
 
-- permission 拒否の記録(実装 ⇔ `lib/prompt/PROMPT.md` ⇔ docs ⇔ README): 一致。
-- deny 一覧(`lib/settings.template.json` ⇔ `PROMPT.md`)は `lib/deny-consistency.test.ts` が
+- ドキュメントと実装の一致(README / `docs/` / `lib/help.ts` / `.agent/config.json` の既定値 /
+  `lib/templates/` ⇔ `docs/compatibility.md` / permission 拒否の記録まわり): 食い違い無し。
+  deny 一覧(`lib/settings.template.json` ⇔ `PROMPT.md`)は `lib/deny-consistency.test.ts` が
   機械検証済み。**手で突き合わせ直さない。**
-- `README.md` / `docs/` / `lib/help.ts` と実装、`.agent/config.json` のキーと既定値、
-  `lib/templates/` と `docs/compatibility.md`、`lib/` の TODO/FIXME、CLI の異常系: 食い違い無し。
-- 未使用・到達不能な export は無い。`it.skip` の放置も無い。`JSON.parse` / `fs` の catch は
-  いずれも理由がコメントされた意図的なフェイルセーフで、想定内の失敗でループが落ちる箇所は無い。
-- **型安全性は穴無し**。`as` 約 45 件・non-null 断言 27 件を全数追跡したが、外部入力の境界は
-  すべて検証してから使っている。`any` と `@ts-ignore` は 0 件。
 - **プロンプト資産と実装の文字列レベルの一致は確認済み**。`lib/prompt/PROMPT.md`(唯一のプロンプト
   資産)と、それを読むパーサ(ID の正規表現、`status` の値、`## 試行履歴` 系の見出し、`## 回答` の
   チェックボックス文言、決定インデックスの行形式、`snoozeUntil`、`agent/<taskId>`)は一致。
-  `.claude/CLAUDE.md` との重複ルールにも矛盾は無い。
-- **実装 29 モジュールすべてに対応するテストがある**。主要モジュールは分岐まで確認して穴無し。
-  唯一の穴が上記の `gitOperationInProgress`(タスク登録済み)。
-- **worktree の使い回しは意図された挙動**(`D-20260830-0752-salvage-failure-keeps-worktree`)。
-- **やることが尽きたときの挙動**: `planLoopStep`(`lib/scheduler.ts`)が `idle-exit` を返して終了する。
-- 退避ブランチが status で「未取り込み」と出続けるのは `parkedBranchMergedIntoHead` が patch-id 比較を
-  避けて安全側に倒す設計どおり。**不具合ではないので修理タスクにしない。**
+- **型安全性は穴無し**(`as` 45 件・non-null 断言 27 件を全数追跡。`any` / `@ts-ignore` は 0 件)。
+  未使用 export・放置された `it.skip` も無く、`catch` はいずれも意図的なフェイルセーフ。
+- **実装 29 モジュールすべてに対応するテストがある**。唯一の穴が `gitOperationInProgress`(登録済み)。
+- 仕様どおりで**不具合ではない**もの: worktree の使い回し
+  (`D-20260830-0752-salvage-failure-keeps-worktree`)/ 退避ブランチが status で「未取り込み」と
+  出続ける(`parkedBranchMergedIntoHead` が安全側に倒す設計)/ やることが尽きたら
+  `planLoopStep`(`lib/scheduler.ts`)が `idle-exit` で終了する。
 - 掘り終えた系統: 利用者から見た CLI の体験 / ループの運転そのものの弱点 / 初回導入の体験 /
   並列実行と状態ディレクトリ / 長時間の連続稼働 / 複数リポジトリの併用 / 費用・所要時間 /
   記録ファイルの読み書きの頑健性 / 失敗時の診断体験 / テスト自体の質 / 探索とタスクの並走 /
@@ -89,28 +85,34 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
   表示ロジック / `.agent/` 雛形と実リポジトリの往復 / git 操作の異常系 / エスカレーション・リトライ方針 /
   作業場所とタスクの対応が崩れたときの回復 / `.agent/` の記録が人手で編集されたときの扱い /
   多段処理の中断耐性 / 失敗回数の計上 / スケジューラの待機と終了の判断。
-- 未検証のまま残った枝葉(実害は薄いと判断): submodule を含むリポジトリでの worktree 作成、
-  shallow clone での `merge-base`、`.gitattributes` / `core.autocrlf` が退避パッチの復元に与える影響、
-  `index.lock` 残存時の挙動、dirty な worktree を再利用したときの実挙動のテスト。
+- 未検証のまま残った枝葉(実害は薄いと判断): submodule / shallow clone / `.gitattributes` /
+  `index.lock` 残存 / dirty な worktree の再利用といった特殊な git 環境での実挙動。
 
 ## 次にやると完了に近づくこと
 
 1. `conflicts` の 2 タスク(仕組み → 指示)を直列で消化する。これで衝突対策が人力運用から仕組みへ移る。
-2. テスト品質の 3 件(`-1346-*` 2 件と `-1354-git-operation-in-progress-coverage`)を消化する。
-   どれも小さく、互いに独立で、触るファイルも重ならない。
+2. `-1354-git-operation-in-progress-coverage`(実行中)を消化する。
+3. `HR-20260830-1403` に回答が来たら、禁止一覧の前方一致を狭めるタスクを起票する。触るのは
+   `lib/settings.template.json` の deny と `lib/prompt/PROMPT.md` の「Bash 実行の権限制約」節、
+   および両者の一致を検証する `lib/deny-consistency.test.ts`(3 箇所を必ず同時に直す)。
+   狭めた結果 `git merge` 本体などが通ってしまわないことをテストで固めること。
 
 次の探索セッションへの申し送り:
 
-- **確認トピックの枠は空いている(0/4)が在庫も空。** 出せるネタが見つかったら提出してよいが、
-  無理にひねり出さないこと。見送り済みトピック(上記)は再提案しない。今回も新規提出なし
-  (拾えたのがテストの追加 1 件だけで、確認を取る粒度に当たらないため)。
-- **未探索の角度がほぼ残っていない。** 上の「突き合わせ済み」に型安全性・プロンプト資産の整合・
-  テストのカバレッジ穴が加わり、コード読解で拾える系統はほぼ尽きた。次の探索は、収穫ゼロを
-  前提に短く切り上げるか、実運用で実際に起きた摩擦(セッションの失敗記録・permission 拒否の
-  傾向・費用の推移)を起点にするほうが期待値が高い。
+- **確認トピックは 1/4 が回答待ち。** 見送り済みトピック(上記)は再提案しない。
+- **未探索の角度がほぼ残っていない。** コード読解で拾える系統は尽きた。運用記録
+  (`metrics.jsonl` / `permission-denials.jsonl` / `state.json`)も一度集計済みで、件数が
+  数十件規模に増えるまでは再集計しても新しい発見は出ない。収穫ゼロを前提に短く切り上げてよい。
+- **サブエージェントの報告は裏を取ること。** 今回、運用記録を委譲して調べさせたところ
+  「`git merge-base` が拒否された記録が 2 件ある」と報告されたが、実際の記録は `git log | head` の
+  中の文字列を拾った誤読だった。結論(禁止一覧が広すぎる)は別経路で裏が取れたので残っている。
 - **`lib/supervisor.ts` と `CHANGELOG.md` の「## 未リリース」節は取り合いが起きる。**
   これらを触るタスクを 2 件以上同時に ready にするなら、`conflicts` の実装が入るまでは
   `dependencies` で直列化する(入った後は `conflicts` を使う)。
 - 走行中のタスク(ブランチ `agent/T-*` が存在するもの)のファイルは編集しない。
 - 調査で `Bash(git worktree*)` とブランチ操作が権限で使えないため、作業場所まわりは実機再現ができない。
-  コード読解で当たりを付け、再現は着手するタスクセッション側に委ねる形になる。
+  コード読解で当たりを付け、再現は着手するタスクセッション側に委ねる形になる。原因は deny の
+  前方一致が広く、`git worktree list` / `git merge-base` / `git merge-tree` / `git stash list` と
+  いった**見るだけのサブコマンドまで巻き添えで禁止している**ため(`HR-20260830-1403` で確認中)。
+  ccloop 自身が `lib/worktree.ts:61` と `lib/supervisor.ts:3591` でこの 2 つを使っているので、
+  当該コードを直すセッションは手元で同じ状況を再現できない。
