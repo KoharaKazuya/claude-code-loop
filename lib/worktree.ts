@@ -15,6 +15,12 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/**
+ * `git diff --name-only` の出力上限。パス名だけなので --binary のように base64 で
+ * 膨らむことはないが、生成物を大量に含むツリーでは既定の 1MB を超えうるため広めに取る。
+ */
+const DIFF_NAME_LIST_MAX_BUFFER = 64 * 1024 * 1024;
+
 // ---------- 純粋関数 ----------
 
 /** worktreeDir(worktree をまとめて置くディレクトリ)配下の taskId 用 worktree パス */
@@ -204,19 +210,36 @@ export function gitOperationInProgress(dir: string): boolean {
  * `git add -N`(intent-to-add)で未追跡ファイルも diff に載せてから `git diff HEAD` を取る。
  * 差分が無ければ null を返し、outFile は作らない。
  * 差分があれば outFile へ書き出し、影響を受けたパス一覧(ソート済み)を返す。
+ *
+ * 差分本体は execFileSync のバッファを経由せず、outFile の fd へ子プロセスの stdout を
+ * 直接つないで書き出す。`--binary` は中身を base64 化するため execFileSync の既定 maxBuffer
+ * (1MB)を容易に超え、かつ上限を単に引き上げるだけでは生成物を含む巨大な差分で再発するため
+ * (差分本体だけは maxBuffer という有限の上限に縛られない形にする必要がある)。
  */
 export function salvagePatch(wtPath: string, outFile: string): string[] | null {
   execFileSync("git", ["add", "-N", "--", ".", ":(exclude).agent"], { cwd: wtPath });
-  const diff = execFileSync("git", ["diff", "--binary", "HEAD", "--", ".", ":(exclude).agent"], {
-    cwd: wtPath,
-  });
-  if (diff.length === 0) return null;
 
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
-  fs.writeFileSync(outFile, diff);
+  const fd = fs.openSync(outFile, "w");
+  try {
+    execFileSync("git", ["diff", "--binary", "HEAD", "--", ".", ":(exclude).agent"], {
+      cwd: wtPath,
+      stdio: ["ignore", fd, "pipe"],
+    });
+  } catch (err) {
+    fs.closeSync(fd);
+    fs.rmSync(outFile, { force: true }); // 途中まで書けたパッチは適用できないので残さない
+    throw err;
+  }
+  fs.closeSync(fd);
+  if (fs.statSync(outFile).size === 0) {
+    fs.rmSync(outFile, { force: true });
+    return null;
+  }
 
   const names = execFileSync("git", ["diff", "--name-only", "HEAD", "--", ".", ":(exclude).agent"], {
     cwd: wtPath,
+    maxBuffer: DIFF_NAME_LIST_MAX_BUFFER,
   })
     .toString()
     .split("\n")

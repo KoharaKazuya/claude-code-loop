@@ -19,12 +19,13 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serializeFrontmatter } from "./frontmatter.ts";
 import {
   type Config,
   finishTaskSession,
   repoPaths,
+  type SalvageFailure,
   type SessionResult,
   setRepoPaths,
   statePathOf,
@@ -33,7 +34,7 @@ import {
   type TaskSessionContext,
   useRepoRoot,
 } from "./supervisor.ts";
-import { branchNameFor, createWorktree, mergeInProgress, worktreePathFor } from "./worktree.ts";
+import { branchNameFor, createWorktree, mergeInProgress, patchFileName, worktreePathFor } from "./worktree.ts";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -268,6 +269,47 @@ describe("finishTaskSession", () => {
     expect(t.body).toContain(patchFile);
     expect(t.retries).toBe(1);
     expect(t.status).toBe("ready");
+  });
+
+  it("(c') 未コミット差分の退避が失敗: worktree・ブランチを残し、退避失敗を記録する", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const wt = createSessionWorktree("T-001");
+      // 未コミットの変更を残したままセッションがタイムアウト/クラッシュした状態を再現する
+      fs.writeFileSync(path.join(wt, "wip.txt"), "作業中の内容\n");
+
+      // salvagePatch の出力先(patchesDir/<taskId>-<compactTimestamp(now)>.patch)に
+      // あらかじめ空ディレクトリを作っておくと、fs.openSync(outFile, "w") が EISDIR で
+      // 失敗し、退避が必ず失敗する状態を再現できる(now は vi.setSystemTime で固定済み)
+      const outFile = path.join(repoPaths().patchesDir, patchFileName("T-001", NOW));
+      fs.mkdirSync(outFile, { recursive: true });
+
+      const ctx: TaskSessionContext = {
+        task: makeTask(),
+        model: "opus",
+        branch: branchNameFor("T-001"),
+        worktree: wt,
+        launchStatus: "ready",
+        resuming: false,
+        startedAt: NOW.toISOString(),
+      };
+      const res: SessionResult = { exitCode: null, timedOut: true, stdout: "", stderr: "" };
+
+      finishTaskSession(config(), ctx, res);
+
+      // 退避に失敗したので worktree・ブランチのどちらも消してはならない
+      expect(fs.existsSync(wt)).toBe(true);
+      expect(branchExists(branchNameFor("T-001"))).toBe(true);
+
+      const failureFile = path.join(repoPaths().salvageFailuresDir, "T-001.json");
+      expect(fs.existsSync(failureFile)).toBe(true);
+      const rec = JSON.parse(fs.readFileSync(failureFile, "utf8")) as SalvageFailure;
+      expect(rec.worktree).toBe(wt);
+      expect(rec.taskId).toBe("T-001");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("(d) リトライ上限到達: status が failed になり、worktree を片付けブランチを退避名へリネームする", () => {

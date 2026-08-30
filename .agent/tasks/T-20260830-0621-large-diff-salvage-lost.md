@@ -1,9 +1,10 @@
 ---
 title: "大きな未コミット差分が退避に失敗したまま worktree ごと消され、復元できなくなる"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "パッチ出力を fd 直結にして上限を撤廃し、退避失敗時は 3 経路すべてで worktree を残して status の「要対応」に出すようにした"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
