@@ -1,7 +1,7 @@
 ---
-updatedAt: 2026-08-30T14:40:12.229Z
-completed: 89
-total: 91
+updatedAt: 2026-08-30T14:52:00.000Z
+completed: 91
+total: 93
 ---
 
 # OVERVIEW(GOAL に対する現在地)
@@ -13,43 +13,46 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 
 ## 「競合するタスクを同時に走らせない」仕組みは一通り入った
 
-実装・表示・検証・ドキュメントまで一通り入っている。意味論は `docs/architecture.md` の
-「dependencies と conflicts の違い」節と `D-20260830-1358-task-conflicts-field-semantics` にある。
-探索セッションが押さえておくべき点だけ:
-
-- **取り合いが起きるファイルの直列化には `dependencies` ではなく `conflicts` を使う**
-  (`dependencies` は「相手が completed になるまで起動しない」という過剰な制約になる)。対称に効くので
-  片方のタスクに書けば足り、実行中のタスクのファイルを編集せずに済む。
-- 手書きの frontmatter は存在検証を通らない(検証は `ccloop add --conflicts` 経由のときだけ)。
-  存在しない ID は黙って無視されるので、綴りは書くときに確かめること。
+実装・表示・検証・ドキュメントまで揃っている(意味論は `docs/architecture.md` の
+「dependencies と conflicts の違い」節と `D-20260830-1358-task-conflicts-field-semantics`)。
+探索セッションが押さえる点は 2 つだけ: **取り合いが起きるファイルの直列化には `dependencies` ではなく
+`conflicts` を使う**(対称に効くので片方に書けば足り、実行中タスクのファイルを編集せずに済む)。
+手書きの frontmatter は存在検証を通らない(検証は `ccloop add --conflicts` 経由のときだけ)ので、
+ID の綴りは書くときに確かめる。
 
 ## いま登録されているタスク(ready 3 件、うち 2 件は実行中)
 
-- `-1407-narrow-readonly-git-deny-patterns`(p3、実行中、同意済み)— 禁止一覧の前方一致が広すぎて
-  `git worktree list` / `git merge-base` / `git merge-tree` / `git stash list` まで巻き添えで
-  禁止されている件。これが入ると衝突・作業場所まわりを実機で再現できるようになる。
-- `-1423-status-waiting-reason-test-gap`(p4、実行中)— 待ち理由表示の 3 分岐のうち「スヌーズ待ちのみ」
-  「両方」にテストが無い件。
-- `-1440-doc-followup-changelog-readme`(p3、新規)— ドキュメントの追随漏れ 2 件
+- `-1435-status-selection-ignores-now-arg`(p4、実行中)— `collectStatusData(now)` の `now` を
+  タスク選定系のヘルパーが使わず実時刻を直に読んでおり、スヌーズ絡みの表示テストが実時刻に依存する件。
+- `-1440-doc-followup-changelog-readme`(p3、実行中)— ドキュメントの追随漏れ 2 件
   (`ecee4f4` の修正が CHANGELOG 未リリース節に無い / README の `ccloop retry` の説明が
-  `conflictRetries` のリセットに触れていない)。CHANGELOG を触るため `-1407` と `conflicts` 済み。
+  `conflictRetries` のリセットに触れていない)。
+- `-1452-changelog-missing-three-entries`(p3、新規)— CHANGELOG 未リリース節の記載漏れ 3 件
+  (`57c6506` の `ccloop add` 入力検証 / `33850e9` の status 行の文脈表示 / `66803bc` の PID 使い回し
+  誤表示)。CHANGELOG を触るため `-1440` と `conflicts` 済み。
+
+なお `-1407-narrow-readonly-git-deny-patterns`(deny の緩和)と `-1423-status-waiting-reason-test-gap`
+はどちらも完了・マージ済み。読み取り専用の `git worktree list` / `git merge-base` / `git merge-tree` /
+`git stash list` はセッションから使えるようになっている。
 
 ## 探索の当たり方(次の探索セッションへの申し送り)
 
 **コード読解の総当たりはもう当たらない**。当たる角度ははっきりしている:
 
-- **直近で入った機能が生む新しいデータ**(タスクファイルに増えるフィールド、新しく出る表示・記録)を
-  挙げ、それが PROMPT.md・ヘルプ・README・docs・表示・`KNOWN_TASK_FIELDS` に行き渡っているかを
-  横断で確かめる。**この「追随漏れ」の角度は 3 回連続で当たっている。まずここから当たること。**
-  (14:26 は `conflictRetries` が PROMPT.md にだけ無い件、14:40 は README の `ccloop retry` の
-  説明だけが `conflictRetries` に触れていない件。)
-- **利用者から見た挙動が変わるコミットが CHANGELOG に載っているか**を突き合わせる。
-  `git log --oneline --no-merges` で `feat(...)` / `fix(...)` のコミットを拾い、
-  `git show --stat --format= <hash>` に `CHANGELOG.md` が含まれるかを見るだけで済む(数分)。
-  2026-08-30T14:40 の探索はこれで 1 件拾った(`ecee4f4`)。載せない種別(`docs` / `test` /
-  `refactor` / `.agent` の記録のみ)は除外して判断する。
-- 一方、**同じマージの差分をコード的に追う**(テストの穴・同種バグの横展開・実装とプロンプトの
-  文字列一致)は収穫ゼロだった。既に一度やっているので繰り返さない。
+- **利用者から見た挙動が変わるコミットが CHANGELOG に載っているか**を突き合わせる。**現時点で
+  いちばん当たる角度**(14:40 に 1 件、14:52 に 3 件)。`git log --oneline --no-merges v<最新タグ>..HEAD`
+  で `feat` / `fix` / `perf` を拾い、`git show --stat --format= <hash>` に `CHANGELOG.md` が含まれるかを
+  見るだけ(委譲して数分)。**含まれていなくても後追いの別コミットが追記している場合があるので、
+  未リリース節の本文を関連語で検索して裏を取ること**(今回 25 件中 22 件はカバー済みだった)。
+  載せない種別(`docs` / `test` / `refactor`)と、このリポジトリ自身の開発フロー専用ファイル
+  (`lib/hooks/` / リリーススクリプト / `.agent/` 運用ルール)だけの変更は除外する。
+  **`v0.4.1..HEAD` の全 73 件は 14:52 に洗い終えた**ので、次はそれ以降の新規コミットだけでよい。
+- **直近で入った機能が生む新しいデータ**(増えるフィールド、新しく出る表示・記録)が PROMPT.md・
+  ヘルプ・README・docs・表示・`KNOWN_TASK_FIELDS` に行き渡っているかの横断確認。3 回連続で当たった
+  あと、**14:52 の確認(deny 緩和 `0403686` と `conflictRetries` 追記 `b83d300`)は収穫ゼロ**。
+  この 2 件は全参照箇所の整合を確認済みで**再調査しない**。次に機能が入るまで寝かせてよい。
+- **同じマージの差分をコード的に追う**(テストの穴・同種バグの横展開・実装とプロンプトの文字列一致)は
+  収穫ゼロだった。繰り返さない。
 - 運用記録(`metrics.jsonl` / `permission-denials.jsonl`)起点は当たり 1 件で頭打ち。記録済みの
   拒否 7 件はいずれも複合コマンドが classifier に回ったもので、PROMPT の案内不足ではない。
   数十件規模になるまで再集計しない。
@@ -79,32 +82,26 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 
 - ドキュメントと実装の一致(README / `docs/` / `lib/help.ts` / `.agent/config.json` の既定値 /
   `lib/templates/` ⇔ `docs/compatibility.md` / permission 拒否の記録まわり)は食い違い無し。
-  **ただしこの「食い違い無し」は過大だった**: 2026-08-30T14:40 に README の `ccloop retry` の
-  説明漏れ(`-1440`)が見つかっている。**「一度確認したから README は正しい」と扱わず、新機能が
-  入るたびにその機能に関係する箇所だけを見直すこと**(全文の突き合わせは不要)。
+  ただし**「一度確認したから README は正しい」と扱わないこと**(その扱いをした結果 14:40 に
+  `ccloop retry` の説明漏れが出た)。新機能が入るたびに、その機能に関係する箇所だけを見直す。
   deny 一覧(`lib/settings.template.json` ⇔ `PROMPT.md`)は `lib/deny-consistency.test.ts` が
   機械検証済み。**手で突き合わせ直さない。**
-- **プロンプト資産と実装の文字列レベルの一致は確認済み**。`lib/prompt/PROMPT.md`(唯一のプロンプト
-  資産)と、それを読むパーサ(ID の正規表現、`status` の値、`## 試行履歴` 系の見出し、`## 回答` の
-  チェックボックス文言、決定インデックスの行形式、`snoozeUntil`、`conflicts`、`conflictRetries`)は
-  すべて一致(2026-08-30T14:40 時点)。
-- **`conflicts` 周辺は掘り終えた**。ドキュメント・ヘルプ・表示・`KNOWN_TASK_FIELDS`・往復テスト・
-  `--conflicts` の存在検証・CHANGELOG まで追随済み。**再調査しない。**
-- **切り詰め表示の頭打ちバグは他に無い**(`formatCategoryCounts` / `formatDiffPathList` /
-  `summarizePermissionDenials` を 2026-08-30T14:26 に全数確認)。
+- **プロンプト資産と実装の文字列レベルの一致は確認済み**(`lib/prompt/PROMPT.md` と、それを読む
+  パーサの ID 正規表現・`status` の値・`## 試行履歴` 系の見出し・`## 回答` のチェックボックス文言・
+  決定インデックスの行形式・`snoozeUntil` / `conflicts` / `conflictRetries`。2026-08-30T14:40 時点)。
+- **`conflicts` 周辺と、切り詰め表示の頭打ちバグは掘り終えた**(前者はドキュメント〜CHANGELOG まで
+  追随済み、後者は `formatCategoryCounts` / `formatDiffPathList` / `summarizePermissionDenials` を
+  全数確認)。**再調査しない。**
 - **型安全性は穴無し**(`as` / non-null 断言を全数追跡。`any` / `@ts-ignore` は 0 件)。未使用
   export・放置された `it.skip` も無い。**実装 29 モジュールすべてにテストがあり**、`npm test` /
   lint / typecheck / `check:version` すべて警告ゼロ。
 - 仕様どおりで**不具合ではない**もの: worktree の使い回し
   (`D-20260830-0752-salvage-failure-keeps-worktree`)/ 退避ブランチが status で「未取り込み」と
   出続ける(安全側に倒す設計)/ やることが尽きたら `planLoopStep` が `idle-exit` で終了する。
-- **タスク化しなかった**もの(再提案しないこと): レートリミット再試行の待機 `1100ms` が
-  `lib/merge.ts` と `lib/supervisor.ts` に別々にハードコードされている件(どちらも同じ根拠の
-  コメント付きで、ずれても実害が出る筋道が無い)。`lib/frontmatter.ts` の `parseScalar` が壊れた
-  引用符を raw のまま返すフォールバックが未テストな件(意図的な安全側の挙動)。`status` が
-  `retries`/`conflictRetries` の回数を直接表示しない件(status=概観・list=詳細という一貫した設計)。
-  待ち理由を同時に列挙する設計理由が `docs/architecture.md` に無い件(理由はコード内コメントに
-  残っており、docs は量を増やしすぎない方針のため見送り)。
+- **タスク化しなかった**もの(再提案しないこと): 待機 `1100ms` の二重ハードコード(実害の筋道が
+  無い)/ `parseScalar` の壊れた引用符フォールバックが未テスト(意図的な安全側の挙動)/ `status` が
+  再試行回数を直接出さない(status=概観・list=詳細の一貫した設計)/ 待ち理由を同時に列挙する設計理由が
+  docs に無い(理由はコード内コメントにあり、docs は量を増やさない方針)。
 - 掘り終えた系統: CLI の体験 / 初回導入 / ループの運転と弱点 / 並列実行と状態ディレクトリ /
   長時間稼働 / 複数リポジトリ併用 / 費用・所要時間 / 記録ファイルの読み書きの頑健性 / 失敗時の
   診断体験 / テスト自体の質 / 探索とタスクの並走 / Claude Code の起動と結果の解釈 / 設定の組み立て /
@@ -116,9 +113,10 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 
 ## 次にやると完了に近づくこと
 
-1. 実行中の 2 件(`-1407` / `-1423`)を出し切る。特に `-1407` が入ると、いままでコード読解に頼る
-   しかなかった作業場所・衝突まわりの調査を実機で再現できるようになり、**探索の当たる角度が 1 つ増える**。
-2. `-1440`(CHANGELOG / README の追随漏れ)を拾う。小粒で、`-1407` と同時には走らない。
-3. その先は題材が薄い。次に当たりが出るのは **`-1407` 後の実機調査**か、**追随漏れの角度**
-   (上の「探索の当たり方」の 2 つのチェック)のどちらか。無理に題材をひねり出さず、
-   収穫が無ければ短く切り上げてよい。
+1. 登録済みの 3 件(`-1435` / `-1440` / `-1452`)を出し切る。`-1440` と `-1452` はどちらも
+   CHANGELOG を触るため同時には走らない(`conflicts` 済み)。これで未リリース節の記載漏れは
+   `v0.4.1` 以降すべて解消される。
+2. その先は題材が薄い。**未着手のまとまった角度は「読み取り専用 git が使えるようになったことを
+   活かした実機調査」だけ**(作業場所・衝突まわりを `git worktree list` / `git merge-base` で
+   実際に再現して確かめる)。まだ一度も試していないので、次の探索はここから当たるとよい。
+3. それ以外は無理に題材をひねり出さない。**収穫ゼロなら正直にそう書いて短く切り上げてよい**。
