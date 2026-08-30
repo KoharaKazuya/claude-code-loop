@@ -478,7 +478,7 @@ function saveState(state: State): void {
 /**
  * コンソールへ 1 行出力する(ファイルには残さない)。
  * セッションの中身は Claude Code 自身が transcript として保存しており、
- * claude-code-log(README 参照)でセッション ID から確認できる。
+ * セッション ID からたどれる(README「セッションログを追う」参照)。
  */
 function log(message: string): void {
   const time = new Date().toTimeString().slice(0, 8);
@@ -1865,7 +1865,7 @@ function parseResultJson(res: SessionResult): Record<string, unknown> | null {
 
 /**
  * 結果 JSON からセッション ID を取り出す。ログの中身はこの ID を使って
- * claude-code-log(README 参照)で確認する。タイムアウト・起動失敗などで
+ * transcript から確認する(README「セッションログを追う」参照)。タイムアウト・起動失敗などで
  * 結果 JSON が得られなかった場合は "不明"。
  */
 function sessionId(res: SessionResult): string {
