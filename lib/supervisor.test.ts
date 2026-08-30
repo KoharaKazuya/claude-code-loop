@@ -18,6 +18,7 @@ import {
   buildTaskPrompt,
   byPriorityThenCreatedAt,
   classifyHumanReview,
+  classifyTaskSessionResult,
   closeHumanReview,
   collectSubagentStats,
   commitAgentDir,
@@ -99,6 +100,7 @@ import {
   taskFileChangedOnBranch,
   taskFromFile,
   taskFrontmatter,
+  type TaskSessionVerdict,
   useRepoRoot,
   withTrailer,
   worktreeConflictPending,
@@ -1402,6 +1404,151 @@ describe("lastAttemptFailureKind", () => {
     });
 
     expect(lastAttemptFailureKind(body2)).toBe("merge-conflict");
+  });
+});
+
+describe("classifyTaskSessionResult", () => {
+  const baseInput = (over: Partial<Parameters<typeof classifyTaskSessionResult>[0]> = {}): Parameters<
+    typeof classifyTaskSessionResult
+  >[0] => ({
+    timedOut: false,
+    taskTimeoutMs: 2400000,
+    rateLimited: false,
+    mergeStuck: false,
+    outcome: null,
+    conflictPaths: [],
+    exitCode: 0,
+    stderrTail: "",
+    maxTurns: false,
+    errorSubtype: null,
+    taskFileChanged: true,
+    statusUnchanged: false,
+    ...over,
+  });
+
+  it("衝突未解消のまま時間切れになったら merge-conflict になり、reason に衝突とタイムアウトの両方が含まれる", () => {
+    const verdict: TaskSessionVerdict = classifyTaskSessionResult(baseInput({ mergeStuck: true, timedOut: true }));
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "merge-conflict",
+      reason:
+        "衝突解消が未完のまま終了。main とのマージが進行中のまま残っている(セッションはタイムアウト(2400000ms)で打ち切られた)",
+    });
+  });
+
+  it("衝突未解消のみなら merge-conflict で、reason にタイムアウトの記述が入らない", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ mergeStuck: true }));
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "merge-conflict",
+      reason: "衝突解消が未完のまま終了。main とのマージが進行中のまま残っている",
+    });
+  });
+
+  it("時間切れのみなら timeout", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ timedOut: true }));
+
+    expect(verdict).toEqual({ kind: "fail", failureKind: "timeout", reason: "タイムアウト(2400000ms)" });
+  });
+
+  it("レートリミット + 衝突未解消は rate-limited になる(失敗として数えない)", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ rateLimited: true, mergeStuck: true }));
+
+    expect(verdict).toEqual({ kind: "rate-limited" });
+  });
+
+  it("レートリミット + 時間切れは rate-limited になる(やり直し回数を消費させない)", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ rateLimited: true, timedOut: true }));
+
+    expect(verdict).toEqual({ kind: "rate-limited" });
+  });
+
+  it("レートリミット + 衝突未解消 + 時間切れが同時でも rate-limited が最優先になる", () => {
+    const verdict = classifyTaskSessionResult(
+      baseInput({ rateLimited: true, mergeStuck: true, timedOut: true }),
+    );
+
+    expect(verdict).toEqual({ kind: "rate-limited" });
+  });
+
+  it("レートリミットのみなら rate-limited", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ rateLimited: true }));
+
+    expect(verdict).toEqual({ kind: "rate-limited" });
+  });
+
+  it("マージ結果が wedged なら wedged", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ outcome: { result: "wedged", stderr: "boom" } }));
+
+    expect(verdict).toEqual({ kind: "wedged" });
+  });
+
+  it("マージ結果が conflict なら merge-conflict で、reason に衝突パスを含む", () => {
+    const verdict = classifyTaskSessionResult(
+      baseInput({ outcome: { result: "conflict", paths: ["a.ts", "b.ts"] }, conflictPaths: ["a.ts", "b.ts"] }),
+    );
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "merge-conflict",
+      reason: "main へのマージが衝突した(a.ts, b.ts)",
+    });
+  });
+
+  it("マージ結果が blocked なら merge-conflict で、reason に理由を含む", () => {
+    const verdict = classifyTaskSessionResult(
+      baseInput({ outcome: { result: "blocked", reason: "main が別の git 操作の途中" } }),
+    );
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "merge-conflict",
+      reason: "main へのマージを開始できなかった: main が別の git 操作の途中",
+    });
+  });
+
+  it("exitCode が非 0 なら crash", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ exitCode: 1, stderrTail: ": boom" }));
+
+    expect(verdict).toEqual({ kind: "fail", failureKind: "crash", reason: "claude が異常終了 (exitCode=1): boom" });
+  });
+
+  it("ターン数上限なら max-turns", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ maxTurns: true }));
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "max-turns",
+      reason: "セッションがターン数の上限に達して打ち切られた",
+    });
+  });
+
+  it("errorSubtype があれば crash", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ errorSubtype: "unknown" }));
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "crash",
+      reason: "claude がエラーを報告して終了した (subtype=unknown)",
+    });
+  });
+
+  it("タスクファイルの変更が無く status も変わっていなければ no-status-update", () => {
+    const verdict = classifyTaskSessionResult(baseInput({ taskFileChanged: false, statusUnchanged: true }));
+
+    expect(verdict).toEqual({
+      kind: "fail",
+      failureKind: "no-status-update",
+      reason: "セッションがタスクファイルの status を更新せず終了した",
+    });
+  });
+
+  it("いずれにも該当しなければ ok", () => {
+    const verdict = classifyTaskSessionResult(baseInput());
+
+    expect(verdict).toEqual({ kind: "ok" });
   });
 });
 
