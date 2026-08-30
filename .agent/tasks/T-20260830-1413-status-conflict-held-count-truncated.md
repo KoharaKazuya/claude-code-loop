@@ -1,6 +1,6 @@
 ---
 title: "status の競合待ち件数が 3 件で頭打ちになるのを直す"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 conflicts: [T-20260830-1334-explore-assigns-conflict-metadata, T-20260830-1403-list-shows-task-conflicts, T-20260830-1407-narrow-readonly-git-deny-patterns]
