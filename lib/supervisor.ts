@@ -937,8 +937,9 @@ export function isFastCrash(res: SessionResult, wallMs: number): boolean {
  * fastCrashStreak の次の値を、1 セッションの結果から計算する。finishTaskSession から
  * 判定ロジックだけを切り出したもの(単体テストで検証できるようにするため)。
  *
- * finishTaskSession の結果分類(6. 結果の分類: レートリミット → タイムアウト → それ以外)は
- * retries・待機の設定を誤らせないためレートリミットを最優先にするが、こちらは判定の目的が
+ * finishTaskSession の結果分類(classifyTaskSessionResult: レートリミット → 衝突未解消 →
+ * タイムアウト → それ以外)は retries・待機の設定と申し送りを誤らせないためレートリミットを
+ * 最優先にし、衝突未解消をタイムアウトより先に見るが、こちらは判定の目的が
  * 異なるため timedOut を先に見てよい: タイムアウトになるまで(taskTimeoutMs 分、通常は数十分)
  * 走ったセッションはレートリミットが絡んでいるかどうかに関わらず「起動直後に落ちた」瞬時
  * クラッシュではないため、streak は 0 に戻すのが正しい。
@@ -3245,6 +3246,97 @@ export function skipMainWriteIfGitBusy(taskId: string, root: string = repoPaths(
   return true;
 }
 
+export type TaskSessionVerdict =
+  | { kind: "fail"; reason: string; failureKind: FailureKind }
+  | { kind: "rate-limited" }
+  | { kind: "wedged" }
+  | { kind: "ok" };
+
+/**
+ * finishTaskSession の結果分類ロジックを純関数として切り出したもの。複数の失敗種別が同時に
+ * 成立しうるため、判定の順序に意味がある:
+ *
+ * 1. レートリミット。利用上限に当たったまま CLI がすぐには終了せずタイムアウトで kill される
+ *    ケースがあり、これを他の分岐で先に拾うと retries を消費したうえ待機(rateLimit.resumeAt)も
+ *    設定されないまま同じ状況を繰り返してしまう。レートリミットは失敗として数えない。
+ * 2. 衝突未解消(mergeStuck)。時間切れより先に判定する。両方成立しうるが、次の試行に渡す
+ *    べき申し送りは「衝突を解消せよ」であって「タスクを分割せよ」ではないため、衝突未解消を
+ *    timeout より優先する。
+ * 3. タイムアウト。
+ * 4. それ以外(マージ結果・異常終了・ターン上限・エラー・status 未更新)。
+ */
+export function classifyTaskSessionResult(input: {
+  timedOut: boolean;
+  taskTimeoutMs: number;
+  rateLimited: boolean;
+  mergeStuck: boolean;
+  outcome: MergeOutcome | null;
+  conflictPaths: string[];
+  exitCode: number | null;
+  stderrTail: string;
+  maxTurns: boolean;
+  errorSubtype: string | null;
+  taskFileChanged: boolean;
+  statusUnchanged: boolean;
+}): TaskSessionVerdict {
+  const {
+    timedOut,
+    taskTimeoutMs,
+    rateLimited,
+    mergeStuck,
+    outcome,
+    conflictPaths,
+    exitCode,
+    stderrTail,
+    maxTurns,
+    errorSubtype,
+    taskFileChanged,
+    statusUnchanged,
+  } = input;
+
+  if (rateLimited) {
+    return { kind: "rate-limited" };
+  }
+
+  if (mergeStuck) {
+    const timeoutSuffix = timedOut ? `(セッションはタイムアウト(${taskTimeoutMs}ms)で打ち切られた)` : "";
+    return {
+      kind: "fail",
+      reason: `衝突解消が未完のまま終了。main とのマージが進行中のまま残っている${timeoutSuffix}`,
+      failureKind: "merge-conflict",
+    };
+  }
+
+  if (timedOut) {
+    return { kind: "fail", reason: `タイムアウト(${taskTimeoutMs}ms)`, failureKind: "timeout" };
+  }
+
+  if (outcome !== null && outcome.result === "wedged") {
+    return { kind: "wedged" };
+  }
+  if (outcome !== null && outcome.result === "conflict") {
+    return { kind: "fail", reason: `main へのマージが衝突した(${conflictPaths.join(", ")})`, failureKind: "merge-conflict" };
+  }
+  if (outcome !== null && outcome.result === "blocked") {
+    return { kind: "fail", reason: `main へのマージを開始できなかった: ${outcome.reason}`, failureKind: "merge-conflict" };
+  }
+  if (exitCode !== 0) {
+    return { kind: "fail", reason: `claude が異常終了 (exitCode=${exitCode})${stderrTail}`, failureKind: "crash" };
+  }
+  if (maxTurns) {
+    // exitCode 0 でも結果 JSON が is_error を立てることがある。レートリミットは
+    // 成功扱いの is_error: true を出すため、この判定は必ずレートリミット判定より後ろに置く
+    return { kind: "fail", reason: "セッションがターン数の上限に達して打ち切られた", failureKind: "max-turns" };
+  }
+  if (errorSubtype !== null) {
+    return { kind: "fail", reason: `claude がエラーを報告して終了した (subtype=${errorSubtype})`, failureKind: "crash" };
+  }
+  if (!taskFileChanged && statusUnchanged) {
+    return { kind: "fail", reason: "セッションがタスクファイルの status を更新せず終了した", failureKind: "no-status-update" };
+  }
+  return { kind: "ok" };
+}
+
 /**
  * タスクセッション終了後の後始末。順序に意味がある:
  * sweep(worktree 側の .agent コミット)→ タスクファイル更新判定 → マージ →
@@ -3396,53 +3488,51 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
       log(`${styleText(meta.color, meta.symbol)} ${taskId} ${t.status} (session ${session})`);
     };
 
-    // 6. 結果の分類(判定の順序に意味がある: レートリミット → タイムアウト → それ以外)
-    const errorSubtype = sessionErrorSubtype(res);
-    if (rateLimited) {
-      // レートリミットを最優先で見る。利用上限に当たったまま CLI がすぐには終了せず
-      // タイムアウトで kill されるケースがあり、これをタイムアウト側で先に拾ってしまうと
-      // retries を消費したうえ待機(rateLimit.resumeAt)も設定されないまま、同じ状況を
-      // 繰り返してしまう。レートリミットはタスクの失敗として数えない(retries を増やさない)。
-      // worktree の扱いはマージ結果に従うため、ここでは待機の設定だけ行う
+    // 6. 結果の分類(判定の順序に意味があるため classifyTaskSessionResult に委譲する)
+    // 統合できていれば main 側のタスクファイルにセッションの更新が反映されている
+    const merged = loadTask(taskId);
+    const statusUnchanged = merged !== null && merged.status === ctx.launchStatus;
+
+    const verdict = classifyTaskSessionResult({
+      timedOut: res.timedOut,
+      taskTimeoutMs: config.taskTimeoutMs,
+      rateLimited,
+      mergeStuck,
+      outcome,
+      conflictPaths,
+      exitCode: res.exitCode,
+      stderrTail: stderrTail(res),
+      maxTurns: isMaxTurnsError(res),
+      errorSubtype: sessionErrorSubtype(res),
+      taskFileChanged,
+      statusUnchanged,
+    });
+
+    if (verdict.kind === "rate-limited") {
+      // レートリミットはタスクの失敗として数えない(retries を増やさない)。worktree の
+      // 扱いはマージ結果に従うため、ここでは待機の設定だけ行う
       applyRateLimit(config);
       if (res.timedOut) {
         log(
           `${taskId}: タイムアウトで打ち切られたが利用上限が検出されたため、やり直し回数を消費しない(session ${session})`,
         );
       }
-    } else if (res.timedOut) {
-      fail(`タイムアウト(${config.taskTimeoutMs}ms)`, "timeout");
-    } else {
+    } else if (!res.timedOut) {
+      // タイムアウトしたセッションは上限に達していない証拠にならないので待機状態はそのままにする
       clearRateLimit();
-      // 統合できていれば main 側のタスクファイルにセッションの更新が反映されている
-      const merged = loadTask(taskId);
-      const statusUnchanged = merged !== null && merged.status === ctx.launchStatus;
-      if (mergeStuck) {
-        fail("衝突解消が未完のまま終了。main とのマージが進行中のまま残っている", "merge-conflict");
-      } else if (outcome !== null && outcome.result === "wedged") {
-        // main が git merge --abort の失敗で固まっている。fail() は呼ばない: retries を
-        // 消費させず、main 側のタスクファイルにも一切書き込まない(復旧後の再試行で
-        // 現在の状態のまま再評価される)。ログだけ残す
-        log(
-          `${styleText("red", "✖")} ${taskId}: main が git 操作の途中で固まっているため記録を書かない(復旧後の再試行で再評価される)`,
-        );
-      } else if (outcome !== null && outcome.result === "conflict") {
-        fail(`main へのマージが衝突した(${conflictPaths.join(", ")})`, "merge-conflict");
-      } else if (outcome !== null && outcome.result === "blocked") {
-        fail(`main へのマージを開始できなかった: ${outcome.reason}`, "merge-conflict");
-      } else if (res.exitCode !== 0) {
-        fail(`claude が異常終了 (exitCode=${res.exitCode})${stderrTail(res)}`, "crash");
-      } else if (isMaxTurnsError(res)) {
-        // exitCode 0 でも結果 JSON が is_error を立てることがある。レートリミットは
-        // 成功扱いの is_error: true を出すため、この判定は必ずレートリミット判定より後ろに置く
-        fail("セッションがターン数の上限に達して打ち切られた", "max-turns");
-      } else if (errorSubtype !== null) {
-        fail(`claude がエラーを報告して終了した (subtype=${errorSubtype})`, "crash");
-      } else if (!taskFileChanged && statusUnchanged) {
-        fail("セッションがタスクファイルの status を更新せず終了した", "no-status-update");
-      } else {
-        logFinalStatus();
-      }
+    }
+
+    if (verdict.kind === "fail") {
+      fail(verdict.reason, verdict.failureKind);
+    } else if (verdict.kind === "wedged") {
+      // main が git merge --abort の失敗で固まっている。fail() は呼ばない: retries を
+      // 消費させず、main 側のタスクファイルにも一切書き込まない(復旧後の再試行で
+      // 現在の状態のまま再評価される)。ログだけ残す
+      log(
+        `${styleText("red", "✖")} ${taskId}: main が git 操作の途中で固まっているため記録を書かない(復旧後の再試行で再評価される)`,
+      );
+    } else if (verdict.kind === "ok") {
+      logFinalStatus();
     }
 
     // 7. 退避したパッチを試行履歴へ残す(worktree はもう無く、ここにしか手がかりがない)
