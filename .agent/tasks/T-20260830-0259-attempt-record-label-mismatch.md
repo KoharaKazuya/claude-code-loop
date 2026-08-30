@@ -1,9 +1,10 @@
 ---
 title: "仕様書と実装で食い違っている表記を揃える"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "実装側のラベルを「ccloop 記録」へ統一。help.ts の存在しないテスト言及も削除。typecheck/lint/test 全て通過"
 createdAt: 2026-08-30T02:59:35.065Z
 ---
 

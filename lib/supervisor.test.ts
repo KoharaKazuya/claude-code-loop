@@ -698,7 +698,7 @@ describe("appendAttemptRecord", () => {
 
     expect(result).toContain("既存の本文");
     expect(result).toContain("## 試行履歴");
-    expect(result).toContain("### 試行 1(2026-08-14T00:00:00.000Z, Supervisor 記録: タイムアウト)");
+    expect(result).toContain("### 試行 1(2026-08-14T00:00:00.000Z, ccloop 記録: タイムアウト)");
     expect(result.match(/## 試行履歴/g)).toHaveLength(1);
   });
 
@@ -709,7 +709,7 @@ describe("appendAttemptRecord", () => {
     expect(result.match(/## 試行履歴/g)).toHaveLength(1);
     expect(result).toContain("### 試行 1(");
     expect(result).toContain("### 試行 2(");
-    expect(result).toContain("Supervisor 記録: 異常終了");
+    expect(result).toContain("ccloop 記録: 異常終了");
   });
 
   it("空の body でも壊れない", () => {
@@ -3048,7 +3048,7 @@ describe("appendUncommittedDiffRecord", () => {
 
     expect(result).toContain("既存の本文");
     expect(result).toContain("## 試行履歴");
-    expect(result).toContain("### 未コミット差分(2026-08-15T00:00:00.000Z, Supervisor 記録)");
+    expect(result).toContain("### 未コミット差分(2026-08-15T00:00:00.000Z, ccloop 記録)");
     expect(result).toContain("`src/a.ts`, `src/b.ts`");
     expect(result.match(/## 試行履歴/g)).toHaveLength(1);
   });

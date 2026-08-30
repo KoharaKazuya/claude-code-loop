@@ -1378,7 +1378,7 @@ export function appendAttemptRecord(
   rec: { attempt: number; at: string; kind: FailureKind; reason: string },
 ): string {
   const entry = [
-    `### 試行 ${rec.attempt}(${rec.at}, Supervisor 記録: ${FAILURE_KIND_LABEL[rec.kind]})`,
+    `### 試行 ${rec.attempt}(${rec.at}, ccloop 記録: ${FAILURE_KIND_LABEL[rec.kind]})`,
     "",
     `- 結果: ${rec.reason}`,
     `- ${FAILURE_KIND_ADVICE[rec.kind]}`,
@@ -1422,7 +1422,7 @@ export function appendUncommittedDiffRecord(
   if (rec.paths.length === 0) return body;
 
   const entry = [
-    `### 未コミット差分(${rec.at}, Supervisor 記録)`,
+    `### 未コミット差分(${rec.at}, ccloop 記録)`,
     "",
     `- このセッションが \`.agent/\` 以外にコミットせず残した差分をパッチへ退避した: ${formatDiffPathList(rec.paths)}`,
     `- 退避先: \`${rec.patchFile}\`。作業していた worktree は削除済みのため、差分はこのパッチにしか残っていない`,
