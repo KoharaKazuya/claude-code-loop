@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPaths, type Paths } from "./paths.ts";
 import { generateSettings, mergeSettings, settingsTemplatePath, type Settings } from "./settings.ts";
 
@@ -166,5 +166,29 @@ describe("generateSettings", () => {
     const occurrences = (s.permissions?.deny ?? []).filter((d) => d === `Edit(/${paths.generatedSettingsPath})`);
 
     expect(occurrences).toHaveLength(1);
+  });
+
+  it("追記ファイルが存在しないときは警告を出さない", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    generateSettings(paths, { home: import.meta.dirname });
+
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it("`.agent/claude-settings.json` が壊れた JSON のとき、警告を出しつつテンプレートの permissions だけで生成する", () => {
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(path.join(paths.agentDir, "claude-settings.json"), "{ 壊れた json");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const s = read(generateSettings(paths, { home: import.meta.dirname }));
+
+    expect(logSpy).toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args) => String(args[0])).join("\n");
+    expect(logged).toContain("claude-settings.json");
+    // テンプレート由来の permissions だけで生成できている(利用側の追記は無視される)
+    expect(s.permissions?.deny).toContain("Read(~/.claude/**)");
+    logSpy.mockRestore();
   });
 });

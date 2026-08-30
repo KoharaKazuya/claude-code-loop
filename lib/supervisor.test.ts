@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
 import { readProcStartToken, writeRunnerRecord } from "./liveness.ts";
+import { createPaths, type Paths } from "./paths.ts";
 import {
   AGENT_COMMIT_TRAILER,
   allTaskIds,
@@ -66,6 +67,7 @@ import {
   recordFailure,
   recordPermissionDenials,
   recoverStartupIn,
+  refreshGeneratedSessionInputs,
   repoPaths,
   resolvePriority,
   resolveTaskSlug,
@@ -1828,6 +1830,69 @@ describe("buildClaudeArgs", () => {
     const args = buildClaudeArgs(config, "p", "opus", ["--worktree", "T-001"]);
 
     expect(args.slice(-2)).toEqual(["--worktree", "T-001"]);
+  });
+});
+
+describe("refreshGeneratedSessionInputs", () => {
+  let dir: string;
+  let paths: Paths;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-refresh-test-"));
+    paths = createPaths(dir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(paths.stateDir, { recursive: true, force: true });
+  });
+
+  it("呼び出しのたびに .agent/claude-settings.json を読み直す(run の起動時 1 回ではない)", () => {
+    refreshGeneratedSessionInputs(paths);
+    const before = JSON.parse(fs.readFileSync(paths.generatedSettingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    expect(before.permissions?.allow ?? []).not.toContain("Bash(cargo *)");
+
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(paths.agentDir, "claude-settings.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(cargo *)"] } }),
+    );
+    refreshGeneratedSessionInputs(paths);
+
+    const after = JSON.parse(fs.readFileSync(paths.generatedSettingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    expect(after.permissions?.allow).toContain("Bash(cargo *)");
+  });
+
+  it("呼び出しのたびに .agent/PROMPT.local.md を読み直す(run の起動時 1 回ではない)", () => {
+    refreshGeneratedSessionInputs(paths);
+    const before = fs.readFileSync(paths.generatedSystemPromptPath, "utf8");
+    expect(before).not.toContain("リポジトリ固有の追加ルールのテキスト");
+
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(paths.promptLocalPath, "リポジトリ固有の追加ルールのテキスト");
+    refreshGeneratedSessionInputs(paths);
+
+    const after = fs.readFileSync(paths.generatedSystemPromptPath, "utf8");
+    expect(after).toContain("リポジトリ固有の追加ルールのテキスト");
+  });
+
+  it("生成に失敗しても例外を投げず、警告を出すだけで続行する", () => {
+    // generatedSettingsPath の親ディレクトリになる場所を、あらかじめ通常ファイルとして
+    // 作っておくと mkdirSync(recursive: true) が ENOTDIR で失敗する
+    const blocker = path.join(paths.stateDir, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+    const badPaths: Paths = { ...paths, generatedSettingsPath: path.join(blocker, "claude-settings.json") };
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(() => refreshGeneratedSessionInputs(badPaths)).not.toThrow();
+    expect(logSpy).toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args) => String(args[0])).join("\n");
+    expect(logged).toContain("再生成に失敗");
+    logSpy.mockRestore();
   });
 });
 
