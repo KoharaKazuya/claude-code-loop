@@ -1,7 +1,7 @@
 ---
-updatedAt: 2026-08-30T13:46:18.783Z
-completed: 79
-total: 84
+updatedAt: 2026-08-30T13:54:37.114Z
+completed: 80
+total: 85
 ---
 
 # OVERVIEW(GOAL に対する現在地)
@@ -12,7 +12,7 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 `ccloop status` は「要対応事項なし」)。前進は **フェーズ 4 の確認トピックに回答をもらうこと**と
 **確認不要で拾える修理**の両輪で決まるが、確認トピックは在庫も回答待ちも空である。
 
-## いま登録されているタスク(ready 5 件)
+## いま登録されているタスク(ready 5 件、うち 3 件は実行中)
 
 `conflicts`(競合するタスクを同時に走らせない仕組み)の 2 件が主線。人間が指定した方式は
 「探索セッションが競合しそうなタスクを判断し、依存と同じようにタスクへメタデータを持たせ、
@@ -22,20 +22,20 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 - `-1334-explore-assigns-conflict-metadata`(p3)— 探索セッションが `conflicts` を付ける指示を
   `lib/prompt/PROMPT.md` と探索プロンプトへ定着させる。これが無いとフィールドは空のまま。
   上の実装に `dependencies` で直列化済み(両者とも `lib/supervisor.ts` を触るため)。
-- `-0829-finish-crash-leaves-no-trace`(p3)— **中身は既に main にある**
-  (`13c4916` ほか、`phase: "finishing"` による起動時復旧が `lib/supervisor.ts` に実装済み)。
-  着手セッションは実装をやり直さず、成果が入っていることを確認して `completed` にすればよい。
-- `-1346-paths-test-conditional-assertion`(p3)— `lib/paths.test.ts:107-119` が条件付き
-  アサーションで、例外が投げられない環境ではアサーション 0 回のまま緑になる(今回の探索で発見)。
-- `-1346-node-engines-doctor-consistency`(p3)— `package.json` の `engines.node` と
-  `lib/doctor.ts` の `checkNodeVersion` が独立にハードコードされており突き合わせが無い(同上)。
+- `-1346-paths-test-conditional-assertion`(p3、実行中)— `lib/paths.test.ts:107-119` が条件付き
+  アサーションで、例外が投げられない環境ではアサーション 0 回のまま緑になる。
+- `-1346-node-engines-doctor-consistency`(p3、実行中)— `package.json` の `engines.node` と
+  `lib/doctor.ts` の `checkNodeVersion` が独立にハードコードされており突き合わせが無い。
+- `-1354-git-operation-in-progress-coverage`(p3)— `lib/worktree.ts` の
+  `gitOperationInProgress` は 6 条件で「進行中の git 操作」を判定するが、うち `REVERT_HEAD` /
+  `BISECT_LOG` / `rebase-merge` / `rebase-apply` の 4 条件が全 1215 件のテストで一度も再現されて
+  いない(今回の探索で発見)。触るのは `lib/worktree.test.ts` だけで、他タスクと重ならない。
 
-新しい 2 件は互いにも走行中タスクにも触るファイルが重ならないので直列化していない。
+テスト品質の 3 件は互いにも走行中タスクにも触るファイルが重ならないので直列化していない。
 
 ## 探索の収穫は薄い(実物観察は掘り尽くしに近い)
 
-過去 3 回の探索がほぼ収穫ゼロ。今回は角度を変え(未使用 export の全数走査 / `JSON.parse`・`fs`・
-`catch` の全数確認 / テストの弱いアサーション / 定数の二重管理)、テスト品質の 2 件を拾えた。
+過去 4 回の探索はほぼ収穫ゼロで、拾えるのはテスト品質の小粒ばかりになっている。
 `npm test` 1215 件全通過・lint / typecheck / `check:version` すべて警告ゼロ。
 **無理にひねり出さず「収穫ゼロ」を正直に記録するほうがよい。**
 
@@ -43,6 +43,8 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 `1100ms` が `lib/merge.ts` と `lib/supervisor.ts` に別々にハードコードされている。どちらも
 「git の秒境界を必ず跨ぐ」という同じ根拠のコメント付きで、値がずれても実害が出る筋道が無く、
 共有定数化のために衝突ホットスポットである `lib/supervisor.ts` を触る割に合わない。
+`lib/frontmatter.ts` の `parseScalar` が壊れた引用符を raw のまま返すフォールバックも未テストだが、
+意図的な安全側の挙動で実害が無いためタスク化していない。
 
 ## 人間の好み(回答から読み取れたもの。次のトピックを出すときの目安)
 
@@ -74,6 +76,19 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
   存在しないタスク ID への `retry`)はいずれも適切なメッセージを返す。
 - 未使用・到達不能な export は無い。`it.skip` の放置も無い。`JSON.parse` / `fs` の catch は
   いずれも理由がコメントされた意図的なフェイルセーフで、想定内の失敗でループが落ちる箇所は無い。
+- **型安全性は穴無し**。`as`(約 45 件)・non-null 断言(27 件)を全数追跡したが、外部入力
+  (`.agent/` の frontmatter・各種 JSON・git 出力・Claude Code の出力・hook stdin)の境界は
+  すべて `typeof` / `Array.isArray` / `isPlainObject` 等で検証してから使っている。`any` と
+  `@ts-ignore` は 0 件。**この角度はもう掘らなくてよい。**
+- **プロンプト資産と実装の文字列レベルの一致は確認済み**。`lib/prompt/PROMPT.md`(唯一のプロンプト
+  資産。`lib/prompt/` に他ファイルは無い)と、それを読むパーサ(ID の正規表現、`status` の値、
+  `## 試行履歴` / `### 試行 N` / `### 未コミット差分` の見出し、`## 回答` のチェックボックス文言、
+  決定インデックスの行形式、`OVERVIEW.md` の frontmatter、`snoozeUntil` の解釈、`agent/<taskId>`)は
+  一致。`.claude/CLAUDE.md` との重複ルールにも矛盾は無い。**この角度も掘り終えた。**
+- **実装 29 モジュールすべてに対応するテストがある**(テスト皆無のモジュールは無い)。
+  `scheduler` / `merge` / `liveness` / `rotate` / `ratelimit` / `decisions-index` /
+  `supervisor` の状態選定・status 集計は分岐まで確認して穴無し。唯一の穴が上記の
+  `gitOperationInProgress`(タスク登録済み)。
 - **worktree の使い回しは意図された挙動**(`D-20260830-0752-salvage-failure-keeps-worktree`)。
 - **やることが尽きたときの挙動**: `planLoopStep`(`lib/scheduler.ts`)が `idle-exit` を返して終了する。
 - 退避ブランチが status で「未取り込み」と出続けるのは `parkedBranchMergedIntoHead` が patch-id 比較を
@@ -92,13 +107,18 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 ## 次にやると完了に近づくこと
 
 1. `conflicts` の 2 タスク(仕組み → 指示)を直列で消化する。これで衝突対策が人力運用から仕組みへ移る。
-2. `-0829` を「確認して completed にする」だけで閉じる(実装のやり直しは不要)。
-3. テスト品質の 2 件(`-1346-*`)を消化する。どちらも小さく、互いに独立。
+2. テスト品質の 3 件(`-1346-*` 2 件と `-1354-git-operation-in-progress-coverage`)を消化する。
+   どれも小さく、互いに独立で、触るファイルも重ならない。
 
 次の探索セッションへの申し送り:
 
 - **確認トピックの枠は空いている(0/4)が在庫も空。** 出せるネタが見つかったら提出してよいが、
-  無理にひねり出さないこと。見送り済みトピック(上記)は再提案しない。
+  無理にひねり出さないこと。見送り済みトピック(上記)は再提案しない。今回も新規提出なし
+  (拾えたのがテストの追加 1 件だけで、確認を取る粒度に当たらないため)。
+- **未探索の角度がほぼ残っていない。** 上の「突き合わせ済み」に型安全性・プロンプト資産の整合・
+  テストのカバレッジ穴が加わり、コード読解で拾える系統はほぼ尽きた。次の探索は、収穫ゼロを
+  前提に短く切り上げるか、実運用で実際に起きた摩擦(セッションの失敗記録・permission 拒否の
+  傾向・費用の推移)を起点にするほうが期待値が高い。
 - **`lib/supervisor.ts` と `CHANGELOG.md` の「## 未リリース」節は取り合いが起きる。**
   これらを触るタスクを 2 件以上同時に ready にするなら、`conflicts` の実装が入るまでは
   `dependencies` で直列化する(入った後は `conflicts` を使う)。
