@@ -17,6 +17,7 @@ import {
   formatStatus,
   hrSummary,
   loadSalvageFailures,
+  parkedBranchMergedIntoHead,
   permissionDenialsPathOf,
   repoPaths,
   type SalvageFailure,
@@ -561,6 +562,107 @@ describe("collectStatusData / formatStatus", () => {
       expect(out).not.toContain("設定ファイルが古い");
       expect(out).not.toContain("ccloop 本体が古い");
       expect(out).toContain("要対応事項なし");
+    });
+  });
+
+  describe("退避された衝突ブランチの取り込み判定", () => {
+    function git(args: string[]): string {
+      return execFileSync("git", args, { cwd: dir }).toString();
+    }
+
+    /** テスト用のコミット identity を設定する。GPG 署名が有効な環境でも落ちないようにする */
+    function initGitIdentity(): void {
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test User"]);
+      git(["config", "commit.gpgsign", "false"]);
+    }
+
+    function writeAndCommit(file: string, content: string, message: string): void {
+      fs.writeFileSync(path.join(dir, file), content);
+      git(["add", "-A"]);
+      git(["commit", "-m", message]);
+    }
+
+    it("main と同じコミットを指す(先端がそのまま main)ブランチは取り込み済み節に出て削除コマンドが付く", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+      const branch = "agent/conflict/T-001-20260830-0000";
+      git(["branch", branch]);
+
+      const out = formatStatus();
+      expect(out).toContain("main に取り込み済み");
+      expect(out).toContain(branch);
+      expect(out).toContain(`git branch -D ${branch}`);
+    });
+
+    it("先端が main の祖先(分岐後に main だけ進んだ)ブランチも取り込み済みになる", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+      const branch = "agent/conflict/T-006-20260830-0000";
+      git(["branch", branch]);
+      // 退避後に main だけが進む。ブランチの先端は main の祖先のままなので消してよい
+      writeAndCommit("d.txt", "main のみの変更\n", "main を進める");
+
+      const out = formatStatus();
+      expect(out).toContain("main に取り込み済み");
+      expect(out).toContain(`git branch -D ${branch}`);
+    });
+
+    it("main に無いコミットを持つブランチは未取り込み節に出て削除コマンドは付かない", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+      const branch = "agent/conflict/T-002-20260830-0000";
+      git(["checkout", "-b", branch]);
+      writeAndCommit("b.txt", "extra\n", "branch 側だけの変更");
+      git(["checkout", "main"]);
+
+      const out = formatStatus();
+      expect(out).toContain("main に未取り込み");
+      expect(out).toContain(branch);
+      expect(out).not.toContain(`git branch -D ${branch}`);
+    });
+
+    it("内容は同じでも main 側に別コミットとして取り込まれている場合は安全側に倒して未取り込み扱いにする", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+      const branch = "agent/conflict/T-003-20260830-0000";
+      git(["checkout", "-b", branch]);
+      writeAndCommit("a.txt", "changed\n", "branch 側の変更");
+      git(["checkout", "main"]);
+      // main 側でも同じ内容を、squash や当て直しを模して別コミットとして取り込む
+      writeAndCommit("a.txt", "changed\n", "main 側で同じ内容を別コミットとして取り込む");
+
+      const out = formatStatus();
+      expect(out).toContain("main に未取り込み");
+      expect(out).toContain(branch);
+      expect(out).not.toContain(`git branch -D ${branch}`);
+    });
+
+    it("取り込み済み・未取り込みが両方あれば両方の節が出る", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+      const mergedBranch = "agent/conflict/T-004-20260830-0000";
+      git(["branch", mergedBranch]);
+      const unmergedBranch = "agent/conflict/T-005-20260830-0000";
+      git(["checkout", "-b", unmergedBranch]);
+      writeAndCommit("c.txt", "extra\n", "branch 側だけの変更");
+      git(["checkout", "main"]);
+
+      const out = formatStatus();
+      expect(out).toContain("main に取り込み済み");
+      expect(out).toContain("main に未取り込み");
+      expect(out).toContain(mergedBranch);
+      expect(out).toContain(unmergedBranch);
+      // 削除コマンドが付くのは取り込み済み側だけであること(出し分けの本体)
+      expect(out).toContain(`git branch -D ${mergedBranch}`);
+      expect(out).not.toContain(`git branch -D ${unmergedBranch}`);
+    });
+
+    it("parkedBranchMergedIntoHead は存在しないブランチに対して false を返す(git 失敗時は未取り込み扱い)", () => {
+      initGitIdentity();
+      writeAndCommit("a.txt", "base\n", "base");
+
+      expect(parkedBranchMergedIntoHead(dir, "agent/conflict/no-such-branch")).toBe(false);
     });
   });
 });

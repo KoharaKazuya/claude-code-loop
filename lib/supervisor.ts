@@ -1180,6 +1180,33 @@ export function startupRecoveryTotal(r: StartupRecovery): number {
   return r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes;
 }
 
+/**
+ * 退避ブランチの中身が main(root の現在の HEAD)に取り込まれ切っているか。
+ * `git rev-list --count HEAD..<branch>` が 0 のときだけ true を返す。
+ * 判定できない場合(git が失敗する・出力が数値でない等)は false = 未取り込み扱いにする。
+ *
+ * patch-id のような内容比較は意図的に行わない。取り込み時にコミットが再構成される
+ * (手で当て直す・squash される)と一致が外れ、消してはいけないブランチを
+ * 「削除してよい」と表示する事故になるため。中身が別の形で main に入っている場合に
+ * 「未取り込み」と出るのは安全側の外れ方として許容する。
+ */
+export function parkedBranchMergedIntoHead(root: string, branch: string): boolean {
+  try {
+    // 判定失敗は黙って「未取り込み」に倒す方針。execFileSync は既定で子の stderr を
+    // 親へ流すため、git の fatal が status の出力に混ざらないよう明示的に pipe する
+    const out = execFileSync("git", ["rev-list", "--count", `HEAD..${branch}`], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+      .toString()
+      .trim();
+    const n = Number(out);
+    return Number.isFinite(n) && n === 0;
+  } catch {
+    return false;
+  }
+}
+
 /** `refs/heads/agent` 配下のローカルブランチを (先端 SHA, ブランチ名) で列挙する */
 function listAgentBranches(root: string): { sha: string; branch: string }[] {
   try {
@@ -5155,12 +5182,19 @@ export function overviewSectionLines(
   return { rest, lines };
 }
 
+/** 退避済みの agent/conflict/* ブランチ 1 本(表示専用) */
+interface ParkedBranch {
+  branch: string;
+  /** 到達可能なコミットがすべて main に含まれていると機械的に確認できた場合のみ true */
+  merged: boolean;
+}
+
 /** 人間の対応が要る、衝突まわりの残骸(表示専用) */
 interface PendingConflicts {
   /** 衝突解消待ちで残っている worktree */
   worktrees: { taskId: string; path: string }[];
-  /** 退避済みの agent/conflict/* ブランチ名 */
-  parkedBranches: string[];
+  /** 退避済みの agent/conflict/* ブランチ */
+  parkedBranches: ParkedBranch[];
 }
 
 /**
@@ -5172,7 +5206,8 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   const parkedBranches = listAgentBranches(root)
     .map((b) => b.branch)
     .filter((b) => b.startsWith("agent/conflict/"))
-    .sort();
+    .sort()
+    .map((branch) => ({ branch, merged: parkedBranchMergedIntoHead(root, branch) }));
 
   const worktrees: { taskId: string; path: string }[] = [];
   try {
@@ -5694,10 +5729,17 @@ export function formatStatus(): string {
     "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
     pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
   );
+  const parkedMerged = pending.parkedBranches.filter((b) => b.merged);
+  const parkedUnmerged = pending.parkedBranches.filter((b) => !b.merged);
   section(
     "要対応",
-    "退避された衝突ブランチ — 内容を確認し、統合するか破棄するかを判断:",
-    pending.parkedBranches,
+    "退避された衝突ブランチ(中身は main に取り込み済み) — 削除してよい:",
+    parkedMerged.map((b) => `${b.branch}\n      削除: git branch -D ${b.branch}`),
+  );
+  section(
+    "要対応",
+    "退避された衝突ブランチ(main に未取り込み) — 内容を確認し、統合するか破棄するかを判断:",
+    parkedUnmerged.map((b) => b.branch),
   );
   section(
     "要対応",
