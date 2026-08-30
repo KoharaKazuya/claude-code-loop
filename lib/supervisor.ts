@@ -1631,10 +1631,32 @@ export function recordFailure(
   t.body = appendAttemptRecord(t.body, { attempt: t.retries, at, kind, reason });
 }
 
-/** 依存タスクが充足しているか(completed または依存先が存在しない) */
+/**
+ * 依存タスクが充足しているか(completed または依存先が存在しない)。
+ * 依存先が見つからない場合を満たされている扱いにするのは、完了タスクが archive へ
+ * 移動して現役一覧から消えるため。実在しない依存(打ち間違い等)の検出は
+ * `findMissingDependencies` が担い、`ccloop status` の要対応に出す。
+ */
 export function depSatisfied(byId: Map<string, Task>, depId: string): boolean {
   const dep = byId.get(depId);
   return dep === undefined || dep.status === "completed";
+}
+
+/**
+ * 存在しない依存(現役の `.agent/tasks/` にも `.agent/archive/tasks/` にも無い ID)を持つタスクを返す。
+ * knownIds には両方の ID を渡すこと。completed なタスクの依存は今さら意味がないため対象外にする。
+ */
+export function findMissingDependencies(
+  tasks: Task[],
+  knownIds: ReadonlySet<string>,
+): { task: Task; missing: string[] }[] {
+  const result: { task: Task; missing: string[] }[] = [];
+  for (const t of tasks) {
+    if (t.status === "completed") continue;
+    const missing = t.dependencies.filter((d) => !knownIds.has(d));
+    if (missing.length > 0) result.push({ task: t, missing });
+  }
+  return result;
 }
 
 /** runnable なタスクの並び順(優先度昇順 → 作成日時昇順) */
@@ -4234,7 +4256,9 @@ function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean, idWidth:
       if (dep === undefined) return `${d}(missing)`;
       return dep.status === "completed" ? `${d}✔` : `${d}(${dep.status})`;
     });
-    const allSatisfied = t.dependencies.every((d) => depSatisfied(byId, d));
+    // 依存先が byId(現役+archive)に無い(= missing)場合はスケジューリング上は充足扱いだが、
+    // 打ち間違いに気づけるよう表示上は淡色にしない
+    const allSatisfied = t.dependencies.every((d) => byId.has(d) && depSatisfied(byId, d));
     const depsLine = `    deps: ${parts.join(" ")}`;
     console.log(allSatisfied ? styleText("dim", depsLine) : depsLine);
   }
@@ -4929,6 +4953,8 @@ export interface StatusData {
   loopLiveness: LoopLiveness;
   /** status が不正で処理対象から外れているタスクファイル名(`.agent/tasks/` 直下) */
   invalidTaskFiles: string[];
+  /** 存在しないタスク ID を依存に書いているタスク(現役にも archive にも無い依存) */
+  missingDependencies: { taskId: string; title: string; missing: string[] }[];
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -4954,7 +4980,8 @@ export function collectStatusData(now: Date): StatusData {
   // 片付けが移動先の同名ファイルとの衝突で移動を見送ると同じ ID が両側に残るため、
   // アクティブ側にある ID は archive 側から除いて二重計上を防ぐ
   const activeTaskIds = new Set(tasks.map((t) => t.id));
-  const archivedCompletedCount = loadArchivedTasks().filter(
+  const archivedTasks = loadArchivedTasks();
+  const archivedCompletedCount = archivedTasks.filter(
     (t) => t.status === "completed" && !activeTaskIds.has(t.id),
   ).length;
   const overview = loadOverview();
@@ -5012,6 +5039,13 @@ export function collectStatusData(now: Date): StatusData {
     installedHash: needsInstalledSourceHashCompare ? installedSourceHash : "",
   });
 
+  const knownIds = new Set([...tasks.map((t) => t.id), ...archivedTasks.map((t) => t.id)]);
+  const missingDependencies = findMissingDependencies(tasks, knownIds).map(({ task, missing }) => ({
+    taskId: task.id,
+    title: task.title,
+    missing,
+  }));
+
   return {
     tasks,
     archivedCompletedCount,
@@ -5032,6 +5066,7 @@ export function collectStatusData(now: Date): StatusData {
     installedSourceDrifted,
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
     invalidTaskFiles,
+    missingDependencies,
   };
 }
 
@@ -5110,6 +5145,13 @@ export function formatStatus(): string {
   );
   section(
     "要対応",
+    "依存に書かれたタスク ID が見つからないタスク — 打ち間違いなら直す。このままだと依存を待たずに実行される:",
+    data.missingDependencies.map(
+      (m) => `${m.taskId}: ${m.title}\n      見つからない依存: ${m.missing.join(" ")}`,
+    ),
+  );
+  section(
+    "要対応",
     "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
     pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
   );
@@ -5145,7 +5187,8 @@ export function formatStatus(): string {
       pending.parkedBranches.length +
       data.salvageFailures.length +
       data.pendingDecisions.count +
-      data.invalidTaskFiles.length ===
+      data.invalidTaskFiles.length +
+      data.missingDependencies.length ===
     0
   ) {
     push("\n要対応事項なし");

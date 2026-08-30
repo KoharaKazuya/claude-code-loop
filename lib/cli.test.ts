@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkNodeVersion, readConfigRaw, readVersion, splitGlobalOptions } from "./cli.ts";
+import { serializeFrontmatter } from "./frontmatter.ts";
 import { SUBCOMMAND_HELP, TOP_LEVEL_HELP, usageOf } from "./help.ts";
 import { createPaths, type Paths } from "./paths.ts";
 import { statePathOf } from "./supervisor.ts";
@@ -410,6 +411,76 @@ describe("status --json / list --json(子プロセスで検証)", () => {
     const text = run(["list"]).stdout;
     expect(text).toContain("サンプルタスク");
     expect(() => JSON.parse(text)).toThrow();
+  });
+});
+
+describe("ccloop list の deps 行の淡色表示(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+  let tasksDir: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-list-deps-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    tasksDir = path.join(repo, ".agent", "tasks");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** .agent/tasks/<id>.md を frontmatter + 本文で直接書く(存在しない依存 ID は `ccloop add --deps` で
+   * 弾かれるため cmdAdd を経由せず直接書く) */
+  function writeTask(id: string, fields: Record<string, string | number | string[]>): void {
+    fs.writeFileSync(path.join(tasksDir, `${id}.md`), serializeFrontmatter(fields, "本文"));
+  }
+
+  // list の淡色(dim)は util.styleText が TTY かどうかで出し分けるため、パイプ経由の子プロセスでは
+  // 既定で ANSI が付かず「淡色にならない」が常に真になってしまう。FORCE_COLOR=1 を渡して色出力を
+  // 強制することで、dim エスケープの有無を実際に検証できるようにする。
+  /** 淡色(dim)の ANSI エスケープ。生の ESC 文字はコミットフックに弾かれるためコード点で書く */
+  const DIM = "\u001B[2m";
+
+  function run(args: string[]): { status: number | null; stdout: string } {
+    const res = spawnSync(
+      process.execPath,
+      ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, ...args],
+      { encoding: "utf8", env: { ...process.env, FORCE_COLOR: "1" } },
+    );
+    return { status: res.status, stdout: res.stdout };
+  }
+
+  it("依存先が現役にも archive にも無い(missing)場合、deps 行は淡色にならない", () => {
+    writeTask("T-child", {
+      title: "打ち間違いの依存を持つタスク",
+      status: "ready",
+      dependencies: ["T-typo"],
+    });
+
+    const result = run(["list"]);
+    expect(result.status).toBe(0);
+    const depsLine = result.stdout.split("\n").find((l) => l.includes("deps:"));
+    expect(depsLine).toContain("(missing)");
+    expect(depsLine).not.toContain(DIM);
+  });
+
+  it("依存がすべて満たされている場合、deps 行は淡色になる", () => {
+    writeTask("T-parent", {
+      title: "完了済みの依存先",
+      status: "completed",
+      dependencies: [],
+    });
+    writeTask("T-child", {
+      title: "依存が満たされたタスク",
+      status: "ready",
+      dependencies: ["T-parent"],
+    });
+
+    const result = run(["list"]);
+    expect(result.status).toBe(0);
+    const depsLine = result.stdout.split("\n").find((l) => l.includes("deps:"));
+    expect(depsLine).toContain(DIM);
   });
 });
 

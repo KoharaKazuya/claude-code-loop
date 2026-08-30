@@ -32,6 +32,7 @@ import {
   type ExploreContext,
   exploreEndLogLine,
   fastCrashStreakAfterWait,
+  findMissingDependencies,
   formatElapsed,
   installedSourceDriftLines,
   isFastCrash,
@@ -550,6 +551,30 @@ describe("depSatisfied", () => {
     const byId = new Map([[dep.id, dep]]);
 
     expect(depSatisfied(byId, "T-001")).toBe(false);
+  });
+});
+
+describe("findMissingDependencies", () => {
+  it("現役にも archive にも無い依存だけを検出する", () => {
+    const t = makeTask({ id: "T-002", status: "ready", dependencies: ["T-999"] });
+    const knownIds = new Set(["T-002"]);
+
+    expect(findMissingDependencies([t], knownIds)).toEqual([{ task: t, missing: ["T-999"] }]);
+  });
+
+  it("archive にある(knownIds に含む)完了済みタスクへの依存は検出されない", () => {
+    const t = makeTask({ id: "T-002", status: "ready", dependencies: ["T-001"] });
+    // T-001 は archive 済みで現役一覧には無いが、knownIds には両方の ID を渡す運用のため含まれる
+    const knownIds = new Set(["T-001", "T-002"]);
+
+    expect(findMissingDependencies([t], knownIds)).toEqual([]);
+  });
+
+  it("completed なタスク自身は対象外", () => {
+    const t = makeTask({ id: "T-002", status: "completed", dependencies: ["T-999"] });
+    const knownIds = new Set(["T-002"]);
+
+    expect(findMissingDependencies([t], knownIds)).toEqual([]);
   });
 });
 

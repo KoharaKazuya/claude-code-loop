@@ -381,6 +381,40 @@ describe("collectStatusData / formatStatus", () => {
       expect(out).not.toContain("要対応事項なし");
     });
   });
+
+  describe("依存に存在しないタスク ID が書かれている", () => {
+    it("要対応の節に出て「要対応事項なし」が消える", () => {
+      writeTask("T-child", {
+        status: "ready",
+        title: "打ち間違いの依存を持つタスク",
+        dependencies: ["T-typo"],
+      });
+
+      const data = collectStatusData(NOW);
+      expect(data.missingDependencies).toEqual([
+        { taskId: "T-child", title: "打ち間違いの依存を持つタスク", missing: ["T-typo"] },
+      ]);
+
+      const out = formatStatus();
+      expect(out).toContain("依存に書かれたタスク ID が見つからないタスク");
+      expect(out).toContain("T-child");
+      expect(out).toContain("T-typo");
+      expect(out).not.toContain("要対応事項なし");
+    });
+
+    it("archive にある完了済みタスクへの依存は要対応に出ず、依存充足のまま実行対象に残る", () => {
+      writeArchivedTask("T-parent", { status: "completed", title: "archive済みの完了タスク" });
+      writeTask("T-child", {
+        status: "ready",
+        title: "archive済みタスクに依存するタスク",
+        dependencies: ["T-parent"],
+      });
+
+      const data = collectStatusData(NOW);
+      expect(data.missingDependencies).toEqual([]);
+      expect(data.nextRunnableTasks.map((t) => t.id)).toContain("T-child");
+    });
+  });
 });
 
 describe("loadSalvageFailures", () => {
