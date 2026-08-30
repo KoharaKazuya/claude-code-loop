@@ -72,6 +72,13 @@ worktree 側で「git 操作が中断されたまま残っているか」を判�
 - 確認済みの事実: コミット d95551f。判断は
   `.agent/decisions/D-20260830-0333-worktree-conflict-predicate-unification.md` に、
   横断的な不変条件は `docs/architecture.md` に記録した。
+- 確認済みの事実: reviewer サブエージェントのレビューは APPROVE。5 箇所の統一漏れが無いこと、
+  main 側に残る呼び出しがすべて `root` 引数であることを独立に確認し、テスト K については
+  該当箇所を旧実装へ差し戻したコピーで実際に落ちること(`keptConflicts` が 0 になる)を検証している。
+- 確認済みの事実: レビューの minor 指摘(判定を広げた結果、`BISECT_LOG` や `--no-commit` の
+  cherry-pick / revert のように衝突マーカーを伴わない中断も対象に入るため、プロンプトの
+  「衝突マーカーが残っている」という断定が常に真ではない)に対応し、断定をやめて
+  `git status` での確認を先に促す文言へ直した。コミット 20f5851。再検証も全て成功。
 - 未検証の推測: タスク記述の「通常フローでは worktree に merge 以外の中断状態は生まれない想定」は、
   権限 deny リストが cherry-pick / revert を禁じていないため保証されていないと判断した。
   実際にセッションが cherry-pick を中断したまま終了した事例は観測していない。
