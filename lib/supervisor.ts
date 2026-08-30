@@ -37,6 +37,14 @@ import { normalizeConfig, type Config } from "./config.ts";
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
 import { usageOf } from "./help.ts";
 import { buildId, disambiguateId, isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
+import {
+  clearRunnerRecord,
+  describeLoopLiveness,
+  evaluateLoopLiveness,
+  readRunnerRecord,
+  writeRunnerRecord,
+  type LoopLiveness,
+} from "./liveness.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
@@ -215,6 +223,17 @@ function writeJson(file: string, data: unknown): void {
 
 function loadConfig(): Config {
   return normalizeConfig(readJson<unknown>(repoPaths().configPath), repoPaths().root);
+}
+
+/** `ccloop run` の生存記録を書き直す(起動時と毎周回の心拍で使う) */
+function touchRunnerRecord(startedAt: string, heartbeatIntervalMs: number): void {
+  writeRunnerRecord(repoPaths().runnerPath, {
+    pid: process.pid,
+    startedAt,
+    heartbeatAt: new Date().toISOString(),
+    host: os.hostname(),
+    heartbeatIntervalMs,
+  });
 }
 
 /** dir 直下の .md ファイル名一覧(ID 順)。ディレクトリがなければ空 */
@@ -3181,6 +3200,16 @@ export async function mainLoop(): Promise<void> {
   // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
   generateSystemPrompt(repoPaths());
   const config = loadConfig();
+  // `ccloop status` がループ本体の生死を判定できるよう、起動時点の生存記録を書く
+  // (以降はタイマーの心拍で heartbeatAt を更新する)
+  const runnerStartedAt = new Date().toISOString();
+  touchRunnerRecord(runnerStartedAt, config.idlePollMs);
+  // 心拍はループの周回ではなくタイマーで打つ。探索・triage セッションは await で
+  // 最大 taskTimeoutMs ブロックし、その間ループ先頭へ戻らないため、周回に紐づけると
+  // 正常稼働中に「応答がありません」と誤表示されてしまう。
+  const heartbeat = setInterval(() => touchRunnerRecord(runnerStartedAt, config.idlePollMs), config.idlePollMs);
+  // このタイマーだけでプロセスを生かし続けないようにする(終了判断はループ側の責務)
+  heartbeat.unref();
   // 停止指示はプロセスのメモリにしか無い。起動時に必ずリセットしておく
   // (同一プロセス内で mainLoop を再実行した場合に前回の意思を引きずらないため)。
   // state.json 側は表示専用の写しなので、前回プロセスが緊急停止で残した値をここで消す
@@ -3478,12 +3507,18 @@ export async function mainLoop(): Promise<void> {
       fastCrashStreak = fastCrashStreakAfterWait(fastCrashStreak, action.why, readStopMode());
     }
   } finally {
+    // タイマーを先に止めてから生存記録を消す(clearRunnerRecord 後にタイマーが発火して
+    // 記録を復活させてしまうのを防ぐ)。
+    clearInterval(heartbeat);
     // break・例外・正常終了のいずれの経路でも 1 回だけ最終フラッシュする。finally は
     // break が効く前に走るため、抜け道は構造的に存在しない(break 側に手を入れる必要がない)。
     commitAgentDir();
     // 表示用の停止指示もプロセスと一緒に畳む(緊急停止は process.exit するためここを通らないが、
     // その場合は次回 run の起動時のリセットが拾う)
     publishStopMode("none");
+    // 正常終了では生存記録を消す。緊急停止(process.exit)ではここを通らないが、その場合は
+    // PID の存在確認(isProcessAlive)が「動いていません」を返すので誤って running とは出ない
+    clearRunnerRecord(repoPaths().runnerPath);
   }
   log("supervisor stop");
 }
@@ -4292,6 +4327,8 @@ export interface StatusData {
   supervisorSourceStale: boolean;
   /** インストール済みの ccloop がこのリポジトリの lib/ と乖離しているか(自己ホスト時のみ判定) */
   installedSourceDrifted: boolean;
+  /** ループ本体(ccloop run)が生きているか */
+  loopLiveness: LoopLiveness;
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -4386,6 +4423,7 @@ export function collectStatusData(now: Date): StatusData {
     maxSessions,
     supervisorSourceStale,
     installedSourceDrifted,
+    loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
   };
 }
 
@@ -4531,6 +4569,8 @@ export function formatStatus(): string {
 
   push("\n-- 稼働状態 --");
   push(`セッション数: ${data.state.sessionCount} / 最終探索: ${data.state.lastExploreAt ?? "未実行"}`);
+  push(describeLoopLiveness(data.loopLiveness));
+  push(`状態の更新: ${data.state.updatedAt ?? "未記録"}`);
   // 停止指示は run プロセスのメモリが本体で、ここに出るのはその写し(表示専用)
   if (data.state.stopMode === "clean") {
     push("停止処理中 (clean): 新規セッションを起動せず、実行中が終わり次第 run が停止する");

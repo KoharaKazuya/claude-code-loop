@@ -150,6 +150,8 @@ export interface Paths {
   // ---- git 管理外(リポジトリ外の state ディレクトリ) ----
   stateDir: string;
   statePath: string;
+  /** `ccloop run` プロセスの生存記録(PID・心拍)。run が動いている間だけ存在する */
+  runnerPath: string;
   metricsPath: string;
   denialsPath: string;
   patchesDir: string;
@@ -180,6 +182,7 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
     promptLocalPath: path.join(agentDir, "PROMPT.local.md"),
     stateDir,
     statePath: path.join(stateDir, "state.json"),
+    runnerPath: path.join(stateDir, "runner.json"),
     metricsPath: path.join(stateDir, "metrics.jsonl"),
     denialsPath: path.join(stateDir, "permission-denials.jsonl"),
     patchesDir: path.join(stateDir, "patches"),

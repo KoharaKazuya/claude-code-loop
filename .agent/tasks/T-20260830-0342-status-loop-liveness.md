@@ -1,9 +1,10 @@
 ---
 title: "ccloop status にループの生存と状態の更新時刻を表示する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "runner.json に PID・心拍を記録し、status に生死と状態の更新時刻を表示。心拍はタイマー駆動"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 

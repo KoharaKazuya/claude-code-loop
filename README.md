@@ -54,7 +54,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
    取り込む)
 4. 別の端末から `ccloop watch`(既定 1 秒間隔、`--interval` で変更可)で進捗を眺める。1 回だけ見たい
    ときは `ccloop status`、タスク一覧は `ccloop list`(`--full` で詳細)。どちらも `--json` を付けると
-   機械可読な JSON を出力する
+   機械可読な JSON を出力する。`ccloop status` にはループ本体(`ccloop run`)が動いているかと
+   状態の最終更新時刻も出る
 5. やりたい作業が明確なら
    `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--model ...] [--slug ...]`
    で直接タスクを積める(`--slug` 省略時はタイトルから自動生成する。ASCII 化できなければ `task`)

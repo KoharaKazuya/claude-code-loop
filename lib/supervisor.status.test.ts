@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { serializeFrontmatter } from "./frontmatter.ts";
+import { writeRunnerRecord, type RunnerRecord } from "./liveness.ts";
 import {
   collectStatusData,
   formatStatus,
@@ -102,5 +103,59 @@ describe("collectStatusData / formatStatus", () => {
 
     const out = formatStatus();
     expect(out).toContain("…他 2 件");
+  });
+
+  describe("ループ本体(ccloop run)の生存表示", () => {
+    function writeRunner(record: RunnerRecord): void {
+      writeRunnerRecord(repoPaths().runnerPath, record);
+    }
+
+    it("生存記録が無ければ「動いていません」になる", () => {
+      const data = collectStatusData(NOW);
+      expect(data.loopLiveness.status).toBe("stopped");
+
+      const out = formatStatus();
+      expect(out).toContain("ループ本体: 動いていません");
+      expect(out).not.toContain("ループ本体: 動いています");
+    });
+
+    it("自ホスト・自 PID・新しい心拍なら「動いています」になる", () => {
+      // formatStatus() は内部で new Date() を使うため、固定の NOW ではなく実時刻に合わせて心拍を書く
+      writeRunner({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        host: os.hostname(),
+        heartbeatIntervalMs: 5_000,
+      });
+
+      const data = collectStatusData(new Date());
+      expect(data.loopLiveness.status).toBe("running");
+
+      const out = formatStatus();
+      expect(out).toContain("ループ本体: 動いています");
+    });
+
+    it("異常終了で記録が残ったまま(存在しない PID)だと「動いていません」になる", () => {
+      writeRunner({
+        pid: 999_999_999,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        host: os.hostname(),
+        heartbeatIntervalMs: 5_000,
+      });
+
+      const data = collectStatusData(new Date());
+      expect(data.loopLiveness).toMatchObject({ status: "stopped", reason: "process-gone" });
+
+      const out = formatStatus();
+      expect(out).toContain("ループ本体: 動いていません");
+      expect(out).not.toContain("ループ本体: 動いています");
+    });
+
+    it("状態の更新: の行が出る", () => {
+      const out = formatStatus();
+      expect(out).toContain("状態の更新:");
+    });
   });
 });
