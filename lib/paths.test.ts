@@ -30,6 +30,21 @@ function initRepo(at: string): void {
   execFileSync("git", ["init", "-b", "main"], { cwd: at });
 }
 
+/**
+ * at に worktree を 1 つ生やしてそのパスを返す。`git worktree add` はコミットが 1 つ必要なため
+ * 空コミットを作る(テスト環境に user 設定が無い前提で -c を使う)
+ */
+function addWorktree(at: string, name: string): string {
+  execFileSync(
+    "git",
+    ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
+    { cwd: at },
+  );
+  const worktreeDir = path.join(at, name);
+  execFileSync("git", ["worktree", "add", "-b", `${name}-branch`, worktreeDir], { cwd: at });
+  return worktreeDir;
+}
+
 describe("findGitRoot", () => {
   it(".git ディレクトリを持つ祖先を返す", () => {
     initRepo(dir);
@@ -101,6 +116,57 @@ describe("resolveRepoRoot", () => {
       thrown = err;
     }
     if (thrown !== null) expect(thrown).toBeInstanceOf(RepoRootNotFoundError);
+  });
+});
+
+describe("resolveRepoRoot(git worktree)", () => {
+  it("worktree のネストしたディレクトリから実行しても本体リポジトリのルートに解決される", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+    const nested = path.join(worktreeDir, "a", "b");
+    fs.mkdirSync(nested, { recursive: true });
+
+    const resolved = resolveRepoRoot({ cwd: nested, env: {} });
+    expect(resolved).toBe(dir);
+    expect(repoId(resolved)).toBe(repoId(dir));
+  });
+
+  it("--repo に worktree のパスを渡しても本体リポジトリのルートに解決される", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    expect(resolveRepoRoot({ repo: worktreeDir, env: {} })).toBe(dir);
+  });
+
+  it("CCLOOP_REPO に worktree のパスを渡しても本体リポジトリのルートに解決される", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    expect(resolveRepoRoot({ cwd: os.tmpdir(), env: { CCLOOP_REPO: worktreeDir } })).toBe(dir);
+  });
+
+  it("本体リポジトリのルートを渡したときの repoId は worktree の有無に影響されない", () => {
+    initRepo(dir);
+    addWorktree(dir, "wt");
+    const expected = `${path.basename(dir)}-${createHash("sha1").update(dir).digest("hex").slice(0, 8)}`;
+
+    expect(repoId(resolveRepoRoot({ repo: dir, env: {} }))).toBe(expected);
+  });
+
+  it(".git ファイルの中身が gitdir: 形式でなければ、そのディレクトリ自身が返る", () => {
+    const root = path.join(dir, "repo");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, ".git"), "garbage\n");
+
+    expect(resolveRepoRoot({ repo: root, env: {} })).toBe(root);
+  });
+
+  it("gitdir の参照先が worktrees 配下の形になっていなければ、そのディレクトリ自身が返る", () => {
+    const root = path.join(dir, "repo");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /nonexistent/not-a-worktrees-layout\n");
+
+    expect(resolveRepoRoot({ repo: root, env: {} })).toBe(root);
   });
 });
 

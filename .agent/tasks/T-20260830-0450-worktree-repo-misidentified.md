@@ -1,9 +1,10 @@
 ---
 title: "worktree の中で ccloop を実行すると別リポジトリ扱いになる"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "リンクされた worktree を本体ワークツリーへ読み替えるようにした。typecheck/lint/test すべて通過"
 createdAt: 2026-08-30T04:50:08.640Z
 ---
 
