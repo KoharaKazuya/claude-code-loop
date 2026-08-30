@@ -1,9 +1,10 @@
 ---
 title: "共通ルールの「拒否は記録される」という記述を実態に合わせる"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "PROMPT.md 3 箇所を classifier 判定 / deny 一致の区別つきに修正。README・architecture.md にも反映。実装は未変更"
 createdAt: 2026-08-30T11:36:40.000Z
 ---
 
