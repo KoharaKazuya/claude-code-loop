@@ -50,7 +50,11 @@ export function readLocalPrompt(paths: Paths): string | null {
 
 /**
  * system prompt を生成して `paths.generatedSystemPromptPath` へ書き出し、そのパスを返す。
- * `ccloop run` の起動時に 1 回だけ呼べばよい(settings の生成と同じタイミング)。
+ * セッションを 1 本起動するたびに呼び出され(settings の生成と同じタイミング)、
+ * `.agent/PROMPT.local.md` の編集が次のセッションから反映されるようにする
+ * (`refreshGeneratedSessionInputs`(lib/supervisor.ts)を参照)。書き出しは `.tmp` + rename
+ * による原子的な置き換えなので、走行中の別セッションがこのファイルを読んでいる最中に
+ * 差し替わっても壊れない。
  */
 export function generateSystemPrompt(paths: Paths, opts: { home?: string } = {}): string {
   const common = fs.readFileSync(commonPromptPath(opts.home ?? ccloopHome()), "utf8");

@@ -47,6 +47,7 @@ import {
   writeRunnerRecord,
   type LoopLiveness,
 } from "./liveness.ts";
+import { log } from "./log.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
@@ -473,16 +474,6 @@ function saveStateIn(root: string, state: State): void {
 
 function saveState(state: State): void {
   saveStateIn(repoPaths().root, state);
-}
-
-/**
- * コンソールへ 1 行出力する(ファイルには残さない)。
- * セッションの中身は Claude Code 自身が transcript として保存しており、
- * セッション ID からたどれる(README「セッションログを追う」参照)。
- */
-function log(message: string): void {
-  const time = new Date().toTimeString().slice(0, 8);
-  console.log(`${styleText("dim", time)} ${message}`);
 }
 
 // ---------- .agent/ の自動コミット ----------
@@ -1764,7 +1755,8 @@ export function buildClaudeArgs(
   ];
   if (opts.commonRules !== false) {
     // 共通ルールは `-p` の本文ではなく system prompt へ置く(lib/prompt.ts の説明を参照)。
-    // ファイルの生成は run の起動時に 1 回(generateSystemPrompt)。
+    // ファイルはセッションを 1 本起動するたびに再生成される(runClaude 冒頭の
+    // refreshGeneratedSessionInputs を参照)。
     args.push("--append-system-prompt-file", repoPaths().generatedSystemPromptPath);
     // サブエージェント(reviewer 等)は利用側の `.claude/agents/` ではなくツール本体が持つ
     args.push(...agentsArgs());
@@ -1772,6 +1764,27 @@ export function buildClaudeArgs(
   if (config.maxTurns > 0) args.push("--max-turns", String(config.maxTurns));
   args.push(...extraArgs);
   return args;
+}
+
+/**
+ * セッションを 1 本起動するたびに、生成物(settings / system prompt)を組み立て直す。
+ *
+ * 利用側が `.agent/claude-settings.json` へ追記した権限や `.agent/PROMPT.local.md` の編集が、
+ * `ccloop run` を再起動しなくても次のセッションから効くようにするため(README / lib/prompt/PROMPT.md
+ * が約束している挙動)。`mainLoop` 起動時の 1 回だけでは、ループを動かしたまま利用側が追記しても
+ * 反映されない。
+ *
+ * 失敗しても起動自体は止めない(例外を投げない)。再生成できなかったファイルは直前に生成済みの
+ * 内容のままセッションへ渡す(settings と system prompt は個別に書き出すため、片方だけが
+ * 新しくなることもある)。
+ */
+export function refreshGeneratedSessionInputs(paths: Paths = repoPaths()): void {
+  try {
+    generateSettings(paths);
+    generateSystemPrompt(paths);
+  } catch (err) {
+    log(`警告: settings / system prompt の再生成に失敗したため、前回生成した内容のままセッションを起動する: ${String(err)}`);
+  }
 }
 
 /**
@@ -1785,6 +1798,7 @@ function runClaude(
   cwd: string,
   opts: { extraArgs?: string[]; env?: Record<string, string>; commonRules?: boolean } = {},
 ): Promise<SessionResult> {
+  refreshGeneratedSessionInputs();
   const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? [], { commonRules: opts.commonRules });
 
   return new Promise((resolve) => {
@@ -3266,10 +3280,11 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
     log(`警告: ${guard.warning}`);
   }
 
-  // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
-  // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
+  // 自律実行セッションへ渡す settings / 共通ルール(system prompt)は、ここでは初回の用意と
+  // 早期の失敗検出のためだけに組み立てる。ループを動かしたまま利用側が `.agent/claude-settings.json`
+  // や `.agent/PROMPT.local.md` を編集しても反映されるよう、以降はセッションを 1 本起動するたびに
+  // runClaude 側の refreshGeneratedSessionInputs が組み立て直す。
   generateSettings(repoPaths());
-  // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
   generateSystemPrompt(repoPaths());
   const config = loadConfig();
   // `ccloop status` がループ本体の生死を判定できるよう、起動時点の生存記録を書く
