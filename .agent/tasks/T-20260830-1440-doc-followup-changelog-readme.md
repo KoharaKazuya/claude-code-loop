@@ -1,11 +1,12 @@
 ---
 title: "直近の変更のドキュメント追随漏れ 2 件を埋める"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 conflicts: [T-20260830-1407-narrow-readonly-git-deny-patterns]
 retries: 0
 createdAt: 2026-08-30T14:40:12.229Z
+note: "CHANGELOG 未リリース節に status の待ち理由表示の修正を追記し、README の retry 説明に conflictRetries を追記した。lint/typecheck/test 通過"
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。どちらも「入れた変更に対する記載漏れの解消」であり、
