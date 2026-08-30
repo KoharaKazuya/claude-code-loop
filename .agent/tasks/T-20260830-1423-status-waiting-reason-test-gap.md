@@ -1,10 +1,11 @@
 ---
 title: "次に実行予定が空のときの待ち理由表示にテストを足す"
-status: ready
+status: completed
 priority: 4
 conflicts: [T-20260830-1413-status-conflict-held-count-truncated]
 retries: 0
 createdAt: 2026-08-30T14:23:41.606Z
+note: "スヌーズ待ちのみ・競合待ち併記の 2 ケースを追加。変異注入で両方が実装の退行を捕まえることを確認済み"
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。テストの追加であり利用者から見た挙動は変わらないため、
