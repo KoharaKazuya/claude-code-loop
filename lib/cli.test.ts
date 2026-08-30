@@ -482,6 +482,50 @@ describe("ccloop list の deps 行の淡色表示(子プロセスで検証)", ()
     const depsLine = result.stdout.split("\n").find((l) => l.includes("deps:"));
     expect(depsLine).toContain(DIM);
   });
+
+  it("conflicts を持つタスクは list に conflicts 行が出る", () => {
+    writeTask("T-other", {
+      title: "競合相手のタスク",
+      status: "ready",
+    });
+    writeTask("T-child", {
+      title: "競合を持つタスク",
+      status: "ready",
+      conflicts: ["T-other"],
+    });
+
+    const result = run(["list"]);
+    expect(result.status).toBe(0);
+    const conflictsLine = result.stdout.split("\n").find((l) => l.includes("conflicts:"));
+    expect(conflictsLine).toContain("T-other");
+    expect(conflictsLine).toContain(DIM);
+  });
+
+  it("競合先が現役にも archive にも無い(missing)場合、conflicts 行は淡色にならない", () => {
+    writeTask("T-child", {
+      title: "打ち間違いの競合を持つタスク",
+      status: "ready",
+      conflicts: ["T-typo"],
+    });
+
+    const result = run(["list"]);
+    expect(result.status).toBe(0);
+    const conflictsLine = result.stdout.split("\n").find((l) => l.includes("conflicts:"));
+    expect(conflictsLine).toContain("T-typo(missing)");
+    expect(conflictsLine).not.toContain(DIM);
+  });
+
+  it("conflicts を持たないタスクには conflicts 行が出ない", () => {
+    writeTask("T-child", {
+      title: "競合の無いタスク",
+      status: "ready",
+    });
+
+    const result = run(["list"]);
+    expect(result.status).toBe(0);
+    const conflictsLine = result.stdout.split("\n").find((l) => l.includes("conflicts:"));
+    expect(conflictsLine).toBeUndefined();
+  });
 });
 
 describe("ccloop retry(子プロセスで検証)", () => {

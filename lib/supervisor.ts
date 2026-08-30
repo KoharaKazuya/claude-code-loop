@@ -5093,7 +5093,7 @@ function truncateNote(note: string, maxLen = 80): string {
 // ---------- list ----------
 
 /**
- * 1 タスクの表示(id/priority/title 行 + 依存行 + note 行)。
+ * 1 タスクの表示(id/priority/title 行 + 依存行 + conflicts 行 + note 行)。
  * ID は slug を含んで長さがまちまちなため、桁揃えの幅は呼び出し側が一覧全体から決めて渡す。
  */
 function printTaskLine(
@@ -5126,6 +5126,15 @@ function printTaskLine(
     const allSatisfied = t.dependencies.every((d) => byId.has(d) && depSatisfied(byId, d));
     const depsLine = `    deps: ${parts.join(" ")}`;
     console.log(allSatisfied ? styleText("dim", depsLine) : depsLine);
+  }
+
+  if (t.conflicts.length > 0) {
+    const parts = t.conflicts.map((c) => (byId.has(c) ? c : `${c}(missing)`));
+    // conflicts はスケジューリング上「その ID が実行中かどうか」しか効かず status は関係しないため
+    // deps と違い status は表示しないが、missing は打ち間違いに気づけるよう淡色にしない
+    const allExist = t.conflicts.every((c) => byId.has(c));
+    const conflictsLine = `    conflicts: ${parts.join(" ")}`;
+    console.log(allExist ? styleText("dim", conflictsLine) : conflictsLine);
   }
 
   if (t.note) {
