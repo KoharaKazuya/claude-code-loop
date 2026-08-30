@@ -1472,6 +1472,46 @@ const FAILURE_KIND_ADVICE: Record<FailureKind, string> = {
 
 const ATTEMPT_HISTORY_HEADING = "## 試行履歴";
 
+/** FAILURE_KIND_LABEL の値からキーを引く逆引き表(ラベル定義を二重管理しないため機械的に導出する) */
+const FAILURE_KIND_BY_LABEL: Record<string, FailureKind> = Object.fromEntries(
+  (Object.entries(FAILURE_KIND_LABEL) as [FailureKind, string][]).map(([kind, label]) => [label, kind]),
+);
+
+/** `### 試行 N(...)` 見出し行から `ccloop 記録: <ラベル>` のラベル部分だけを取り出す */
+const ATTEMPT_HEADING_KIND_PATTERN = /^### 試行 .*ccloop 記録: ([^)]*)\)/;
+
+/**
+ * タスク本文の「## 試行履歴」に記録された、直前の試行の失敗種別を復元する(純関数)。
+ * タスクの frontmatter には失敗種別が保存されていないため、appendAttemptRecord が残す
+ * `### 試行 N(<ISO 時刻>, ccloop 記録: <ラベル>)` 見出しから逆引きする。
+ * `### 未コミット差分(...)` など他の見出しは対象にせず、`### 試行 ` 見出しのうち最後のものだけを見る。
+ * 該当する見出しが無い、またはラベルが未知の場合は null を返す。
+ */
+export function lastAttemptFailureKind(body: string): FailureKind | null {
+  const headings = body
+    .split("\n")
+    .filter((line) => line.startsWith("### 試行 "));
+  const lastHeading = headings.at(-1);
+  if (lastHeading === undefined) return null;
+
+  const match = lastHeading.match(ATTEMPT_HEADING_KIND_PATTERN);
+  if (match === null) return null;
+
+  return FAILURE_KIND_BY_LABEL[match[1]] ?? null;
+}
+
+/**
+ * 「1 セッションに対して作業量が多すぎた」ことを示す失敗種別と、再試行コンテキストの本文で使う
+ * その呼び名(FAILURE_KIND_LABEL とは別に、文中で読みやすい表現を持たせる)。
+ * timeout と max-turns は、いずれもセッションが与えられた持ち時間・ターン数を使い切って
+ * 打ち切られた失敗であり、再試行しても上限は増えない点で共通する。この表に載っている種別のときだけ
+ * タスク分割を促す文言を出す(載っていない種別は undefined になり、従来どおりの文面になる)。
+ */
+const OVERSIZED_FAILURE_KIND_PHRASE: Partial<Record<FailureKind, string>> = {
+  timeout: "時間切れ(タイムアウト)",
+  "max-turns": "ターン数の上限による打ち切り",
+};
+
 /**
  * タスク本文の末尾に「## 試行履歴」セクションへ 1 試行分のエントリを追記する(純関数)。
  * 見出しが本文に無ければ見出しごと追加し、既にあればエントリのみ追加する。
@@ -2492,18 +2532,32 @@ function goalSection(): string[] {
  */
 export function retryContextSection(config: Config, task: Task): string[] {
   if (task.retries === 0) return [];
-  return [
-    [
-      "## 再試行コンテキスト(Supervisor による機械的情報)",
-      "",
-      `- これは ${task.retries + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries})`,
-      `- 直前の失敗: ${task.note ?? "記録なし"}`,
-      "- 上記タスク本文の「## 試行履歴」を読み、前回と同じ戦略の単純リトライは避けること",
-      "- ただし試行履歴のうち「未検証の推測」は前回セッションの観察であり誤りうる。git log / git status / " +
-        "このリポジトリの検証コマンドで現状を確認し、記録と現状が食い違う場合は現状を優先して方針を決めること",
-      "- 前回の作業が既にコミットされている可能性がある。再実装を始める前に必ず git log を確認すること",
-    ].join("\n"),
+
+  const lines = [
+    "## 再試行コンテキスト(Supervisor による機械的情報)",
+    "",
+    `- これは ${task.retries + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries})`,
+    `- 直前の失敗: ${task.note ?? "記録なし"}`,
+    "- 上記タスク本文の「## 試行履歴」を読み、前回と同じ戦略の単純リトライは避けること",
+    "- ただし試行履歴のうち「未検証の推測」は前回セッションの観察であり誤りうる。git log / git status / " +
+      "このリポジトリの検証コマンドで現状を確認し、記録と現状が食い違う場合は現状を優先して方針を決めること",
+    "- 前回の作業が既にコミットされている可能性がある。再実装を始める前に必ず git log を確認すること",
   ];
+
+  const lastKind = lastAttemptFailureKind(task.body);
+  const phrase = lastKind === null ? undefined : OVERSIZED_FAILURE_KIND_PHRASE[lastKind];
+  if (phrase !== undefined) {
+    lines.push(
+      `- 直前の失敗は${phrase}である。1 セッションの持ち時間・ターン数の上限は再試行しても増えないため、` +
+        "同じ範囲を同じやり方でもう一度やれば同じところで打ち切られる。まずこのタスクが 1 セッションに収まる大きさかを見直すこと",
+      "- 収まらないと判断したら、最後までやり切ろうとしないこと。1 ラウンド(例: 調査 → 一部の実装 → 機械的検証)で区切り、" +
+        "そこまでの成果をコミットし、残りを新しいタスクとして `.agent/tasks/` に登録し、このタスクの `## 試行履歴` に" +
+        "到達点と続きの手掛かりを書いてからセッションを終える",
+      "- 範囲を絞って終えることは失敗ではない。上限に達して打ち切られるより、確実に前進した分を残すほうが良い",
+    );
+  }
+
+  return [lines.join("\n")];
 }
 
 /** セッション開始時刻とタイムアウトから、強制終了される締め切り時刻(ISO 8601)を計算する */
