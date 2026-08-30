@@ -206,6 +206,62 @@ describe("finishTaskSession", () => {
     expect(readStateRunningTaskIds()).toEqual([]);
   });
 
+  it("(a') taskFileChanged は worktree/ブランチの削除より前に実行中記録へ書き込まれる", () => {
+    // `git merge` の実行中に必ず発火する post-index-change フックを使って、削除(このテストの
+    // ケースでは outcome.result !== "blocked" のときの removeWorktree/deleteBranch)より前の
+    // 時点で state.json のスナップショットを取る。cwd が dir(main)のときだけ発火させ、複数回
+    // 発火しても毎回同じ内容を書くだけなので最終状態は決定的
+    const wt = createSessionWorktree("T-001");
+    writeTaskFile(
+      wt,
+      "T-001",
+      serializeFrontmatter({ title: "タスク", status: "completed", retries: 0 }, "完了しました"),
+    );
+    fs.writeFileSync(path.join(wt, "result.txt"), "成果\n");
+    commit(wt, "成果を追加しタスクを完了する");
+
+    seedRunningSession("T-001", branchNameFor("T-001"), wt);
+
+    const capturedStatePath = path.join(hooksDir, "captured-state.json");
+    const capturedWorktreePath = path.join(hooksDir, "captured-worktree-exists");
+    fs.writeFileSync(
+      path.join(hooksDir, "post-index-change"),
+      [
+        "#!/bin/sh",
+        `if [ "$(pwd)" = "${dir}" ]; then`,
+        `  cp "${statePathOf(dir)}" "${capturedStatePath}"`,
+        `  if [ -d "${wt}" ]; then echo yes > "${capturedWorktreePath}"; else echo no > "${capturedWorktreePath}"; fi`,
+        "fi",
+      ].join("\n"),
+    );
+    fs.chmodSync(path.join(hooksDir, "post-index-change"), 0o755);
+
+    const ctx: TaskSessionContext = {
+      task: makeTask(),
+      model: "opus",
+      branch: branchNameFor("T-001"),
+      worktree: wt,
+      launchStatus: "ready",
+      resuming: false,
+      startedAt: NOW.toISOString(),
+      root: dir,
+    };
+    const res: SessionResult = { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+
+    finishTaskSession(config(), ctx, res);
+
+    // 後始末自体は正常に完了している(削除は最終的に行われる)ことを確認したうえで、
+    // フックが捉えた「削除より前」の時点のスナップショットを検証する
+    expect(fs.existsSync(wt)).toBe(false);
+    expect(fs.existsSync(capturedStatePath)).toBe(true);
+    const captured = JSON.parse(fs.readFileSync(capturedStatePath, "utf8")) as {
+      runningSessions: { taskId?: string; taskFileChanged?: boolean }[];
+    };
+    const entry = captured.runningSessions.find((s) => s.taskId === "T-001");
+    expect(entry?.taskFileChanged).toBe(true);
+    expect(fs.readFileSync(capturedWorktreePath, "utf8").trim()).toBe("yes");
+  });
+
   it("(b) マージ衝突: worktree に衝突を再現して残し、conflictRetries を加算して試行履歴へ記録する(retries は加算しない)", () => {
     fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
     commit(dir, "基底を追加する");

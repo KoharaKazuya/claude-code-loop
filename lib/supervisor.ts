@@ -188,6 +188,10 @@ export interface RunningSessionState {
   pid?: number;
   /** running: 実行中 / finishing: 結果反映(マージ等)中。未指定は running 扱い */
   phase?: "running" | "finishing";
+  /** ブランチ上でタスクファイルが更新されたか。後始末が中断されたときに起動時復旧が
+   *  「セッションが status を更新しなかった」ケースだけを拾い分けるために残す。
+   *  未設定は「不明」で、その場合は記録を残す側(安全側)に倒す */
+  taskFileChanged?: boolean;
 }
 
 interface State {
@@ -416,6 +420,7 @@ function normalizeRunningSession(raw: unknown): RunningSessionState {
   if (typeof r.model === "string") session.model = r.model;
   if (typeof r.pid === "number") session.pid = r.pid;
   if (r.phase === "running" || r.phase === "finishing") session.phase = r.phase;
+  if (typeof r.taskFileChanged === "boolean") session.taskFileChanged = r.taskFileChanged;
   return session;
 }
 
@@ -1130,10 +1135,13 @@ export interface StartupRecovery {
   parked: number;
   /** 旧バージョンが残した status: working を再評価したタスク数 */
   legacyWorking: number;
+  /** finishTaskSession の後始末(worktree・ブランチの削除)が完了する前に中断され、
+   * ブランチ・worktree は既に消えているが status が更新されないまま残っていたタスク数 */
+  interruptedFinishes: number;
 }
 
 export function startupRecoveryTotal(r: StartupRecovery): number {
-  return r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking;
+  return r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes;
 }
 
 /** `refs/heads/agent` 配下のローカルブランチを (先端 SHA, ブランチ名) で列挙する */
@@ -1418,7 +1426,13 @@ function recoverOrphanBranch(
  * すべて blocked になるため、中断マージの巻き戻しが最初に来る。
  */
 export function recoverStartupIn(root: string, config: Config, now: Date = new Date()): StartupRecovery {
-  const counts: StartupRecovery = { recoveredMerges: 0, keptConflicts: 0, parked: 0, legacyWorking: 0 };
+  const counts: StartupRecovery = {
+    recoveredMerges: 0,
+    keptConflicts: 0,
+    parked: 0,
+    legacyWorking: 0,
+    interruptedFinishes: 0,
+  };
 
   // 1. main に残った中断マージ
   abortInterruptedAutoMerge(root);
@@ -1464,10 +1478,50 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     log(`recover: ${t.id} working -> ${t.status} (retries=${t.retries})`);
   }
 
-  // 5. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
+  // 5. finishTaskSession は phase を "finishing" にしてから main へのマージ・worktree/ブランチの
+  //    削除・結果の記録(recordFailure 等)を順に進める。worktree とブランチの削除が終わった
+  //    「直後」、結果を記録する「前」に強制終了されると、成果は main に入っているのに
+  //    タスクファイルの status は ready のまま残る。ブランチも worktree も既に無いため孤児
+  //    ブランチ回収(2〜3)の対象にも上がらず、何も記録が残らないまま次の周回で未着手として
+  //    再選定され、main に既に入っている変更の上へ別セッションが起動してしまう。
+  //    ブランチか worktree がまだ残っている場合は削除前に死んだケースであり、孤児ブランチ回収
+  //    (mergeInProgressSafe で見送られた回でも次回以降そちらが拾う)に任せてここでは触らない。
+  const state = loadStateIn(root);
+  const orphanBranchNames = new Set(listAgentBranches(root).map((b) => b.branch));
+  for (const s of state.runningSessions) {
+    if (s.kind !== "task" || s.phase !== "finishing") continue;
+    const taskId = s.taskId;
+    if (taskId === undefined || taskId === "") continue;
+    if (handled.has(taskId)) continue;
+    const branch = s.branch ?? branchNameFor(taskId);
+    if (orphanBranchNames.has(branch)) continue;
+    const worktree = s.worktree ?? worktreePathFor(config.parallel.worktreeDir, taskId);
+    if (fs.existsSync(worktree)) continue;
+    const t = loadTaskIn(root, taskId);
+    if (t === null) continue;
+    // completed / failed / blocked はセッションが自分で決着を書けている。ここで記録すると
+    // 特に blocked を ready へ戻してしまい、人間の判断待ちの状態を壊す
+    if (t.status !== "ready") continue;
+    // セッションがブランチ上でタスクファイルを更新していたなら、進捗なり結論なりが
+    // 既に main へ入っている(通常経路でも no-status-update にはならない)。ここで
+    // 失敗計上すると retries を無駄に消費し、正当な note を上書きしてしまう。
+    // 未設定(旧バージョンが書いた記録・値が確定する前に中断された記録)は不明なので
+    // 記録を残す側へ倒す。
+    if (s.taskFileChanged === true) continue;
+    counts.interruptedFinishes += 1;
+    recordStartupRecoveryNote(root, config, taskId, {
+      reason: "後始末の途中で中断された(成果は main へ反映済みの可能性がある)",
+      at: now.toISOString(),
+      extraLines: [
+        "- セッション自身が status を更新しないまま後始末が中断された",
+        "- 作業内容は main へ入っている可能性があるので、着手前に `git log` で当該タスクの成果が既に入っていないか確認すること",
+      ],
+    });
+  }
+
+  // 6. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
   //    supervisor ソースのハッシュを記録し、稼働中プロセスとソースの乖離を status で検出できるようにする
   //    (変化が無いときに書かないのは、内容を語らない state.json だけのコミットを増やさないため)
-  const state = loadStateIn(root);
   let stateChanged = false;
   if (state.runningSessions.length > 0) {
     state.runningSessions = [];
@@ -3281,6 +3335,16 @@ export function skipMainWriteIfGitBusy(taskId: string, root: string): boolean {
   return true;
 }
 
+/** state.runningSessions から taskId に対応する task セッションのエントリを見つけて更新し保存する。
+ *  finishTaskSession が phase の遷移や taskFileChanged の確定を実行中に記録するために使う */
+function updateRunningSessionForTask(taskId: string, mutate: (s: RunningSessionState) => void): void {
+  const state = loadState();
+  for (const s of state.runningSessions) {
+    if (s.kind === "task" && s.taskId === taskId) mutate(s);
+  }
+  saveState(state);
+}
+
 export type TaskSessionVerdict =
   | { kind: "fail"; reason: string; failureKind: FailureKind }
   | { kind: "rate-limited" }
@@ -3401,11 +3465,9 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
   const wallMs = now.getTime() - new Date(ctx.startedAt).getTime();
   fastCrashStreak = nextFastCrashStreak(fastCrashStreak, res, wallMs, rateLimited);
 
-  const state = loadState();
-  for (const s of state.runningSessions) {
-    if (s.kind === "task" && s.taskId === taskId) s.phase = "finishing";
-  }
-  saveState(state);
+  updateRunningSessionForTask(taskId, (s) => {
+    s.phase = "finishing";
+  });
 
   // worktree が無いのは、CLI 側の worktree 作成に失敗した(= セッションが成立しなかった)場合。
   // マージ・退避はできないが、結果の分類(crash として retries を進める)は必ず行う必要がある。
@@ -3422,12 +3484,22 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
     if (!worktreeExists) {
       mergeLabel = "no-worktree";
       log(`警告: ${taskId} の worktree (${worktree}) が存在しないため、マージ・退避をスキップする`);
+      // worktree が無いため taskFileChangedOnBranch では確認できないが、既定値(true)が
+      // 分類ロジックの参照する値と一致する(このまま no-status-update 側には倒れない)ので、
+      // その値を起動時復旧用に残す
+      updateRunningSessionForTask(taskId, (s) => {
+        s.taskFileChanged = taskFileChanged;
+      });
     } else {
       // 1. セッションが取りこぼした .agent/ の差分をブランチ側でコミットする
       commitAgentDir(undefined, worktree);
 
-      // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる
+      // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる。worktree/ブランチの
+      // 削除より前に、確定した値を起動時復旧用に実行中記録へ残しておく
       taskFileChanged = taskFileChangedOnBranch(root, branch, taskId);
+      updateRunningSessionForTask(taskId, (s) => {
+        s.taskFileChanged = taskFileChanged;
+      });
 
       // 3. 統合。中断された git 操作が残ったまま終わったセッションは worktree をそのまま残す
       mergeStuck = worktreeConflictPending(worktree);
