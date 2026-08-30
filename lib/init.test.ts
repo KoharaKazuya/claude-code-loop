@@ -180,6 +180,27 @@ describe("planInit / applyInit", () => {
     expect(lines).toContain("  .agent/tasks: ディレクトリであるべきだがファイルがある");
   });
 
+  it(".gitignore がディレクトリなら conflicts に積み、.gitignore を触る計画を立てない", () => {
+    fs.mkdirSync(path.join(repo, ".gitignore"), { recursive: true });
+
+    const plan = planInit(paths, HOME);
+
+    expect(plan.conflicts).toContainEqual({ rel: ".gitignore", expected: "file", actual: "directory" });
+    expect(plan.gitignore.action).toBe("none");
+    expect(() => applyInit(paths, plan)).toThrow();
+  });
+
+  it("循環 symlink があっても planInit は例外を投げず conflicts に積む", () => {
+    // 自分自身を指す symlink。lstat は成功するが stat は ELOOP を投げる
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.symlinkSync("GOAL.md", path.join(repo, ".agent", "GOAL.md"));
+
+    const plan = planInit(paths, HOME);
+
+    expect(plan.conflicts).toContainEqual({ rel: ".agent/GOAL.md", expected: "file", actual: "other" });
+    expect(plan.creates.map((c) => c.rel)).not.toContain(".agent/GOAL.md");
+  });
+
   it("雛形の一部(.gitkeep 等)が欠けた .agent/ には isAgentDirReady が false を返す", () => {
     applyInit(paths, planInit(paths, HOME));
     fs.rmSync(path.join(repo, ".agent", "tasks", ".gitkeep"));

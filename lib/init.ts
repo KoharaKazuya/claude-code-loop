@@ -65,10 +65,16 @@ export interface InitPlan {
 type EntryKind = "missing" | "file" | "directory" | "other";
 
 /**
- * p の実体の種別。symlink は追う。壊れた symlink は "other"。
- * 祖先の要素がディレクトリでない(例: 衝突しているファイルの下を覗く)場合、lstatSync は
- * throwIfNoEntry: false でも ENOTDIR を投げる(ENOENT しか握りつぶさない Node の仕様)ため、
- * ここで明示的に捕まえて "missing" 扱いにする(呼び出し側は祖先の衝突を別途検出済み)。
+ * p の実体の種別。symlink は追う。
+ *
+ * `throwIfNoEntry: false` が握りつぶすのは ENOENT だけで、それ以外(祖先が非ディレクトリなら
+ * ENOTDIR、循環 symlink なら ELOOP、権限不足なら EACCES)は投げてくる。ここで例外が素通りすると、
+ * この関数が防ごうとしている「素のスタックトレースで落ちる」状態を検出側で再発させるため、
+ * 両方の stat を捕まえて次のように倒す:
+ *
+ * - lstat が失敗 → "missing"。祖先が非ディレクトリのケースで、祖先自身の衝突として別途検出される
+ * - lstat は成功したが stat が失敗・不能 → "other"。実体はあるが素性を確かめられない
+ *   (壊れた symlink・循環 symlink・権限不足)。書き込み先としては使えないので衝突として扱う
  */
 function entryKind(p: string): EntryKind {
   let l: fs.Stats | undefined;
@@ -78,9 +84,13 @@ function entryKind(p: string): EntryKind {
     return "missing";
   }
   if (l === undefined) return "missing";
-  const s = fs.statSync(p, { throwIfNoEntry: false });
-  if (s === undefined) return "other"; // 壊れた symlink
-  return s.isDirectory() ? "directory" : s.isFile() ? "file" : "other";
+  try {
+    const s = fs.statSync(p, { throwIfNoEntry: false });
+    if (s === undefined) return "other";
+    return s.isDirectory() ? "directory" : s.isFile() ? "file" : "other";
+  } catch {
+    return "other";
+  }
 }
 
 /** rel（スラッシュ区切り）の祖先ディレクトリを、ルートに近い順で列挙する(rel 自身は含まない) */
@@ -122,8 +132,7 @@ function requiredGitignoreLines(home: string): string[] {
     .filter((l) => l !== "" && !l.startsWith("#"));
 }
 
-function planGitignore(root: string, home: string): GitignorePlan {
-  const required = requiredGitignoreLines(home);
+function planGitignore(root: string, required: string[]): GitignorePlan {
   if (required.length === 0) return { action: "none", lines: [] };
   let existing: string[];
   try {
@@ -143,15 +152,18 @@ export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
   const templateDir = templatesAgentDir(home);
   const templateRels = walkFiles(templateDir);
   const repoRels = templateRels.map((rel) => `${AGENT_DIR_NAME}/${rel}`);
-  const gitignore = planGitignore(paths.root, home);
 
   // 「ディレクトリを期待するパス」(雛形ファイルの祖先ディレクトリ。リポジトリルート自体は含まない)
   const dirExpected = new Set<string>();
   for (const repoRel of repoRels) for (const d of ancestorDirs(repoRel)) dirExpected.add(d);
 
-  // 「ファイルを期待するパス」(配置先ファイル自身、および .gitignore を触る計画なら .gitignore も)
+  // 「ファイルを期待するパス」(配置先ファイル自身、および足す行があるなら .gitignore も)。
+  // .gitignore の種別検査は planGitignore より先に行う。planGitignore は読めないファイルを
+  // 「触らない」(action: "none")へ倒すため、後から action を見て判断すると、ディレクトリが
+  // 置かれている衝突を検出できないまま「正常」と表示してしまう。
+  const gitignoreRequired = requiredGitignoreLines(home);
   const fileExpected = [...repoRels];
-  if (gitignore.action !== "none") fileExpected.push(".gitignore");
+  if (gitignoreRequired.length > 0) fileExpected.push(".gitignore");
 
   const conflicts: PathConflict[] = [];
   for (const d of dirExpected) {
@@ -163,6 +175,12 @@ export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
     if (kind === "directory" || kind === "other") conflicts.push({ rel: f, expected: "file", actual: kind });
   }
   conflicts.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+
+  // .gitignore が衝突しているなら中身を読みに行かない(EISDIR の警告を重ねて出しても混乱するだけ)
+  const gitignoreConflict = conflicts.some((c) => c.rel === ".gitignore");
+  const gitignore = gitignoreConflict
+    ? { action: "none" as const, lines: [] }
+    : planGitignore(paths.root, gitignoreRequired);
 
   const creates: PlannedFile[] = [];
   const skips: string[] = [];

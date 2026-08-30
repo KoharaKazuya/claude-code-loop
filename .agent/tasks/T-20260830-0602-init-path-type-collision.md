@@ -68,3 +68,8 @@ updatedAt: 2026-08-30T06:24:44.067Z
   `ENOTDIR` を投げる(`fs.statSync` は握りつぶす)。`lib/init.ts` の `entryKind` で捕捉している。
 - 確認済みの事実: 部分適用のロールバックは実装しない判断を
   `.agent/decisions/D-20260830-0622-init-conflict-no-rollback.md` に記録した。
+- 確認済みの事実: reviewer の指摘 2 件に対応した(追加コミット)。①`.gitignore` がディレクトリの
+  場合、`planGitignore` が読み取り失敗を「触らない」へ倒すため衝突を検出できていなかった
+  → 種別検査を `planGitignore` より前に移した。②`entryKind` が `statSync` 側の例外
+  (循環 symlink の ELOOP・EACCES)を素通ししていた → 捕捉して "other"(衝突)へ倒した。
+  どちらも回帰テストを追加し、実バイナリでも `.gitignore` ディレクトリのケースを確認した。
