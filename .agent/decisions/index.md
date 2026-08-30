@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0439-liveness-unreadable-record](D-20260830-0439-liveness-unreadable-record.md) — 生存記録の壊れた JSON・型不正は「読めなかった」側に寄せる
 - [ ] [D-20260830-0423-explore-fast-crash-input-consumption](D-20260830-0423-explore-fast-crash-input-consumption.md) — 探索の入力消費を打ち切る基準は「瞬時クラッシュ」で切る
 - [ ] [D-20260830-0410-explore-crash-out-of-scope](D-20260830-0410-explore-crash-out-of-scope.md) — 探索セッションの瞬時クラッシュは crash-backoff の対象に含めない
 - [ ] [D-20260830-0311-deny-prompt-consistency-granularity](D-20260830-0311-deny-prompt-consistency-granularity.md) — deny リストと PROMPT.md の一致は対応表 + inline code トークンの集合比較で検査する

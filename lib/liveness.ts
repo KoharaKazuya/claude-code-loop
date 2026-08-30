@@ -35,6 +35,14 @@ export interface RunnerRecord {
   procStartToken?: string;
 }
 
+/** 生存記録ファイルの読み取り結果。「無い」と「読めない」を呼び出し側が区別できるようにする */
+export type RunnerRecordRead =
+  | { kind: "record"; record: RunnerRecord }
+  /** ファイルが存在しない(= ccloop run が起動していない) */
+  | { kind: "absent" }
+  /** ファイルはあるが読めない・記録として使えない(= 生死を判定できない) */
+  | { kind: "unreadable"; detail: string };
+
 export type LoopLiveness =
   | { status: "running"; pid: number; startedAt: string; heartbeatAt: string }
   | { status: "stopped"; reason: "no-record" }
@@ -47,7 +55,8 @@ export type LoopLiveness =
       startedAt: string;
       heartbeatAt: string;
       host: string;
-    };
+    }
+  | { status: "unknown"; reason: "record-unreadable"; detail: string };
 
 /** 心拍を「古い」とみなすしきい値の下限 (ms)。心拍間隔が短くても最低このぶんは待つ */
 const MIN_STALE_THRESHOLD_MS = 300_000;
@@ -108,28 +117,38 @@ export function readProcStartToken(pid: number): string | null {
 }
 
 /**
- * file から RunnerRecord を読む。存在しない・壊れている・必須フィールドの型が合わない場合は
- * すべて null を返す(status 表示のためのものなので例外を投げない)。
+ * file から RunnerRecord を読む。
+ *
+ * ファイルが存在しない場合(ENOENT)は `{ kind: "absent" }`(= ccloop run が起動していない)。
+ * それ以外の読み取りエラー・JSON パース失敗・必須フィールドの型不一致は、いずれも記録として
+ * 使えない状態であり「生死を判定できない」ことを表す `{ kind: "unreadable", detail }` を返す
+ * (status 表示のためのものなので例外は投げない)。
  */
-export function readRunnerRecord(file: string): RunnerRecord | null {
+export function readRunnerRecord(file: string): RunnerRecordRead {
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "absent" };
+    return { kind: "unreadable", detail: code ? `読み取りエラー (${code})` : "読み取りエラー" };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return { kind: "unreadable", detail: "内容が JSON として壊れています" };
   }
-  if (typeof parsed !== "object" || parsed === null) return null;
+  if (typeof parsed !== "object" || parsed === null) {
+    return { kind: "unreadable", detail: "記録の形式が想定と異なります" };
+  }
   const r = parsed as Record<string, unknown>;
   const pid = r.pid;
-  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0 || !Number.isInteger(pid)) return null;
+  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0 || !Number.isInteger(pid)) {
+    return { kind: "unreadable", detail: "記録の形式が想定と異なります" };
+  }
   if (!isNonEmptyString(r.startedAt) || !isNonEmptyString(r.heartbeatAt) || !isNonEmptyString(r.host)) {
-    return null;
+    return { kind: "unreadable", detail: "記録の形式が想定と異なります" };
   }
   const rawInterval = r.heartbeatIntervalMs;
   const heartbeatIntervalMs =
@@ -137,14 +156,19 @@ export function readRunnerRecord(file: string): RunnerRecord | null {
       ? rawInterval
       : DEFAULT_HEARTBEAT_INTERVAL_MS;
   const procStartToken = r.procStartToken;
-  if (procStartToken !== undefined && !isNonEmptyString(procStartToken)) return null;
+  if (procStartToken !== undefined && !isNonEmptyString(procStartToken)) {
+    return { kind: "unreadable", detail: "記録の形式が想定と異なります" };
+  }
   return {
-    pid,
-    startedAt: r.startedAt,
-    heartbeatAt: r.heartbeatAt,
-    host: r.host,
-    heartbeatIntervalMs,
-    ...(procStartToken !== undefined ? { procStartToken } : {}),
+    kind: "record",
+    record: {
+      pid,
+      startedAt: r.startedAt,
+      heartbeatAt: r.heartbeatAt,
+      host: r.host,
+      heartbeatIntervalMs,
+      ...(procStartToken !== undefined ? { procStartToken } : {}),
+    },
   };
 }
 
@@ -182,20 +206,25 @@ export interface LivenessDeps {
  * 出す」誤りなので、以下の順で確認し、少しでも疑わしければ running 以外を返す。
  *
  * 1. 記録が無ければ stopped/no-record
- * 2. ホスト名が一致しなければ unknown/foreign-host(別マシンの記録では PID 確認が意味を持たない)
- * 3. PID が存在しなければ stopped/process-gone(異常終了で記録だけ残ったケース)
- * 4. PID は存在するが起動時刻トークン(procStartToken)が記録と食い違えば stopped/process-gone
+ * 2. 記録が読めなければ unknown/record-unreadable(生死を判定できないため)
+ * 3. ホスト名が一致しなければ unknown/foreign-host(別マシンの記録では PID 確認が意味を持たない)
+ * 4. PID が存在しなければ stopped/process-gone(異常終了で記録だけ残ったケース)
+ * 5. PID は存在するが起動時刻トークン(procStartToken)が記録と食い違えば stopped/process-gone
  *    (記録を書いたプロセスが finally を経ずに死に、その直後に別プロセスが同じ PID を取得したケース。
  *    記録・現在のどちらかでトークンが取れない場合は照合をスキップし、従来どおりの判定にする)
- * 5. 心拍が古ければ unknown/heartbeat-stale(PID の使い回しの可能性を排除できないため running とはしない)
- * 6. それ以外は running
+ * 6. 心拍が古ければ unknown/heartbeat-stale(PID の使い回しの可能性を排除できないため running とはしない)
+ * 7. それ以外は running
  */
 export function evaluateLoopLiveness(
-  record: RunnerRecord | null,
+  read: RunnerRecordRead,
   now: Date,
   deps: LivenessDeps = {},
 ): LoopLiveness {
-  if (record === null) return { status: "stopped", reason: "no-record" };
+  if (read.kind === "absent") return { status: "stopped", reason: "no-record" };
+  if (read.kind === "unreadable") {
+    return { status: "unknown", reason: "record-unreadable", detail: read.detail };
+  }
+  const record = read.record;
 
   const hostname = deps.hostname ?? os.hostname();
   if (record.host !== hostname) {
@@ -271,6 +300,9 @@ export function describeLoopLiveness(l: LoopLiveness): string {
     case "unknown":
       if (l.reason === "heartbeat-stale") {
         return `ループ本体: 不明 (PID ${l.pid} は存在しますが ${l.heartbeatAt} から応答がありません)`;
+      }
+      if (l.reason === "record-unreadable") {
+        return `ループ本体: 不明 (生存記録を読めませんでした: ${l.detail})`;
       }
       return `ループ本体: 不明 (この状態は別のホスト ${l.host} で記録されました。最終応答 ${l.heartbeatAt})`;
   }
