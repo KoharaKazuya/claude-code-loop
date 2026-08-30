@@ -1,6 +1,6 @@
 ---
 title: "README の ccloop add の説明に --conflicts を足す"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 conflicts: [T-20260830-1334-explore-assigns-conflict-metadata]
