@@ -44,7 +44,10 @@ devcontainer がどの ccloop を使うか」だけであり、dogfooding(利用
 ## 影響範囲
 
 `.devcontainer/devcontainer.json` / `.devcontainer/devcontainer-lock.json` / `.devcontainer/post-create.sh`
-/ `README.md`(開発節)/ `docs/architecture.md`(該当節を書き換え)。`docs/architecture.md` の見出しを
-変更したため、`lib/supervisor.ts` の乖離警告メッセージが参照する見出し文字列も追従修正した(この
-メッセージはテストで文字列一致を検証していないため、変更時は手動で追従が必要)。エンドユーザー向けの
-インストール方法・CHANGELOG は変更していない。
+/ `README.md`(開発節・リリース節)/ `docs/architecture.md`(該当節を書き換え)/ `docs/compatibility.md`
+(「feature のタグ運用」節)。`docs/compatibility.md` と README.md のリリース節には、この 2 ファイルが
+「バージョン同期の対象外でリリース後に手動更新する」という旧前提の記述が残っていたが、これは
+ccloop feature を参照しなくなったことで成立しなくなったため、レビュー指摘を受けて合わせて修正した。
+`docs/architecture.md` の見出しを変更したため、`lib/supervisor.ts` の乖離警告メッセージが参照する
+見出し文字列も追従修正した(このメッセージはテストで文字列一致を検証していないため、変更時は手動で
+追従が必要)。エンドユーザー向けのインストール方法・CHANGELOG は変更していない。

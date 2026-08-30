@@ -231,10 +231,10 @@ origin/main と同期していることを確認したうえで `check:version` 
 `scripts/check-version.mjs` が package.json を含む 3 箇所のバージョン一致を検証する。CI
 (`.github/workflows/ci.yml`)は push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は
 `vX.Y.Z` タグ push 時にタグバージョンとの一致まで検証したうえで `lib/` と `bin/` を feature にバンドルし、
-GHCR へ publish する。`.devcontainer/devcontainer.json` 中の ccloop feature 参照と
-`.devcontainer/devcontainer-lock.json` はこの同期・検証の対象外で、リリース後に手動で更新する
-(digest は publish 後にしか確定しないため、devcontainer.json だけ自動更新すると lock との整合が取れない)。
-lock はコンテナ再ビルド時に devcontainer CLI が解決し直す。
+GHCR へ publish する。この開発用 devcontainer 自身の `.devcontainer/devcontainer.json` /
+`.devcontainer/devcontainer-lock.json` は ccloop feature を参照しない(checkout の `bin/ccloop` を
+そのまま `ccloop` として使うため。詳細は [docs/architecture.md](docs/architecture.md) 参照)ので、
+これらはこの同期・検証の対象外であり、リリースに合わせて更新する手順も無い。
 
 ## ドキュメント
 
