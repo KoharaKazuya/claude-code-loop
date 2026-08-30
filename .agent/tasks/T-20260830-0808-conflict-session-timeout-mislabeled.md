@@ -4,7 +4,7 @@ status: failed
 priority: 3
 dependencies: []
 retries: 3
-note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md, CHANGELOG.md)(元: 失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .…)。成果は退避ブランチに残っており T-20260830-0934-rescue-failure-kind-priority-work が取り込む"
+note: "失敗回数が上限(3)に達したが、成果は T-20260830-0934-rescue-failure-kind-priority-work が退避ブランチから main へ取り込み済み。再試行不要"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
@@ -74,3 +74,16 @@ createdAt: 2026-08-30T08:08:20.118Z
 - この記録は機械的検出のみで、失敗原因の分析ではない
 - 未コミット差分を `/home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z.patch` へ退避した(`CHANGELOG.md`, `lib/cli.test.ts`, `lib/supervisor.status.test.ts`, `lib/supervisor.test.ts`, `lib/supervisor.ts`)。復元は `git apply /home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z.patch`
 - コミット済みの成果はブランチ `agent/conflict/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z` に退避した(削除していない)
+
+### 救出(2026-08-30T09:38:06.474Z, T-20260830-0934-rescue-failure-kind-priority-work)
+
+- 確認済みの事実: 退避ブランチのコミット済み成果(`classifyTaskSessionResult` の切り出しと単体テスト、判断記録、CHANGELOG)を main 系列へ取り込んだ。取り込み時に main 側の `recordFailure` 新シグネチャへ配線し直した
+- このタスク自体は `failed` のままでよい(成果は救出済みなので再試行不要)
+
+### 人間の判断(2026-08-30, 対話セッション経由)
+
+- failed のまま終了とする(このタスク自体は再挑戦しない)、と人間が判断した。
+- コミット済みの成果は退避ブランチ
+  `agent/conflict/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z` にあり、
+  実行中の `T-20260830-0934-rescue-failure-kind-priority-work` が main への取り込みを担当する。
+- 退避ブランチはレスキュー完了・main 反映の確認が取れるまで削除しない。

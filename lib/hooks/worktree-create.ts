@@ -17,8 +17,24 @@ if (typeof name !== "string" || !/^[A-Za-z0-9._-]+$/.test(name) || /^\.+$/.test(
   process.exit(1);
 }
 
-const startDir =
-  process.env.CLAUDE_PROJECT_DIR ?? (typeof input.cwd === "string" ? input.cwd : process.cwd());
+// process.cwd() へは意図的にフォールバックしない: worktree/ブランチを作る hook がここへ
+// フォールバックすると、呼び出し側の cwd 引き渡し漏れが「静かに ccloop リポジトリ本体を汚す」
+// 事故になる(過去に agent/T-001 〜 T-003 の残骸が本体に残った)。渡されていなければ即座に
+// 失敗させ、事故を早期に検知できるようにする。
+const claudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+const inputCwd = typeof input.cwd === "string" ? input.cwd : undefined;
+const startDir = claudeProjectDir ?? inputCwd;
+
+if (startDir === undefined) {
+  process.stderr.write(
+    "worktree 作成対象のリポジトリを特定できない: 環境変数 CLAUDE_PROJECT_DIR も" +
+      " hook input の cwd も渡されていない。process.cwd() への無条件フォールバックは" +
+      " 意図せずリポジトリ本体に worktree/ブランチを作ってしまう事故につながるため廃止した。" +
+      " 呼び出し側(Claude Code 本体)が WorktreeCreate hook 呼び出し時に CLAUDE_PROJECT_DIR" +
+      " または hook input の cwd のいずれかを渡すよう確認すること。\n",
+  );
+  process.exit(1);
+}
 
 try {
   const root = resolveRepoRoot({ cwd: startDir });

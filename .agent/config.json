@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "claudeCommand": "claude",
   "model": "opus",
   "escalation": {
@@ -24,5 +24,6 @@
   "idlePollMs": 60000,
   "parallel": {
     "maxSessions": 4
-  }
+  },
+  "maxConflictRetries": 5
 }

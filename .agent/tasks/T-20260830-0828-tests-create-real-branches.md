@@ -1,10 +1,12 @@
 ---
 title: "テストが実リポジトリにブランチを作り、孤児ブランチとして残り続ける"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "検出の網(globalSetup)と作成経路の fail-closed を実装。残骸ブランチ T-001 の削除は HR-20260830-0928 で人間へ依頼"
 createdAt: 2026-08-30T08:28:56.634Z
+updatedAt: 2026-08-30T09:42:00.000Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。
@@ -59,3 +61,27 @@ agent/T-999   2026-08-30 03:05:10
 
 調査で `git worktree` 系のコマンドは権限で使えない。ブランチの作成・削除・切り替えも同様に
 使えないため、再現はテストコードの読解と、テスト自身が用意する一時リポジトリの中で行うこと。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T09:42:00Z, セッション記録)
+
+- 確認済みの事実:
+  - 調査時点で残骸 5 本のうち `agent/T-001` / `agent/T-002` / `agent/T-003` / `agent/T-999` は
+    既に消えていた(孤児ブランチ回収が片付けたとみられる)。残存は `T-001` のみで、
+    `git log main..T-001` が空 = 固有コミット無し。削除依頼を HR-20260830-0928 に作成。
+  - 犯人のコード経路は**特定できていない**。`merge.test.ts` / `supervisor.test.ts` /
+    `supervisor.finish.test.ts` / `hooks/worktree-create.test.ts` を個別実行しても汚染は再現せず、
+    現行のテストはいずれも隔離できている。
+  - 実装: `lib/test-global-setup.ts`(vitest globalSetup、前後のブランチ一覧比較で
+    `process.exitCode = 1`)、`vitest.config.ts` への登録、`lib/hooks/worktree-create.ts` の
+    fail-closed 化。コミット 73ad69d / 8d10a59 / b4b2b0a。
+  - 検証: `npm run typecheck` / `npm run lint` / `npm run test`(1072 passed)が通過。
+    テスト前後で `git branch` の一覧に差分なし。
+  - **vitest 4 は globalSetup の teardown で throw しても終了コードを 0 のままにする**ことを
+    使い捨てプロジェクトで実測確認(throw → exit 0、`process.exitCode = 1` → exit 1)。
+    最初の実装は throw していたため無効だった。レビューで指摘され修正済み。
+- 未検証の推測: 汚染の原因は `lib/supervisor.ts` の `repoPaths()` シングルトンのデフォルト引数
+  経由(`parkTaskWorktree` など)ではないか。裏は取れていない。T-20260830-0929 で扱う。
+- 次の試行への提案: 再発したら globalSetup が報告するブランチ名から経路を逆引きできる。
+  `agent/` 無しの裸のブランチ名なら supervisor 経由ではなく手動操作を疑うこと。

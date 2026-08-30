@@ -2,10 +2,13 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0947-index-reconcile-is-the-only-writer](D-20260830-0947-index-reconcile-is-the-only-writer.md) — 決定インデックスへの追記はローテーションのリコンサイルに一本化し、セッションの手作業をやめる
 - [ ] [D-20260830-0938-metrics-read-cap-limits](D-20260830-0938-metrics-read-cap-limits.md) — 実行ログの読み込み上限を末尾 512 KiB / 1000 行にする
 - [ ] [D-20260830-0934-running-task-file-guard-declined](D-20260830-0934-running-task-file-guard-declined.md) — 実行中タスクの記録ファイルへの書き込みを仕組みで拒否する対応は見送る
 - [ ] [D-20260830-0934-orphaned-worktree-detection-declined](D-20260830-0934-orphaned-worktree-detection-declined.md) — ccloop の管理から外れた作業場所を検出して status に出す対応は見送る
+- [ ] [D-20260830-0932-test-branch-leak-scope](D-20260830-0932-test-branch-leak-scope.md) — テストのブランチ汚染対策は検出 + 作成経路の fail-closed に絞る
 - [ ] [D-20260830-0825-fatal-stop-record-declined](D-20260830-0825-fatal-stop-record-declined.md) — ループの異常停止を status に残す対応は見送る
+- [ ] [D-20260830-0825-failure-kind-priority-order](D-20260830-0825-failure-kind-priority-order.md) — 同時成立する失敗種別の優先順を レートリミット → 衝突未解消 → 時間切れ に確定する
 - [ ] [D-20260830-0825-cross-repo-ratelimit-declined](D-20260830-0825-cross-repo-ratelimit-declined.md) — 利用上限の待機状態をリポジトリ間で共有する対応は見送る
 - [ ] [D-20260830-0824-missing-dependency-visible-not-blocking](D-20260830-0824-missing-dependency-visible-not-blocking.md) — 存在しない依存はスケジューリングを止めず、status の要対応で気づかせる
 - [ ] [D-20260830-0812-keep-attempt-history-after-fix](D-20260830-0812-keep-attempt-history-after-fix.md) — 衝突リトライ別枠化の後は解消セッションも試行履歴を残してよい

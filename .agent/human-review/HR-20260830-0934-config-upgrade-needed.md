@@ -1,6 +1,6 @@
 ---
 title: "設定ファイルの更新が必要で、次にループを起動すると止まる"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T09:34:06.873Z
 ---
@@ -56,4 +56,9 @@ ccloop init --upgrade
 ## 回答
 
 - [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+- [x] 回答を下に書いた
+
+実行してよい、と人間が承認(2026-08-30、対話セッション経由)。承認を受けて対話セッションが
+リポジトリ版 `./bin/ccloop init --upgrade --yes` を実行し、schemaVersion 1 → 2 へ移行済み
+(`maxConflictRetries: 5` を既定値で追加)。インストール済みの ccloop 0.4.1 は版 2 の移行を
+知らない古いビルドだったため、リポジトリ版 CLI で実行した。

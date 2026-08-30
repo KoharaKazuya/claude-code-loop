@@ -1,9 +1,10 @@
 ---
 title: "衝突ブランチに取り残された「失敗理由の優先順」の成果を main へ取り込む"
-status: ready
+status: completed
 priority: 1
 dependencies: []
 retries: 0
+note: "退避ブランチの成果(classifyTaskSessionResult の切り出しと単体テスト、判断記録、CHANGELOG)を取り込んだ。typecheck/lint/test(1099 件)通過"
 createdAt: 2026-08-30T09:34:06.873Z
 ---
 
