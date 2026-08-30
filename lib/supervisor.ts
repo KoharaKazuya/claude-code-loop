@@ -3665,6 +3665,25 @@ export function parseDeps(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * `deps` の各 ID が `knownIds` に実在するか検証する。存在しない ID を書いたタスクは
+ * 依存が満たされず永久に選ばれないが、`add` した本人には成功メッセージしか出ないため、
+ * その場でエラーにして気付けるようにする。completed タスクへの依存は正当なので、
+ * 突き合わせ先には `.agent/archive/tasks` の ID も含める(呼び出し側が `allTaskIds()` を渡す)。
+ */
+export function assertDepsExist(deps: string[], knownIds: string[]): void {
+  if (deps.length === 0) return;
+  const knownSet = new Set(knownIds);
+  const missing = deps.filter((id) => !knownSet.has(id));
+  if (missing.length === 0) return;
+  const lines = [`--deps に存在しないタスク ID があります: ${missing.join(", ")}`];
+  for (const id of missing) {
+    const suggestions = suggestSimilarTaskIds(id, knownIds);
+    if (suggestions.length > 0) lines.push(`  ${id} → もしかして: ${suggestions.join(", ")}`);
+  }
+  throw new Error(lines.join("\n"));
+}
+
 export function cmdAdd(argv: string[]): void {
   const positional = positionalArgs(argv);
   const title = positional[0];
@@ -3685,6 +3704,7 @@ export function cmdAdd(argv: string[]): void {
     slug = resolveTaskSlug(title, opt("slug"));
     priority = resolvePriority(opt("priority"));
     dependencies = parseDeps(opt("deps"));
+    if (dependencies.length > 0) assertDepsExist(dependencies, allTaskIds());
   } catch (err) {
     console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -3747,8 +3767,11 @@ export function suggestSimilarTaskIds(query: string, candidateIds: string[]): st
   return scored.slice(0, 3).map((s) => s.id);
 }
 
-/** すべてのタスク ID(.agent/tasks + .agent/archive/tasks)。retry の「もしかして」候補の母集団 */
-function allTaskIds(): string[] {
+/**
+ * すべてのタスク ID(.agent/tasks + .agent/archive/tasks)。retry の「もしかして」候補の母集団、
+ * および add の `--deps` 実在チェックの突き合わせ先として使う。
+ */
+export function allTaskIds(): string[] {
   return [...listMdFiles(repoPaths().tasksDir), ...listMdFiles(path.join(repoPaths().archiveDir, "tasks"))].map(
     (f) => f.replace(/\.md$/, ""),
   );

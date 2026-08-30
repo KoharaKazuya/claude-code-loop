@@ -1,6 +1,6 @@
 ---
 title: "ccloop add --deps に存在しないタスク ID を渡したらその場でエラーにする"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0

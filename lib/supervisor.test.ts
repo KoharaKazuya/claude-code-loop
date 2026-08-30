@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { serializeFrontmatter } from "./frontmatter.ts";
 import {
   AGENT_COMMIT_TRAILER,
+  allTaskIds,
   appendAttemptRecord,
   appendUncommittedDiffRecord,
+  assertDepsExist,
   buildClaudeArgs,
   buildExplorePrompt,
   buildSessionMetrics,
@@ -4188,5 +4190,62 @@ describe("parseDeps", () => {
 
   it("末尾カンマや空要素は捨てる", () => {
     expect(parseDeps("T-a,,T-b,")).toEqual(["T-a", "T-b"]);
+  });
+});
+
+describe("assertDepsExist", () => {
+  it("存在する ID のみなら throw しない", () => {
+    expect(() => assertDepsExist(["T-a", "T-b"], ["T-a", "T-b", "T-c"])).not.toThrow();
+  });
+
+  it("存在しない ID が含まれると throw し、メッセージにその ID が含まれる", () => {
+    expect(() => assertDepsExist(["T-a", "T-x"], ["T-a", "T-b"])).toThrow(/T-x/);
+  });
+
+  it("空配列なら throw しない", () => {
+    expect(() => assertDepsExist([], [])).not.toThrow();
+  });
+
+  it("似た ID がある場合「もしかして」候補がメッセージに含まれる", () => {
+    expect(() => assertDepsExist(["T-20260830-0344-retry-foo"], ["T-20260101-0000-retry-bar"])).toThrow(
+      /もしかして: T-20260101-0000-retry-bar/,
+    );
+  });
+});
+
+describe("allTaskIds / assertDepsExist(archive)", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    // useRepoRoot はモジュール内で共有される currentPaths を書き換えるため、他のテストへ
+    // 影響を残さないよう元の値を退避し、afterEach で必ず復元する
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-alltaskids-"));
+    useRepoRoot(dir);
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeTask = (relDir: string, id: string): void => {
+    const d = path.join(dir, ".agent", relDir);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, `${id}.md`), serializeFrontmatter({ status: "ready" }, "本文"));
+  };
+
+  it("allTaskIds は .agent/tasks と .agent/archive/tasks の両方の ID を返す", () => {
+    writeTask("tasks", "T-open");
+    writeTask("archive/tasks", "T-done");
+
+    expect(allTaskIds().sort()).toEqual(["T-done", "T-open"]);
+  });
+
+  it("completed で archive 済みのタスクへの依存は throw しない(回帰)", () => {
+    writeTask("archive/tasks", "T-done");
+
+    expect(() => assertDepsExist(["T-done"], allTaskIds())).not.toThrow();
   });
 });
