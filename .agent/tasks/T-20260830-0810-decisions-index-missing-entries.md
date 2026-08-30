@@ -84,3 +84,17 @@ index.md への追記を明示していない可能性がある。人間の承�
   `npm run test`(1104 件)/ `lint` / `typecheck` すべて成功。reviewer サブエージェントは APPROVE。
 - 未検証の推測: 公開版が更新されるまでは、稼働中のループが決定を件数基準でアーカイブし続ける
   (人間のチェックと無関係)。次のリリースで解消するはず。
+
+### 試行 2(2026-08-30T10:18:00Z, セッション記録)
+- 確認済みの事実: 前回の成果は e806ceb にコミット済みで、失敗したのは main へのマージだけだった。
+  main(65f7080)を取り込むマージを完了(a104225)。衝突は `.agent/decisions/index.md` 1 ファイルのみ。
+  マージが機械的に解決されなかった原因は、稼働中の公開版 0.4.1 の `lib/merge.ts` に index.md の
+  3-way マージが無いこと(`grep decisionsIndex /usr/local/share/ccloop/lib/merge.ts` が 0 件、
+  解決対象は `ownTaskFile` のみ)。
+- 実施: main 側で 10:07 に人間が index.md のチェックを 8 件付けていた(118090a)ため、
+  ブランチ側の index.md を基点の内容へ戻し、人間のチェックを守りつつ再衝突を避けた
+  (判断は D-20260830-1018-index-backfill-defer-to-reconcile)。未掲載分の解消はリコンサイルに委ねる。
+  `npm run typecheck` / `lint` / `test`(32 ファイル 1129 件)すべて成功。reviewer は APPROVE
+  (指摘は「既存行の要約は title 変更に追従しない」という軽微な設計上の限界 1 件のみ)。
+- 次の試行への提案: このタスク自体は完了。index.md を触るブランチは、main 側で人間がチェックを
+  付け替えている可能性を先に確認すること(`git log main -- .agent/decisions/index.md`)。
