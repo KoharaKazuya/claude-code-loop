@@ -30,8 +30,13 @@ export interface CheckResult {
 /** 外部コマンドの実行結果(テストから差し替えられるよう関数として切り出す) */
 export interface CommandProbe {
   ok: boolean;
-  /** 標準出力の 1 行目(トリム済み)。失敗時は理由 */
+  /** 標準出力の 1 行目(トリム済み)。表示用。失敗時は理由 */
   output: string;
+  /**
+   * 標準出力の全文(トリム済み)。成功時のみ入る。1 行目だけでは壊れる JSON など、
+   * 全文が必要な判定に使う(表示用の `output` とは役割が異なる)。
+   */
+  stdout?: string;
   /**
    * ok=false のときの失敗の種類。"not-found": コマンド自体が起動できなかった(ENOENT 等の spawn 失敗)。
    * "exit": コマンドは起動できたが非ゼロ終了した(≒ 実行できたが失敗した)。
@@ -43,11 +48,11 @@ export interface CommandProbe {
   exitCode?: number | null;
 }
 
-export type ProbeFn = (command: string, args: string[]) => CommandProbe;
+export type ProbeFn = (command: string, args: string[], opts?: { timeoutMs?: number }) => CommandProbe;
 
 /** `<command> <args>` を実行して 1 行目を取る。存在しない・失敗したら ok=false */
-export const probeCommand: ProbeFn = (command, args) => {
-  const res = spawnSync(command, args, { encoding: "utf8" });
+export const probeCommand: ProbeFn = (command, args, opts) => {
+  const res = spawnSync(command, args, { encoding: "utf8", timeout: opts?.timeoutMs });
   if (res.error !== undefined) return { ok: false, output: res.error.message, failure: "not-found" };
   if (res.status !== 0) {
     const stderr = (res.stderr ?? "").trim().split("\n")[0] ?? "";
@@ -58,7 +63,8 @@ export const probeCommand: ProbeFn = (command, args) => {
       exitCode: res.status,
     };
   }
-  return { ok: true, output: ((res.stdout ?? "").trim().split("\n")[0] ?? "").trim() };
+  const stdout = (res.stdout ?? "").trim();
+  return { ok: true, output: (stdout.split("\n")[0] ?? "").trim(), stdout };
 };
 
 /**
@@ -152,6 +158,104 @@ function checkAgentDir(paths: Paths | null, home: string): CheckResult {
   }
 }
 
+/** ログイン状態の判定に使う環境変数(注入できるようにする) */
+export type AuthEnv = Record<string, string | undefined>;
+
+/** API キー等で認証している可能性を示す環境変数(いずれかが空でない値なら手がかりとする) */
+const API_KEY_ENV_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+] as const;
+
+/**
+ * 真偽値として解釈される環境変数。明示的に無効化された値(`0` / `false`)を「設定されている」と
+ * 数えると、未ログインを見逃す方向へ倒れるため除く。
+ */
+const BOOLEAN_ENV_NAMES: readonly string[] = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
+
+function apiKeyEnvHint(env: AuthEnv): string | null {
+  for (const name of API_KEY_ENV_NAMES) {
+    const value = env[name];
+    if (typeof value !== "string" || value === "") continue;
+    if (BOOLEAN_ENV_NAMES.includes(name)) {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "0" || normalized === "false") continue;
+    }
+    return name;
+  }
+  return null;
+}
+
+/**
+ * `claude auth status --json` の結果からログイン状態を判定する(純粋)。
+ * 終了コードは見ない(未ログイン時に非ゼロで終わる可能性があるが、stdout が読めればそちらを信じる)。
+ */
+export function checkClaudeAuth(probeResult: CommandProbe, env: AuthEnv): CheckResult {
+  const name = "claude ログイン状態";
+  const raw = probeResult.stdout ?? probeResult.output;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return {
+      name,
+      ok: false,
+      detail:
+        "`claude auth status --json` の出力を解釈できず判定できない。" +
+        "`claude auth status` に対応していない CLI・ラッパーの可能性がある",
+      required: false,
+    };
+  }
+
+  // parse に成功しても中身がオブジェクトとは限らない(`null` や配列も妥当な JSON)。
+  // ここで弾かないと以降のプロパティ参照で doctor 全体が例外で落ちる。
+  const obj = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const loggedIn = obj["loggedIn"];
+  if (typeof loggedIn !== "boolean") {
+    return {
+      name,
+      ok: false,
+      detail:
+        "`claude auth status --json` の出力に真偽値の loggedIn が無く判定できない。" +
+        "`claude auth status` に対応していない CLI・ラッパーの可能性がある",
+      required: false,
+    };
+  }
+
+  const apiKeySource = obj["apiKeySource"];
+  const apiKeySourceHint = typeof apiKeySource === "string" && apiKeySource !== "" ? apiKeySource : null;
+
+  if (loggedIn) {
+    const authMethod = obj["authMethod"];
+    let detail = typeof authMethod === "string" && authMethod !== "" ? `ログイン済み (${authMethod})` : "ログイン済み";
+    if (apiKeySourceHint !== null) detail += ` (apiKeySource: ${apiKeySourceHint})`;
+    return { name, ok: true, detail, required: true };
+  }
+
+  const envHint = apiKeyEnvHint(env);
+  if (apiKeySourceHint !== null || envHint !== null) {
+    const via = apiKeySourceHint !== null ? `apiKeySource: ${apiKeySourceHint}` : `環境変数 ${String(envHint)}`;
+    return {
+      name,
+      ok: true,
+      detail: `\`claude auth status\` は未ログインだが API キー等の設定があるため問題として扱わない(${via})`,
+      required: true,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: "未ログイン。`claude auth login` でログインすること。このままループを回すとタスクが失敗し、やり直し回数を消費する",
+    required: true,
+  };
+}
+
 export interface DoctorOptions {
   /** 対象リポジトリ。解決できなかったときは null */
   paths: Paths | null;
@@ -160,6 +264,8 @@ export interface DoctorOptions {
   home?: string;
   nodeVersion?: string;
   probe?: ProbeFn;
+  /** ログイン状態判定に使う環境変数。既定は process.env */
+  env?: AuthEnv;
 }
 
 /** 診断結果を組み立てる(表示と終了コードの決定は呼び出し側) */
@@ -215,6 +321,11 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
         : `見つからない: ${claude.output}`,
     required: true,
   });
+  if (claude.ok) {
+    const env = opts.env ?? process.env;
+    const authProbe = probe(claudeCommand, ["auth", "status", "--json"], { timeoutMs: 15000 });
+    results.push(checkClaudeAuth(authProbe, env));
+  }
   results.push(checkAgentDir(opts.paths, home));
   if (configError !== null) {
     results.push({ name: `${AGENT_DIR_NAME}/config.json の内容`, ok: false, detail: configError, required: true });

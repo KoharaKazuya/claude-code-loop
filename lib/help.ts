@@ -120,8 +120,8 @@ failed / blocked のタスクを再実行対象に戻す: status を ready に�
 
   doctor: `使い方: ccloop [--repo <path>] doctor
 
-実行環境を自己診断する: git / Node.js / claude CLI の有無、.agent/ の存在と schemaVersion、
-state ディレクトリへの書き込み可否。副作用はない(ファイルを書き込まない)。
+実行環境を自己診断する: git / Node.js / claude CLI の有無、claude へのログイン状態、
+.agent/ の存在と schemaVersion、state ディレクトリへの書き込み可否。副作用はない(ファイルを書き込まない)。
 
 オプション: なし(--repo はグローバルオプション)`,
 
