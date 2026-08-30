@@ -1,9 +1,10 @@
 ---
 title: "起動時の回収でマージ衝突を検知したとき、衝突専用の枠ではなく通常の再試行回数を消費する"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-0934-startup-recovery-crash-leaves-no-trace]
 retries: 0
+note: "起動時回収の衝突検知が conflictRetries を消費するようにした。クラッシュ再生経路(PendingRecoveryNote)にも kind を引き継ぐよう範囲を広げた"
 createdAt: 2026-08-30T10:53:39.546Z
 ---
 

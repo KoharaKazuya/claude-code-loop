@@ -5243,7 +5243,9 @@ describe("recoverStartupIn", () => {
     expect(branchExists("agent/T-001")).toBe(true);
 
     const t = readTask("T-001");
-    expect(t.retries).toBe(1);
+    // 衝突はタスク本来の失敗ではなく、専用枠の conflictRetries を消費する(retries は変わらない)
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
     expect(t.body).toContain("マージが衝突した");
     expect(t.body).toContain("conflict.txt");
   });
@@ -5314,7 +5316,9 @@ describe("recoverStartupIn", () => {
     expect(branchExists(parkedBranchNameFor("T-001", NOW))).toBe(true);
 
     const t = readTask("T-001");
-    expect(t.retries).toBe(1);
+    // 衝突はタスク本来の失敗ではなく、専用枠の conflictRetries を消費する(retries は変わらない)
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
     expect(t.body).toContain(parkedBranchNameFor("T-001", NOW));
   });
 
@@ -5841,6 +5845,39 @@ describe("recoverStartupIn", () => {
     expect(t.retries).toBe(1);
     expect(t.body).toContain("### 試行 1(");
     expect(t.body).not.toContain("### 試行 2(");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("X: kind: merge-conflict のマーカーを再生すると conflictRetries だけが増える(retries は変わらない)", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断され、main へのマージが衝突した(conflict.txt)",
+            at: "2026-08-16T08:00:00.000Z",
+            kind: "merge-conflict",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
+    expect(t.body).toContain("マージが衝突した");
+    expect(t.body).toContain("マージ衝突");
 
     const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
     expect(state.pendingRecoveryNotes).toBeUndefined();
