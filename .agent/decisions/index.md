@@ -2,7 +2,10 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-1141-startup-conflict-test-expectations](D-20260830-1141-startup-conflict-test-expectations.md) — 起動時回収の衝突テスト 2 件の期待値を retries から conflictRetries へ更新した
 - [ ] [D-20260830-1129-abandon-marker-over-status-value](D-20260830-1129-abandon-marker-over-status-value.md) — 断念は status の新値ではなく abandonedAt マーカーで表す
+- [ ] [D-20260830-1128-startup-recovery-note-marker](D-20260830-1128-startup-recovery-note-marker.md) — 起動時復旧の削除と記録の間も、state のマーカーで塞ぐ
+- [ ] [D-20260830-1127-task-extra-frontmatter-passthrough](D-20260830-1127-task-extra-frontmatter-passthrough.md) — タスクの未知 frontmatter は Task.extra で素通しし、updatedAt は型に持たせない
 - [ ] [D-20260830-1121-status-shows-config-outdated-only](D-20260830-1121-status-shows-config-outdated-only.md) — status の要対応に出すのは「設定が古い」向きのみとする
 - [ ] [D-20260830-1110-rescue-branch-omissions](D-20260830-1110-rescue-branch-omissions.md) — 退避ブランチから取り込まなかった差分とその理由
 - [ ] [D-20260830-1109-discarded-ours-always-recorded](D-20260830-1109-discarded-ours-always-recorded.md) — 衝突解消で捨てた main 側の変更は、機械記録か人間編集かを見分けず常にコミットメッセージへ残す
