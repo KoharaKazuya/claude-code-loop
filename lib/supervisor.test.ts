@@ -388,6 +388,12 @@ describe("planConflictResume", () => {
     expect(resume([a], ["T-001"])).toEqual(["T-001"]);
   });
 
+  it("スヌーズ中でも無視は 1 回限り(この停止指示の後に起動済みなら対象外)", () => {
+    const a = makeTask({ id: "T-001", snoozeUntil: "2026-08-17T00:00:00.000Z" });
+
+    expect(resume([a], ["T-001"], ["T-001"])).toEqual([]);
+  });
+
   it("実行中・ready でない・依存が dead のタスクは対象外", () => {
     const running = makeTask({ id: "T-001" });
     const working = makeTask({ id: "T-002", status: "working" });
