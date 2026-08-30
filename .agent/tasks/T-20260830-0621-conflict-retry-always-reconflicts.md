@@ -5,8 +5,8 @@ priority: 2
 dependencies: []
 retries: 3
 note: "3 回ともマージ衝突で失敗し failed。ただし成果は T-20260830-0825-rescue-conflict-retry-work が main へ取り込み済み"
+abandonedAt: 2026-08-30T11:11:50.357Z
 createdAt: 2026-08-30T06:21:28.294Z
-updatedAt: 2026-08-30T08:13:38.542Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。

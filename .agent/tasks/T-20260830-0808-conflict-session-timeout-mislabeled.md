@@ -5,6 +5,7 @@ priority: 3
 dependencies: []
 retries: 3
 note: "失敗回数が上限(3)に達したが、成果は T-20260830-0934-rescue-failure-kind-priority-work が退避ブランチから main へ取り込み済み。再試行不要"
+abandonedAt: 2026-08-30T11:11:50.437Z
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
