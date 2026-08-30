@@ -16,6 +16,7 @@ import {
   hrSummary,
   repoPaths,
   setRepoPaths,
+  statePathOf,
   useRepoRoot,
 } from "./supervisor.ts";
 
@@ -250,6 +251,39 @@ describe("collectStatusData / formatStatus", () => {
     it("状態の更新: の行が出る", () => {
       const out = formatStatus();
       expect(out).toContain("状態の更新:");
+    });
+  });
+
+  describe("起動セッション数と終了済みセッション数の表示", () => {
+    /** 計測行は最低限の必須フィールドのみ埋めて metrics.jsonl に追記する */
+    function appendMetric(costUsd: number): void {
+      const line = JSON.stringify({
+        timestamp: NOW.toISOString(),
+        kind: "task",
+        model: "claude-test",
+        costUsd,
+      });
+      fs.appendFileSync(repoPaths().metricsPath, line + "\n");
+    }
+
+    it("起動セッション数(sessionCount)と終了したセッション数(metrics.jsonl の行数)が別々の値で両方表示される", () => {
+      // わざと違う値にする: 起動は 7 件、うち終了して計測が残っているのは 3 件
+      fs.writeFileSync(statePathOf(dir), JSON.stringify({ sessionCount: 7 }));
+      appendMetric(0.1);
+      appendMetric(0.2);
+      appendMetric(0.3);
+
+      const data = collectStatusData(NOW);
+      expect(data.state.sessionCount).toBe(7);
+      expect(data.metrics).toHaveLength(3);
+
+      const out = formatStatus();
+      expect(out).toContain("起動セッション: 7 件");
+      expect(out).toContain("終了した 3 セッション分");
+
+      // 「セッション数」という重複ラベル(何を数えているか区別できない旧表記)が再発していないこと
+      const occurrences = out.match(/セッション数/g) ?? [];
+      expect(occurrences.length).toBeLessThanOrEqual(1);
     });
   });
 });
