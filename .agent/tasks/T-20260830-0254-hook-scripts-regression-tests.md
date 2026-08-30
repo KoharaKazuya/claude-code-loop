@@ -1,0 +1,47 @@
+---
+title: "テストの無い hook スクリプトに回帰検知テストを足す"
+status: ready
+priority: 3
+dependencies: [T-20260830-0254-test-env-isolation-session-vars]
+retries: 0
+createdAt: 2026-08-30T02:54:00.229Z
+---
+
+所属フェーズ: 現在フェーズ内の検証強化。機能追加ではない。
+
+## 目的
+
+`lib/hooks/` 配下のうち、次の 2 つには単体テストが存在しない。どちらも壊れても他のテストでは
+検知できず、壊れたときの症状が「静かに無効化される」タイプなので、回帰検知テストを足す。
+
+### `lib/hooks/deny-ask-user.ts`
+
+自律実行中の `AskUserQuestion` を deny し、絶対ルール 1(人間への回答待ちで停止しない)を
+実際に担保している唯一の実装。ロジックに分岐は無いが、Claude Code の PreToolUse hook が
+期待する JSON の形(`hookSpecificOutput.hookEventName` / `permissionDecision` のキー名・値)が
+ずれると無音で効かなくなる。そのときの症状は「無人運用中のセッションが人間の回答を待って
+止まる」という、まさに防ごうとしている事態そのものである。
+
+### `lib/hooks/worktree-create.ts`
+
+path traversal 対策の入力検証(`/^[A-Za-z0-9._-]+$/` と `/^\.+$/` の組み合わせ)を含む。
+下請けの `lib/worktree.ts` は `worktree.test.ts` で厚くテスト済みなので、対象は hook 自身の
+グルーと入力検証部分に限る。
+
+## 完了条件
+
+- 上記 2 ファイルに対応するテストを追加する。既存の hook テスト
+  (`lib/hooks/stop-check.test.ts` など)の書き方に揃える。
+- 検証対象は「出力 JSON の形とキーの値」「不正な入力を弾くこと」「対象外の入力に対して
+  何もしないこと」を最低限含める。カバレッジ稼ぎの薄いテストは書かない。
+- 子プロセスの env を組み立てる場合は、依存タスク
+  `T-20260830-0254-test-env-isolation-session-vars` で用意された方式に従う
+  (親セッションの `CLAUDE_AGENT_*` を継承しない)。
+- `npm run typecheck` / `npm run lint` / `npm run test` が通る。
+
+## 補足(未検証事項)
+
+「本番の `ccloop run` 上で `deny-ask-user.ts` が PreToolUse hook として実際に発火しているか」は
+単体テストの範囲外であり、今回の調査では未確認である。このタスクで担保できるのは
+スクリプト単体の入出力契約までである点に留意すること。実機での発火確認が必要と判断した場合は、
+このタスクに含めず別タスクとして登録する。
