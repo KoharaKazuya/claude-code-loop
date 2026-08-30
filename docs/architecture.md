@@ -250,6 +250,26 @@ Node.js のバージョン(24 以上、または 22.18 以上)が要る。
 明示的に指定した値だけが子プロセスに渡るようにしている。これにより `npm test` は実行元セッションの
 状態(対話セッションか、どのタスクを担当しているか等)に依存せず再現可能になる。
 
+## hook は「無音で無効化される」ため入出力契約をテストで固定する
+
+`lib/hooks/` の各スクリプトは Claude Code が settings.json の記述に従って起動する。ここで壊れたときの
+症状は例外やテスト失敗ではなく、**何も起きなくなること**である。たとえば `deny-ask-user.ts` が返す JSON の
+キー名(`hookSpecificOutput.hookEventName` / `permissionDecision`)がずれても、Claude Code は
+それを解釈できないまま黙って通す。結果は「自律実行セッションが人間の回答待ちで停止する」——
+その hook が防ごうとしている事態そのものである。
+
+この失敗モードは他のテストでは検知できないため、hook については次の 2 段を明示的に固定している。
+
+- スクリプト単体の入出力契約: 子プロセスとして起動し、出力 JSON のキー名と値、不正入力の拒否、
+  終了コードを検証する(`lib/hooks/*.test.ts`)。テストは hook ファイルの隣に置く。
+  `lib/worktree.ts` のような下請けの検証はそちらのテストに任せ、hook 側では重複させない。
+- `lib/settings.template.json` への登録: スクリプトパスが含まれることだけを文字列一致で見ると、
+  エントリが別の hook イベント配下へ移動しても matcher が変わっても通ってしまう。
+  イベント種別・matcher・command の結び付きをオブジェクトとして辿って検証する(`lib/settings.test.ts`)。
+
+静的に担保できるのはここまでで、「Claude Code が settings.json の記述どおりに hook を発火させること」は
+外部依存であり、このリポジトリのテストでは検証できない。
+
 ## `.agent/` 記録ファイルの ID を連番でなく日時 + slug にする理由
 
 `.agent/tasks/` `.agent/decisions/` `.agent/human-review/` の ID(= ファイル名)は
