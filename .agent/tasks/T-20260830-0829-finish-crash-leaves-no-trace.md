@@ -1,10 +1,10 @@
 ---
 title: "後始末の途中でループが強制終了されると、main に入った成果が「未着手」のまま痕跡なく消える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
-note: "成果は T-20260830-1053-rescue-finish-interrupt-recovery-work が main へ取り込み済み。実装・テスト・判断記録・変更履歴に取り残しは無い"
+note: "成果は T-20260830-1053-rescue-finish-interrupt-recovery-work が main へ取り込み済み。取り残しが無いことと機械的検証を本セッションで確認した"
 createdAt: 2026-08-30T08:29:36.812Z
 ---
 
@@ -95,3 +95,18 @@ createdAt: 2026-08-30T08:29:36.812Z
 - この記録は機械的検出のみで、失敗原因の分析ではない
 - 未コミット差分を `/home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0829-finish-crash-leaves-no-trace-20260830T101839Z.patch` へ退避した(`CHANGELOG.md`, `docs/architecture.md`, `lib/merge.abort-retry.test.ts`, `lib/merge.ts`, `lib/prompt/PROMPT.md`, `lib/rotate.test.ts`, `lib/supervisor.finish.test.ts`, `lib/supervisor.selfheal.test.ts`, `lib/supervisor.ts`)。復元は `git apply /home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0829-finish-crash-leaves-no-trace-20260830T101839Z.patch`
 - コミット済みの成果はブランチ `agent/conflict/T-20260830-0829-finish-crash-leaves-no-trace-20260830T101839Z` に退避した(削除していない)
+
+### 試行 4(2026-08-30T13:42:54.749Z, セッション記録)
+
+- 確認済みの事実: 実装は現行 HEAD に存在する。`lib/supervisor.ts` の起動時復旧 `recoverStartupIn` に段階が追加され、
+  `phase === "finishing"` かつブランチ・worktree 双方が消え `status: ready` かつ `taskFileChanged !== true` の
+  実行中記録を「後始末の中断」と判定して note を残す(`counts.interruptedFinishes`)。実行中記録の破棄はこの検査の後に移動済み
+- 確認済みの事実: 失敗経路(退避失敗時)で worktree を残す既存の扱いは `finishTaskSession` 内に維持されている
+- 確認済みの事実: テストは `lib/supervisor.test.ts` のケース N/O/P/Q/W と `lib/supervisor.finish.test.ts` の
+  「taskFileChanged は worktree/ブランチの削除より前に実行中記録へ書き込まれる」が該当
+- 確認済みの事実: `CHANGELOG.md` の「## 未リリース」に該当行あり。設計判断は
+  `D-20260830-0945-finish-interrupt-recovery-approach`(順序入れ替えではなく起動時復旧で塞ぐ)に記録済み
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm test`(34 ファイル 1215 テスト)いずれも成功
+- 確認済みの事実: 試行 3 が案内していた退避パッチは `patches/` ごと存在しない。取り込まなかった差分の扱いは
+  `D-20260830-1110-rescue-branch-omissions` に記録済みで、一次資料である退避ブランチのコミットは取り残しなく取り込まれている
+- 本セッションでのコード変更は無い。完了条件を満たしていることを確認し `completed` にした
