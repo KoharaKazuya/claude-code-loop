@@ -27,7 +27,7 @@ jobs:
 
       - name: Verify tag, feature and package versions all match
         # scripts/check-version.mjs はルートの package.json / features/ccloop/devcontainer-feature.json に
-        # 加えて README.md と .devcontainer/devcontainer.json の ccloop feature 参照バージョンも検査する
+        # 加えて README.md の ccloop feature 参照バージョンも検査する
         # (前段の Bundle ステップで features/ccloop/package.json がコピーされるが、これはルートの
         # package.json とは無関係)。
         if: github.ref_type == 'tag'

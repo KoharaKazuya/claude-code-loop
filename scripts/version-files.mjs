@@ -3,9 +3,11 @@
  * 「どのファイルのどこにバージョンが書かれているか」の知識。
  *
  * 真実は package.json の version のみ。features/ccloop/devcontainer-feature.json の version、
- * README.md および .devcontainer/devcontainer.json 中の
- * `ghcr.io/koharakazuya/claude-code-loop/ccloop:<version>` 参照は、
+ * README.md 中の `ghcr.io/koharakazuya/claude-code-loop/ccloop:<version>` 参照は、
  * すべてそれと同じ値であるべき派生値として扱う。
+ *
+ * `.devcontainer/devcontainer.json` の同参照および `.devcontainer/devcontainer-lock.json` は
+ * この同期・検証の対象外(リリース後に手動で更新する運用。詳細は README.md 参照)。
  */
 
 import * as fs from "node:fs";
@@ -14,7 +16,6 @@ import * as path from "node:path";
 export const PACKAGE_JSON_RELATIVE = "package.json";
 export const FEATURE_JSON_RELATIVE = "features/ccloop/devcontainer-feature.json";
 export const README_RELATIVE = "README.md";
-export const DEVCONTAINER_JSON_RELATIVE = ".devcontainer/devcontainer.json";
 
 // devcontainer-feature.json / package.json はどちらもトップレベルに "version" キーを 1 つだけ持つ
 // (devDependencies 等のバージョン範囲は別のキー名の値であり "version" というキー名では現れない)。
@@ -57,11 +58,6 @@ export function readReadmeVersions(root) {
   return extractGhcrVersions(readFile(root, README_RELATIVE));
 }
 
-/** .devcontainer/devcontainer.json 中の ccloop feature 参照バージョン一覧を読む */
-export function readDevcontainerVersions(root) {
-  return extractGhcrVersions(readFile(root, DEVCONTAINER_JSON_RELATIVE));
-}
-
 /**
  * JSON ファイルのトップレベル "version" 値を書き換える。インデントや末尾改行など、
  * 対象フィールド以外の整形は一切変更しない。
@@ -79,15 +75,13 @@ export function replaceGhcrVersions(content, newVersion) {
 }
 
 /**
- * package.json / devcontainer-feature.json / README.md / devcontainer.json それぞれのバージョン
- * (README・devcontainer.json は配列)をまとめて読む。いずれかのファイルが存在しない・"version" が
- * 見つからない場合は例外を投げる。
+ * package.json / devcontainer-feature.json / README.md それぞれのバージョン(README は配列)を
+ * まとめて読む。いずれかのファイルが存在しない・"version" が見つからない場合は例外を投げる。
  */
 export function readAllVersions(root) {
   return {
     packageVersion: readPackageVersion(root),
     featureVersion: readFeatureVersion(root),
     readmeVersions: readReadmeVersions(root),
-    devcontainerVersions: readDevcontainerVersions(root),
   };
 }

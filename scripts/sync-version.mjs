@@ -3,8 +3,10 @@
  * package.json の version を唯一の真実として、
  * - features/ccloop/devcontainer-feature.json の version
  * - README.md 中の ghcr.io/koharakazuya/claude-code-loop/ccloop:<version> 参照
- * - .devcontainer/devcontainer.json 中の同参照
  * を同期する。
+ *
+ * `.devcontainer/devcontainer.json` の同参照および `.devcontainer/devcontainer-lock.json` は
+ * この同期の対象外(リリース後に手動で更新する運用。詳細は README.md 参照)。
  *
  * `npm version` ライフサイクルの `version` フックとして実行される想定
  * (package.json の version 更新後、コミット・タグ作成前に走る)。
@@ -13,7 +15,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  DEVCONTAINER_JSON_RELATIVE,
   FEATURE_JSON_RELATIVE,
   README_RELATIVE,
   readPackageVersion,
@@ -21,10 +22,10 @@ import {
   replaceJsonVersion,
 } from "./version-files.mjs";
 
-const GHCR_REFERENCE_FILES = [README_RELATIVE, DEVCONTAINER_JSON_RELATIVE];
+const GHCR_REFERENCE_FILES = [README_RELATIVE];
 
 /**
- * root 配下の feature JSON / README / devcontainer.json を package.json の version に同期する。
+ * root 配下の feature JSON / README を package.json の version に同期する。
  * 変更があったファイルの相対パスの配列を返す。
  */
 export function syncVersion(root) {
