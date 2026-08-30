@@ -213,6 +213,20 @@ describe("planLoopStep", () => {
         ),
       ).toEqual({ type: "wait", ms: 60_000, why: "slots-full" });
     });
+
+    // 探索セッションの瞬時クラッシュを fastCrashStreak に数えても、この分岐は runnableTaskIds
+    // が無ければ通過するだけで抑制が効かない。探索しか走らない状況では crash-backoff が
+    // 発火せず空回りもしないことを固定し、意図的なスコープ外であることを担保する。
+    it("実行可能タスクが無ければ瞬時クラッシュが連続していても crash-backoff は発火しない", () => {
+      expect(
+        planLoopStep(
+          input({
+            fastCrashStreak: FAST_CRASH_STREAK_LIMIT,
+            runnableTaskIds: [],
+          }),
+        ),
+      ).toEqual(IDLE_EXIT);
+    });
   });
 
   describe("探索 (優先度 6、探索中ゲートは優先度 3)", () => {
