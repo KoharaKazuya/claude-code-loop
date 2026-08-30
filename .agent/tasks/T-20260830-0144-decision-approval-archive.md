@@ -1,9 +1,10 @@
 ---
 title: "decisions のアーカイブを人間承認ベースに変更し index.md を導入"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "rotate.ts を index.md ベースに変更、テスト 14 件・ドキュメント更新済み。npm test/typecheck/lint 通過"
 createdAt: 2026-08-30T01:44:34.747Z
 ---
 
