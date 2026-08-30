@@ -177,6 +177,36 @@ describe("collectChecks", () => {
     expect(hasRequiredFailure(results)).toBe(true);
   });
 
+  it(".agent/tasks が同名のファイルなら .agent/ チェックが ✗ になり detail にそのパスが出る", () => {
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent", "tasks"), "");
+
+    const agent = find(collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe }), ".agent/");
+
+    expect(agent.ok).toBe(false);
+    expect(agent.detail).toContain(".agent/tasks");
+  });
+
+  it("GOAL.md / config.json は揃っているが tasks/.gitkeep が無ければ ✗ になり detail に不足パスが出る", () => {
+    applyInit(paths, planInit(paths, HOME));
+    fs.rmSync(path.join(repo, ".agent", "tasks", ".gitkeep"));
+
+    const agent = find(collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe }), ".agent/");
+
+    expect(agent.ok).toBe(false);
+    expect(agent.detail).toContain(".agent/tasks/.gitkeep");
+  });
+
+  it(".gitignore に必要な行が無ければ ✗ になる", () => {
+    applyInit(paths, planInit(paths, HOME));
+    fs.rmSync(path.join(repo, ".gitignore"));
+
+    const agent = find(collectChecks({ paths, home: HOME, nodeVersion: "24.0.0", probe: okProbe }), ".agent/");
+
+    expect(agent.ok).toBe(false);
+    expect(agent.detail).toContain(".gitignore");
+  });
+
   it("config の claudeCommand を差し替えるとそのコマンドを診断する", () => {
     applyInit(paths, planInit(paths, HOME));
     // claudeCommand 以外の項目は雛形どおり(完全な config)を維持したまま 1 項目だけ差し替える。

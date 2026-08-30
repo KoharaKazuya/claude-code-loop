@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfigFrom } from "./config.ts";
-import { configReadErrorMessage } from "./init.ts";
+import { configReadErrorMessage, formatInitConflicts, planInit } from "./init.ts";
 import { compareSchemaVersion, CURRENT_SCHEMA_VERSION, readSchemaVersion } from "./migrations.ts";
 import { AGENT_DIR_NAME, ccloopHome, type Paths } from "./paths.ts";
 
@@ -93,9 +93,18 @@ function probeWritable(dir: string): CommandProbe {
 }
 
 /** `.agent/` の有無と schemaVersion の整合を 1 項目にまとめる */
-function checkAgentDir(paths: Paths | null): CheckResult {
+function checkAgentDir(paths: Paths | null, home: string): CheckResult {
   const name = `${AGENT_DIR_NAME}/`;
   if (paths === null) return { name, ok: false, detail: "対象リポジトリが不明のため確認できない", required: true };
+
+  const plan = planInit(paths, home);
+  if (plan.conflicts.length > 0) {
+    const detail =
+      `パスの種別が食い違っている: ${formatInitConflicts(plan).map((l) => l.trim()).join(" / ")}` +
+      "。衝突しているパスを退避または削除してから `ccloop init` を再実行すること";
+    return { name, ok: false, detail, required: true };
+  }
+
   if (!fs.existsSync(paths.goalPath) || !fs.existsSync(paths.configPath)) {
     return { name, ok: false, detail: "未配置(または不完全)。`ccloop init` を実行すること", required: true };
   }
@@ -121,8 +130,25 @@ function checkAgentDir(paths: Paths | null): CheckResult {
         detail: `schemaVersion ${version} が古い(対応版数 ${CURRENT_SCHEMA_VERSION})。\`ccloop init --upgrade\` を実行すること`,
         required: true,
       };
-    default:
+    default: {
+      if (plan.creates.length > 0) {
+        return {
+          name,
+          ok: false,
+          detail: `不完全: ${plan.creates.map((c) => c.rel).join(", ")} が無い。\`ccloop init\` を実行すること`,
+          required: true,
+        };
+      }
+      if (plan.gitignore.action !== "none") {
+        return {
+          name,
+          ok: false,
+          detail: `.gitignore に ${plan.gitignore.lines.join(", ")} が無い。\`ccloop init\` を実行すること`,
+          required: true,
+        };
+      }
       return { name, ok: true, detail: `${paths.agentDir} (schemaVersion ${version})`, required: true };
+    }
   }
 }
 
@@ -189,7 +215,7 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
         : `見つからない: ${claude.output}`,
     required: true,
   });
-  results.push(checkAgentDir(opts.paths));
+  results.push(checkAgentDir(opts.paths, home));
   if (configError !== null) {
     results.push({ name: `${AGENT_DIR_NAME}/config.json の内容`, ok: false, detail: configError, required: true });
   }

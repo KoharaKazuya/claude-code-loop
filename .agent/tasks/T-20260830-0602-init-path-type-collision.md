@@ -1,10 +1,12 @@
 ---
 title: "init が同名ファイルとの衝突で素の例外を吐き、半端な .agent/ を doctor が正常と判定する"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "planInit がパス種別の衝突を事前検出して何も書かずに止まるようにし、doctor が衝突・雛形不足・.gitignore 記載漏れを報告するようにした"
 createdAt: 2026-08-30T06:02:18.660Z
+updatedAt: 2026-08-30T06:24:44.067Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので、フェーズ 4 の個別確認は不要。
@@ -50,3 +52,24 @@ createdAt: 2026-08-30T06:02:18.660Z
 
 発生条件は稀(利用者が `.agent/tasks` という名前のファイルを置いた場合など)だが、
 一度踏むと自己修復せず診断も効かないため、実害は小さくない。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T06:24:44.067Z, セッション記録)
+- 確認済みの事実: コミット c20ab36。`lib/init.ts`(`planInit` に `conflicts` 検出、`applyInit` /
+  `runInit` / `ensureAgentDir` で書き込み前に停止、`isAgentDirReady` を雛形の完全性判定へ変更)、
+  `lib/doctor.ts`(衝突・雛形不足・`.gitignore` 記載漏れの報告)、`lib/init.test.ts` +5 件・
+  `lib/doctor.test.ts` +3 件、`lib/cli.test.ts` の beforeEach 調整、`CHANGELOG.md` 1 エントリ。
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm run test`(1012 件)すべて成功。
+  実バイナリでの手動確認も実施し、`.agent/tasks` がファイルの状態で `ccloop init --yes` が
+  スタックトレースを出さず何も書かずに exit 1、`ccloop doctor` が同内容を ✗ で報告(exit 1)、
+  `tasks/.gitkeep` 欠落・`.gitignore` 記載漏れも ✗ で検出、再 `init` で自己修復することを確認。
+- 確認済みの事実: `fs.lstatSync` は `throwIfNoEntry: false` でも祖先が非ディレクトリのとき
+  `ENOTDIR` を投げる(`fs.statSync` は握りつぶす)。`lib/init.ts` の `entryKind` で捕捉している。
+- 確認済みの事実: 部分適用のロールバックは実装しない判断を
+  `.agent/decisions/D-20260830-0622-init-conflict-no-rollback.md` に記録した。
+- 確認済みの事実: reviewer の指摘 2 件に対応した(追加コミット)。①`.gitignore` がディレクトリの
+  場合、`planGitignore` が読み取り失敗を「触らない」へ倒すため衝突を検出できていなかった
+  → 種別検査を `planGitignore` より前に移した。②`entryKind` が `statSync` 側の例外
+  (循環 symlink の ELOOP・EACCES)を素通ししていた → 捕捉して "other"(衝突)へ倒した。
+  どちらも回帰テストを追加し、実バイナリでも `.gitignore` ディレクトリのケースを確認した。
