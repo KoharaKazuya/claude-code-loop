@@ -1,9 +1,12 @@
 /**
  * finishTaskSession(セッション終了時の後始末: マージ・結果分類・退避)の結合テスト。
  *
- * 実 git リポジトリ + 実 worktree + 実タスクファイルを用意し、useRepoRoot(dir) でモジュール
- * 共有の paths をテスト用の一時リポジトリへ向けたうえで finishTaskSession を直接呼び、
+ * 実 git リポジトリ + 実 worktree + 実タスクファイルを用意して finishTaskSession を直接呼び、
  * 副作用(worktree・ブランチ・タスクファイル・state.json)を検証する。
+ *
+ * 対象リポジトリの指定は二重になっている。worktree・ブランチの破壊的操作は ctx.root で明示的に
+ * 指定し(これが本来の防波堤)、タスクファイル・state の読み書きはモジュール共有の paths を
+ * 経由するため useRepoRoot(dir) でも一時リポジトリへ向けている。
  *
  * ヘルパ・セットアップの作法は lib/supervisor.test.ts の describe("recoverStartupIn", ...) /
  * describe("newTaskId", ...) に合わせている(そちらのヘルパを外へ出すリファクタはせず、
@@ -156,7 +159,8 @@ describe("finishTaskSession", () => {
     writeTaskFile(dir, "T-001", serializeFrontmatter({ title: "タスク", status: "ready", retries: 0 }, "本文"));
     git(["add", "-A"]);
     git(["commit", "-m", "init"]);
-    // finishTaskSession は repoPaths() 経由で対象リポジトリを見るため、テスト用の一時リポジトリを注入する
+    // finishTaskSession はタスクファイル・state の読み書きを repoPaths() 経由で行うため、
+    // テスト用の一時リポジトリを注入する(破壊的な git 操作の対象は ctx.root で別途明示する)
     useRepoRoot(dir);
   });
 
@@ -189,6 +193,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
 
@@ -220,6 +225,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
 
@@ -252,6 +258,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = { exitCode: null, timedOut: true, stdout: "", stderr: "" };
 
@@ -296,6 +303,7 @@ describe("finishTaskSession", () => {
         launchStatus: "ready",
         resuming: false,
         startedAt: NOW.toISOString(),
+        root: dir,
       };
       const res: SessionResult = { exitCode: null, timedOut: true, stdout: "", stderr: "" };
 
@@ -343,6 +351,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
 
@@ -381,6 +390,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = {
       exitCode: 0,
@@ -423,6 +433,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = {
       exitCode: 0,
@@ -458,6 +469,7 @@ describe("finishTaskSession", () => {
       launchStatus: "ready",
       resuming: false,
       startedAt: NOW.toISOString(),
+      root: dir,
     };
     const res: SessionResult = {
       exitCode: null,
