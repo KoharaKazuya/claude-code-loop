@@ -935,8 +935,8 @@ export function fastCrashStreakAfterWait(
  *   - 数えても効かない: crash-backoff(scheduler.ts 優先度 5)は「実行可能タスクがある」ことを
  *     発火条件にするため、探索しか走らない状況では加算しても抑制は起きない。その状況でも
  *     探索は瞬時クラッシュ時に入力ハッシュを更新せず(未消費のまま次回へ持ち越す)、
- *     lastExploreFastCrashed により exploreDue(minInterval)が経過するまで次周回の探索条件が
- *     成立しない。ループは空回りせず idle-exit か待機へ落ちる。
+ *     lastExploreFastCrashed により、同じプロセスの中では exploreDue(minInterval)が経過するまで
+ *     次周回の探索条件が成立しない。ループは空回りせず idle-exit か待機へ落ちる。
  *   - 数えると害がある: タスクセッションが健全でも探索固有の失敗だけでタスク起動を抑制し、
  *     停止分岐(scheduler.ts 優先度 1)の衝突解消まで諦めさせてしまう。
  */
@@ -3251,8 +3251,9 @@ export async function mainLoop(): Promise<void> {
   // 空振り探索がタスク完了のたびに即座に連鎖するのを防ぐ。
   let lastExploreYieldedNothing = false;
   // 直前の探索セッションが瞬時クラッシュで終わったか(プロセス内フラグ、永続化しない)。
-  // プロセス内に持つ理由: 再起動をまたぐ抑制は lastExploreAt による exploreDue のクールダウンが
-  // 担う。人間が ccloop run を明示的に再実行した場合は即時に再探索してよい。
+  // 永続化しない = この抑制は再起動で完全に外れる(意図的)。ccloop run を打ち直すのは、人間が
+  // クラッシュの原因を直して再開したときであり、そこで minInterval を待たせる意味がないため。
+  // 未取り込みの入力(inputsDirty)が残っていれば、再起動後の初回周回で即座に再探索する。
   let lastExploreFastCrashed = false;
   // 停止 (clean) 指示の後、衝突解消のために起動したタスク ID(プロセス内フラグ、永続化しない)。
   // タスクごとに停止後 1 回までに制限し、解消セッションが再び衝突しても停止が無限に延びないようにする。
