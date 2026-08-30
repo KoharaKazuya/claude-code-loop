@@ -421,12 +421,112 @@ function loadTask(id: string): Task | null {
   return loadTaskIn(repoPaths().agentRoot, id);
 }
 
+/** frontmatter だけを読むときに先に読む長さ。これを超える frontmatter は稀なので全文へフォールバックする */
+const TASK_FRONTMATTER_READ_BYTES = 4096;
+
+/**
+ * ファイル先頭から maxBytes バイトだけ読んで frontmatter を取り出す。archive のタスクは本文
+ * (試行履歴等)が長くなりがちだが、進捗集計・依存表示には frontmatter(特に status)しか要らないため、
+ * 全文を読まずに済ませる。
+ *
+ * マルチバイト文字が maxBytes の境界で切れる可能性があるが、閉じ "---" 行が読めた範囲に
+ * 完全に収まっているときしかその範囲を frontmatter として採用しないため(見つからなければ
+ * 全文を読み直す)、文字の途中切れが frontmatter の解釈結果に影響することはない。
+ */
+export function readFrontmatterData(
+  filePath: string,
+  maxBytes: number = TASK_FRONTMATTER_READ_BYTES,
+): Record<string, FrontmatterValue> {
+  const fd = fs.openSync(filePath, "r");
+  let buf: Buffer;
+  let bytesRead: number;
+  try {
+    buf = Buffer.alloc(maxBytes);
+    bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (bytesRead < maxBytes) {
+    // maxBytes に満たない = ファイル全体を読み切れている
+    return parseFrontmatter(buf.toString("utf8", 0, bytesRead)).data;
+  }
+  let head = buf.toString("utf8");
+  if (head.charCodeAt(0) === 0xfeff) head = head.slice(1);
+  head = head.replaceAll("\r\n", "\n");
+  // "---\n" 4 文字ぶん読めていなければ startsWith の判定自体が信用できず、"---\n" で
+  // 始まらないと断定できない(BOM 除去後に短くなる場合も含む)ため、全文読み直しのフォールバックへ回す。
+  // 末尾が裸の \r で終わっているときも、続く \n を読めていないだけで元は "\r\n" だった可能性があり
+  // 正規化結果が変わりうるため、同様にフォールバックする
+  if (head.length < 4 || head.endsWith("\r")) {
+    return parseFrontmatter(fs.readFileSync(filePath, "utf8")).data;
+  }
+  if (!head.startsWith("---\n")) return {}; // parseFrontmatter と同じ結論(frontmatter なし)
+  if (head.indexOf("\n---\n", 3) !== -1) return parseFrontmatter(head).data;
+  // frontmatter が maxBytes に収まらない異例のケース。結果が全文読みと一致するよう読み直す
+  return parseFrontmatter(fs.readFileSync(filePath, "utf8")).data;
+}
+
+/** archive のタスクから、進捗集計・依存表示に必要な最小限だけを取り出したもの */
+export type ArchivedTaskSummary = { id: string; status: TaskStatus };
+
+interface ArchivedTaskCacheEntry {
+  mtimeMs: number;
+  size: number;
+  summary: ArchivedTaskSummary | null;
+}
+
+/**
+ * loadArchivedTaskSummaries のプロセス内キャッシュ(絶対パスがキー)。`ccloop watch` は
+ * 同一プロセス内で毎秒読み直すが、archive のタスクは移動後ほぼ不変なため、
+ * mtime・size が変わっていなければ frontmatter の再パースを省略できる。
+ */
+let archivedTaskCache = new Map<string, ArchivedTaskCacheEntry>();
+
+/** テストからキャッシュを明示的に破棄する(テスト間の干渉を避ける) */
+export function clearArchivedTaskCache(): void {
+  archivedTaskCache = new Map();
+}
+
+function summarizeArchivedTaskFile(full: string, fileName: string): ArchivedTaskSummary | null {
+  try {
+    const data = readFrontmatterData(full);
+    const status = str(data.status) as TaskStatus;
+    if (!TASK_STATUSES.includes(status)) return null;
+    return { id: fileName.replace(/\.md$/, ""), status };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * rotate で .agent/archive/tasks/ へ退避された completed タスクを読む。
- * ID 採番・進捗集計・依存表示の母集団に含めるための参照専用。
+ * 進捗集計・依存表示の母集団に含めるための参照専用で、id と status しか使わないため
+ * frontmatter だけを部分読みし、mtime/size が変わっていなければキャッシュを再利用する。
+ * 呼び出しのたびに新しい Map を組み立てて差し替えるため、消えたファイルは自然にキャッシュから外れる。
  */
-function loadArchivedTasks(): Task[] {
-  return loadTasksFrom(path.join(repoPaths().archiveDir, "tasks"), false).tasks;
+export function loadArchivedTaskSummaries(
+  dir: string = path.join(repoPaths().archiveDir, "tasks"),
+): ArchivedTaskSummary[] {
+  const nextCache = new Map<string, ArchivedTaskCacheEntry>();
+  const summaries: ArchivedTaskSummary[] = [];
+  for (const fileName of listMdFiles(dir)) {
+    const full = path.resolve(dir, fileName);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    const cached = archivedTaskCache.get(full);
+    const summary =
+      cached !== undefined && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size
+        ? cached.summary
+        : summarizeArchivedTaskFile(full, fileName);
+    nextCache.set(full, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+    if (summary !== null) summaries.push(summary);
+  }
+  archivedTaskCache = nextCache;
+  return summaries;
 }
 
 export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | undefined> {
@@ -2003,7 +2103,7 @@ export function recordFailure(
  * 移動して現役一覧から消えるため。実在しない依存(打ち間違い等)の検出は
  * `findMissingDependencies` が担い、`ccloop status` の要対応に出す。
  */
-export function depSatisfied(byId: Map<string, Task>, depId: string): boolean {
+export function depSatisfied(byId: Map<string, { status: TaskStatus }>, depId: string): boolean {
   const dep = byId.get(depId);
   return dep === undefined || dep.status === "completed";
 }
@@ -4930,7 +5030,12 @@ function truncateNote(note: string, maxLen = 80): string {
  * 1 タスクの表示(id/priority/title 行 + 依存行 + note 行)。
  * ID は slug を含んで長さがまちまちなため、桁揃えの幅は呼び出し側が一覧全体から決めて渡す。
  */
-function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean, idWidth: number): void {
+function printTaskLine(
+  t: Task,
+  byId: Map<string, { status: TaskStatus }>,
+  full: boolean,
+  idWidth: number,
+): void {
   const idCol = t.id.padEnd(idWidth);
   let line = `  ${idCol}p${t.priority}  ${t.title}`;
   if (t.retries > 0) {
@@ -4981,8 +5086,11 @@ export function cmdList(argv: string[]): void {
     return;
   }
   // 依存表示用の参照は archive 済みタスクも含める(rotate 後の依存先を (missing) ではなく
-  // ✔ 完了として表示するため)。同一 ID はアクティブ側を優先
-  const byId = new Map([...loadArchivedTasks(), ...tasks].map((t) => [t.id, t]));
+  // ✔ 完了として表示するため)。同一 ID はアクティブ側を優先。archive 側は status しか使わないため
+  // 全文ではなく summary(id/status のみ)で足りる
+  const byId = new Map<string, { status: TaskStatus }>(
+    [...loadArchivedTaskSummaries(), ...tasks].map((t) => [t.id, t]),
+  );
   // 表示する ID の最大長 + 区切りの 2 文字で桁を揃える(旧形式の短い ID だけなら従来どおり 7 桁)
   const idWidth = tasks.reduce((w, t) => Math.max(w, t.id.length), 5) + 2;
 
@@ -5817,7 +5925,7 @@ export function collectStatusData(now: Date): StatusData {
   // 片付けが移動先の同名ファイルとの衝突で移動を見送ると同じ ID が両側に残るため、
   // アクティブ側にある ID は archive 側から除いて二重計上を防ぐ
   const activeTaskIds = new Set(tasks.map((t) => t.id));
-  const archivedTasks = loadArchivedTasks();
+  const archivedTasks = loadArchivedTaskSummaries();
   const archivedCompletedCount = archivedTasks.filter(
     (t) => t.status === "completed" && !activeTaskIds.has(t.id),
   ).length;

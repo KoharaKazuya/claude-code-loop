@@ -8,17 +8,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { serializeFrontmatter } from "./frontmatter.ts";
+import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
 import { writeRunnerRecord, type RunnerRecord } from "./liveness.ts";
 import { CURRENT_SCHEMA_VERSION } from "./migrations.ts";
 import {
+  clearArchivedTaskCache,
   collectStatusData,
   evaluateConfigSchema,
   formatStatus,
   hrSummary,
+  loadArchivedTaskSummaries,
   loadSalvageFailures,
   parkedBranchMergedIntoHead,
   permissionDenialsPathOf,
+  readFrontmatterData,
   repoPaths,
   type SalvageFailure,
   setRepoPaths,
@@ -39,11 +42,13 @@ describe("collectStatusData / formatStatus", () => {
     // 警告ログのノイズを避けるため git リポジトリにしておく(commit は打たない)。
     execFileSync("git", ["init", "-b", "main"], { cwd: dir });
     useRepoRoot(dir);
+    clearArchivedTaskCache();
   });
 
   afterEach(() => {
     setRepoPaths(originalPaths);
     fs.rmSync(dir, { recursive: true, force: true });
+    clearArchivedTaskCache();
   });
 
   function writeTask(id: string, fields: Record<string, string | number | string[]>): void {
@@ -169,6 +174,34 @@ describe("collectStatusData / formatStatus", () => {
 
     const out = formatStatus();
     expect(out).toContain("完了 3/4");
+  });
+
+  it("大量の archive タスク(長文の本文込み)でも進捗集計が正しい", () => {
+    const longBody = "本文行。".repeat(500); // 数 KB の長文本文(frontmatter 部分読みの動作確認)
+    const archivedCount = 200;
+    let expectedCompleted = 0;
+    for (let i = 0; i < archivedCount; i++) {
+      // 3 件に 1 件は completed 以外にして、status によるフィルタが効くことも確認する
+      const status = i % 3 === 0 ? "failed" : "completed";
+      if (status === "completed") expectedCompleted++;
+      const archivedTasksDir = path.join(dir, ".agent", "archive", "tasks");
+      fs.mkdirSync(archivedTasksDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(archivedTasksDir, `T-archived-${i}.md`),
+        serializeFrontmatter({ status, title: `archive タスク ${i}` }, longBody),
+      );
+    }
+    // アクティブ側と ID が重複する archive タスクは二重計上しない
+    writeArchivedTask("T-dup", { status: "completed", title: "重複 ID(archive側)" });
+    writeTask("T-dup", { status: "completed", title: "重複 ID(アクティブ側)" });
+    writeTask("T-active", { status: "ready", title: "アクティブな未着手タスク" });
+
+    const data = collectStatusData(NOW);
+    expect(data.archivedCompletedCount).toBe(expectedCompleted);
+
+    const out = formatStatus();
+    // 分子: expectedCompleted(archive completed, 重複除く) + 1(T-dup) + 1(T-active は completed でない ので含まれない)
+    expect(out).toContain(`完了 ${expectedCompleted + 1}/${expectedCompleted + 2}`);
   });
 
   it("未承認の決定がプレビュー上限(3件)を超えると残り件数を表示する", () => {
@@ -717,6 +750,126 @@ describe("evaluateConfigSchema", () => {
       current: CURRENT_SCHEMA_VERSION,
       compat: "tool-outdated",
     });
+  });
+});
+
+describe("readFrontmatterData / loadArchivedTaskSummaries", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-frontmatter-test-"));
+    clearArchivedTaskCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearArchivedTaskCache();
+  });
+
+  function write(fileName: string, content: string): string {
+    const full = path.join(dir, fileName);
+    fs.writeFileSync(full, content);
+    return full;
+  }
+
+  it("普通のファイルなら data がそのまま取れる", () => {
+    const full = write("normal.md", serializeFrontmatter({ status: "completed", title: "普通" }, "本文"));
+    expect(readFrontmatterData(full)).toEqual({ status: "completed", title: "普通" });
+  });
+
+  it("本文が maxBytes を超える長文でも frontmatter は正しく取れる", () => {
+    const longBody = "本文行。".repeat(2000); // 数十 KB
+    const full = write(
+      "long.md",
+      serializeFrontmatter({ status: "failed", title: "長文" }, longBody),
+    );
+    expect(readFrontmatterData(full)).toEqual({ status: "failed", title: "長文" });
+  });
+
+  it("frontmatter 自体が maxBytes を超えても、全文読みと同じ結果へフォールバックする", () => {
+    // 値をわざと長くして、小さい maxBytes(16)では閉じ '---' に届かないようにする
+    const longValue = "x".repeat(200);
+    const expected = { status: "completed", note: longValue };
+    const full = write("huge-frontmatter.md", serializeFrontmatter(expected, "本文"));
+    // 既定の maxBytes(4096)による全文相当の読み取り結果を基準にする
+    expect(readFrontmatterData(full, 16)).toEqual(readFrontmatterData(full));
+    expect(readFrontmatterData(full, 16)).toEqual(expected);
+  });
+
+  it("frontmatter が無いファイルは {} を返す", () => {
+    const full = write("no-frontmatter.md", "ただの本文で始まる");
+    expect(readFrontmatterData(full)).toEqual({});
+  });
+
+  it("どんな maxBytes でも全文読みと同じ結果になる(BOM・CRLF・末尾 --- 等の異例込み)", () => {
+    const normal = serializeFrontmatter({ status: "completed", title: "普通" }, "短い本文");
+    // BOM は見えない文字なので、リテラルではなくエスケープで書く
+    const bom = "\uFEFF" + serializeFrontmatter({ status: "completed", title: "BOM 付き" }, "本文");
+    const crlf = serializeFrontmatter({ status: "failed", title: "CRLF" }, "本文\n複数行").replaceAll(
+      "\n",
+      "\r\n",
+    );
+    // 閉じ '---' がファイル末尾で、直後の改行も本文も無いケース
+    const noTrailingNewline = "---\nstatus: completed\n---";
+    // 本文中に '---' を含む行があっても、frontmatter の閉じとして誤認しないケース
+    const dashInBody = serializeFrontmatter({ status: "completed" }, "前\n---\n後");
+    const noFrontmatter = "ただの本文で始まる。frontmatter は無い。";
+    // '---' で始まるが閉じ '---' が無いケース
+    const unclosed = "---\nstatus: completed\ntitle: 閉じられていない\n";
+
+    const smallCases: [string, string][] = [
+      ["normal.md", normal],
+      ["bom.md", bom],
+      ["crlf.md", crlf],
+      ["no-trailing-newline.md", noTrailingNewline],
+      ["dash-in-body.md", dashInBody],
+      ["no-frontmatter.md", noFrontmatter],
+      ["unclosed.md", unclosed],
+    ];
+
+    for (const [fileName, content] of smallCases) {
+      const full = write(fileName, content);
+      const byteLen = Buffer.byteLength(content, "utf8");
+      const expected = parseFrontmatter(fs.readFileSync(full, "utf8")).data;
+      for (let maxBytes = 1; maxBytes <= byteLen + 8; maxBytes++) {
+        expect(readFrontmatterData(full, maxBytes)).toEqual(expected);
+      }
+    }
+
+    // マルチバイト文字(日本語)を大量に含むケース。総当たりは重いため代表値のみ確認する
+    const heavyBody = "日本語の本文を大量に含む行です。".repeat(300);
+    const heavyContent = serializeFrontmatter(
+      { status: "completed", title: "日本語タイトル", note: "日本語の note 値" },
+      heavyBody,
+    );
+    const heavyFull = write("heavy-multibyte.md", heavyContent);
+    const heavyByteLen = Buffer.byteLength(heavyContent, "utf8");
+    const heavyExpected = parseFrontmatter(fs.readFileSync(heavyFull, "utf8")).data;
+    const representativeMaxBytes = [
+      1, 2, 3, 4, 5, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
+      heavyByteLen - 1, heavyByteLen, heavyByteLen + 1, heavyByteLen + 8,
+    ];
+    for (const maxBytes of representativeMaxBytes) {
+      expect(readFrontmatterData(heavyFull, maxBytes)).toEqual(heavyExpected);
+    }
+  });
+
+  it("mtime/size が変わらなければキャッシュを再利用し、変われば読み直す", () => {
+    const archivedDir = path.join(dir, "archive-tasks");
+    fs.mkdirSync(archivedDir, { recursive: true });
+    const filePath = path.join(archivedDir, "T-1.md");
+    fs.writeFileSync(filePath, serializeFrontmatter({ status: "completed", title: "旧" }, "本文"));
+
+    const first = loadArchivedTaskSummaries(archivedDir);
+    expect(first).toEqual([{ id: "T-1", status: "completed" }]);
+
+    // 別の status・別の長さの本文に書き換え、mtime を確実にずらす
+    fs.writeFileSync(filePath, serializeFrontmatter({ status: "failed", title: "新" }, "本文をもっと長くする"));
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(filePath, future, future);
+
+    const second = loadArchivedTaskSummaries(archivedDir);
+    expect(second).toEqual([{ id: "T-1", status: "failed" }]);
   });
 });
 

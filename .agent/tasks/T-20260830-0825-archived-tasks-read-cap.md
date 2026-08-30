@@ -1,9 +1,10 @@
 ---
 title: "書庫へ移した完了済みタスクの読み込みを軽くする"
-status: ready
+status: completed
 priority: 5
 dependencies: [T-20260830-0825-metrics-read-cap]
 retries: 0
+note: "frontmatter の部分読み + mtime キャッシュへ変更。進捗の数字は不変(判断は D-20260830-1156-archived-task-read-strategy)"
 createdAt: 2026-08-30T08:25:02.024Z
 ---
 
