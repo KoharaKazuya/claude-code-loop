@@ -4317,10 +4317,18 @@ export function runningSessionLines(
   now: Date,
   staleAfterMs: number,
   maxSessions: number,
+  liveness: LoopLiveness,
 ): string[] {
   if (sessions.length === 0) return [];
 
-  const lines = [`実行中のセッション (${sessions.length}/${maxSessions})`];
+  const stopped = liveness.status === "stopped";
+
+  const lines = stopped
+    ? [`※ ループ本体(ccloop run)が動いていないため、下記の ${sessions.length} 件は実行中ではなく記録が残っているだけ`]
+    : [`実行中のセッション (${sessions.length}/${maxSessions})`];
+  if (liveness.status === "unknown") {
+    lines.push("※ ループ本体(ccloop run)の生存を確認できないため、下記は古い記録の可能性がある");
+  }
 
   for (const s of sessions) {
     let mainLine: string;
@@ -4337,6 +4345,13 @@ export function runningSessionLines(
     }
     if (s.phase === "finishing") mainLine += "  マージ中";
     lines.push(mainLine);
+
+    if (stopped) {
+      if (!Number.isNaN(Date.parse(s.startedAt))) {
+        lines.push(`  ${s.startedAt} 開始(ループ停止時のまま残った記録)`);
+      }
+      continue;
+    }
 
     const startMs = Date.parse(s.startedAt);
     if (!Number.isNaN(startMs)) {
@@ -4887,8 +4902,19 @@ export function formatStatus(): string {
     permissionDenialLines(data.permissionDenials),
   );
 
-  push("\n実行中のタスク");
-  const running = runningSessionLines(data.state.runningSessions, byId, now, data.taskTimeoutMs, data.maxSessions);
+  const runningSectionTitle =
+    data.loopLiveness.status === "stopped" && data.state.runningSessions.length > 0
+      ? "\n実行中のタスク(ループ停止時の記録)"
+      : "\n実行中のタスク";
+  push(runningSectionTitle);
+  const running = runningSessionLines(
+    data.state.runningSessions,
+    byId,
+    now,
+    data.taskTimeoutMs,
+    data.maxSessions,
+    data.loopLiveness,
+  );
   if (running.length === 0) {
     push("  なし");
   } else {

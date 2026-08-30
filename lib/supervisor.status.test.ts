@@ -288,6 +288,45 @@ describe("collectStatusData / formatStatus", () => {
       const out = formatStatus();
       expect(out).toContain("状態の更新:");
     });
+
+    it("ループ本体が process-gone で、かつ runningSessions が残っていても「実行中のタスク」節は経過時間を出さず記録扱いになる", () => {
+      writeRunner({
+        pid: 999_999_999,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        host: os.hostname(),
+        heartbeatIntervalMs: 5_000,
+      });
+      writeTask("T-orphan", { status: "working", title: "停止したループに取り残されたタスク" });
+      fs.writeFileSync(
+        statePathOf(dir),
+        JSON.stringify({
+          runningSessions: [{ kind: "task", taskId: "T-orphan", startedAt: "2026-08-29T00:00:00.000Z" }],
+        }),
+      );
+
+      const data = collectStatusData(NOW);
+      expect(data.loopLiveness).toMatchObject({ status: "stopped", reason: "process-gone" });
+      expect(data.state.runningSessions).toHaveLength(1);
+
+      const out = formatStatus();
+      // 稼働状態節の表示と矛盾しないこと
+      expect(out).toContain("ループ本体: 動いていません");
+
+      // 「実行中のタスク」節だけを切り出して検証する(他の節の「経過」を誤って拾わないため)
+      const lines = out.split("\n");
+      const startIdx = lines.findIndex((l) => l.startsWith("実行中のタスク"));
+      expect(startIdx).toBeGreaterThanOrEqual(0);
+      const endIdx = lines.findIndex((l, i) => i > startIdx && l === "");
+      const section = lines.slice(startIdx, endIdx === -1 ? lines.length : endIdx).join("\n");
+
+      expect(lines[startIdx]).toBe("実行中のタスク(ループ停止時の記録)");
+      expect(section).toContain(
+        "※ ループ本体(ccloop run)が動いていないため、下記の 1 件は実行中ではなく記録が残っているだけ",
+      );
+      expect(section).toContain("T-orphan");
+      expect(section).not.toContain("経過");
+    });
   });
 
   describe("起動セッション数と終了済みセッション数の表示", () => {

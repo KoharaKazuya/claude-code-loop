@@ -1,9 +1,10 @@
 ---
 title: "ループが死んでいると判定済みでも「実行中のタスク」が生きているように表示され続ける"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "死活判定を実行中セッション表示に反映。停止時は経過時間を出さず記録扱いで表示する。typecheck/lint/test 通過"
 createdAt: 2026-08-30T06:02:18.660Z
 ---
 
