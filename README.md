@@ -89,7 +89,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
 - **確認**: `ccloop status` で要対応事項(BLOCK / failed / open な Human Review)と、GOAL に対する
   現在地・次の見立て(`.agent/OVERVIEW.md`)を見る。permission により拒否された操作の直近の要約も
   同じ出力に含まれる(対応不要。許可したい操作があれば `.agent/claude-settings.json` の
-  `permissions.allow` に追記する)。
+  `permissions.allow` に追記する)。あらかじめ `permissions.deny` で禁止した操作の拒否は意図どおりの
+  動作なので、この要約には出ない。
 - **フェーズゲート**: プロダクトの構築・拡張では、開発を段階(フェーズ)に分けて進め、フェーズ境界を
   越えるたびに Human Review で続行の同意を取ってから次フェーズへ進む。
 - **Human Review への回答**: `.agent/human-review/HR-<日時>-<slug>.md` の「## 回答」節にあるチェックボックスに
