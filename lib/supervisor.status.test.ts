@@ -509,6 +509,29 @@ describe("collectStatusData / formatStatus", () => {
     });
   });
 
+  describe("依存が輪になっている", () => {
+    it("要対応の節に出て「要対応事項なし」が消える", () => {
+      writeTask("T-a", { status: "ready", title: "タスクA", dependencies: ["T-b"] });
+      writeTask("T-b", { status: "ready", title: "タスクB", dependencies: ["T-a"] });
+
+      const data = collectStatusData(NOW);
+      expect(data.dependencyCycles).toEqual([
+        {
+          tasks: [
+            { id: "T-a", title: "タスクA", waitingFor: ["T-b"] },
+            { id: "T-b", title: "タスクB", waitingFor: ["T-a"] },
+          ],
+        },
+      ]);
+
+      const out = formatStatus();
+      expect(out).toContain("依存が輪になっていて永久に始まらないタスク");
+      expect(out).toContain("T-a");
+      expect(out).toContain("T-b");
+      expect(out).not.toContain("要対応事項なし");
+    });
+  });
+
   describe("config.json の schemaVersion 食い違い", () => {
     it("config.json が無ければ configSchema は null で「要対応事項なし」のまま", () => {
       const data = collectStatusData(NOW);

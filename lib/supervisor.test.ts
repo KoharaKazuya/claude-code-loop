@@ -33,6 +33,7 @@ import {
   type ExploreContext,
   exploreEndLogLine,
   fastCrashStreakAfterWait,
+  findDependencyCycles,
   findMissingDependencies,
   formatElapsed,
   installedSourceDriftLines,
@@ -582,6 +583,68 @@ describe("findMissingDependencies", () => {
     const knownIds = new Set(["T-002"]);
 
     expect(findMissingDependencies([t], knownIds)).toEqual([]);
+  });
+});
+
+describe("findDependencyCycles", () => {
+  it("直線的な依存では輪を検出しない", () => {
+    const a = makeTask({ id: "T-001" });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-002"] });
+
+    expect(findDependencyCycles([a, b, c])).toEqual([]);
+  });
+
+  it("2 件が相互依存していれば 1 つの輪として両方を返す", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+
+    const cycles = findDependencyCycles([a, b]);
+
+    expect(cycles).toEqual([[a, b]]);
+  });
+
+  it("自己参照は 1 件でも輪として検出する", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-001"] });
+
+    expect(findDependencyCycles([a])).toEqual([[a]]);
+  });
+
+  it("複数の輪が独立していればそれぞれ別の輪として返る", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-004"] });
+    const d = makeTask({ id: "T-004", dependencies: ["T-003"] });
+
+    const cycles = findDependencyCycles([a, b, c, d]);
+
+    expect(cycles).toEqual([
+      [a, b],
+      [c, d],
+    ]);
+  });
+
+  it("3 件以上の輪(A→B→C→A)を 1 つの輪として検出する", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-003"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-002"] });
+
+    const cycles = findDependencyCycles([a, b, c]);
+
+    expect(cycles).toEqual([[a, b, c]]);
+  });
+
+  it("輪の一部が completed なら輪として報告しない", () => {
+    const a = makeTask({ id: "T-001", status: "completed", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+
+    expect(findDependencyCycles([a, b])).toEqual([]);
+  });
+
+  it("存在しない依存 ID は輪にならない", () => {
+    const t = makeTask({ id: "T-001", dependencies: ["T-999"] });
+
+    expect(findDependencyCycles([t])).toEqual([]);
   });
 });
 

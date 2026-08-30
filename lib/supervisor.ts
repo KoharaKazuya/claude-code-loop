@@ -1800,6 +1800,89 @@ export function findMissingDependencies(
   return result;
 }
 
+/**
+ * 依存が輪になっているタスク集合を返す(輪ごとに 1 グループ)。互いの完了を待ち合って
+ * 永久に runnable にならないのに、`depSatisfied` は個々の依存しか見ないためエラーにも
+ * 警告にもならない。completed なタスクは依存が満たされたのと同じ扱いで輪を作らないため
+ * 対象外にする(存在しない依存 ID と同じ理由)。強連結成分(Tarjan 法)を、タスク件数に
+ * 比例した深さの再帰を避けるため明示スタックで反復実装する。
+ */
+export function findDependencyCycles(tasks: Task[]): Task[][] {
+  const active = tasks.filter((t) => t.status !== "completed");
+  const byId = new Map(active.map((t) => [t.id, t]));
+  const edges = new Map<string, string[]>();
+  for (const t of active) {
+    edges.set(
+      t.id,
+      t.dependencies.filter((d) => byId.has(d)),
+    );
+  }
+
+  // Tarjan 法(反復版)。callStack は再帰呼び出しの代わりに使う明示スタック。
+  // frame.iter は「今の頂点の何番目の隣接辺まで処理済みか」を保持し、子への再帰から
+  // 戻ってきたときに続きから処理を再開できるようにする。
+  let indexCounter = 0;
+  const index = new Map<string, number>();
+  const lowlink = new Map<string, number>();
+  const onStack = new Set<string>();
+  const sccStack: string[] = [];
+  const components: string[][] = [];
+
+  for (const start of active) {
+    if (index.has(start.id)) continue;
+    const callStack: { id: string; iter: number }[] = [{ id: start.id, iter: 0 }];
+    while (callStack.length > 0) {
+      const frame = callStack[callStack.length - 1];
+      const { id } = frame;
+      if (frame.iter === 0) {
+        index.set(id, indexCounter);
+        lowlink.set(id, indexCounter);
+        indexCounter++;
+        sccStack.push(id);
+        onStack.add(id);
+      }
+      const neighbors = edges.get(id) ?? [];
+      let recursed = false;
+      while (frame.iter < neighbors.length) {
+        const w = neighbors[frame.iter];
+        frame.iter++;
+        if (!index.has(w)) {
+          callStack.push({ id: w, iter: 0 });
+          recursed = true;
+          break;
+        } else if (onStack.has(w)) {
+          lowlink.set(id, Math.min(lowlink.get(id)!, index.get(w)!));
+        }
+      }
+      if (recursed) continue;
+      callStack.pop();
+      const parent = callStack[callStack.length - 1];
+      if (parent !== undefined) {
+        lowlink.set(parent.id, Math.min(lowlink.get(parent.id)!, lowlink.get(id)!));
+      }
+      if (lowlink.get(id) === index.get(id)) {
+        const component: string[] = [];
+        let w: string;
+        do {
+          w = sccStack.pop()!;
+          onStack.delete(w);
+          component.push(w);
+        } while (w !== id);
+        components.push(component);
+      }
+    }
+  }
+
+  const cycles: Task[][] = [];
+  for (const comp of components) {
+    const isCycle = comp.length >= 2 || (edges.get(comp[0]) ?? []).includes(comp[0]);
+    if (!isCycle) continue;
+    cycles.push(comp.map((id) => byId.get(id)!).sort((a, b) => a.id.localeCompare(b.id)));
+  }
+  cycles.sort((a, b) => a[0].id.localeCompare(b[0].id));
+  return cycles;
+}
+
 /** runnable なタスクの並び順(優先度昇順 → 作成日時昇順) */
 export function byPriorityThenCreatedAt(a: Task, b: Task): number {
   return a.priority - b.priority || a.createdAt.localeCompare(b.createdAt);
@@ -5447,6 +5530,8 @@ export interface StatusData {
   invalidTaskFiles: string[];
   /** 存在しないタスク ID を依存に書いているタスク(現役にも archive にも無い依存) */
   missingDependencies: { taskId: string; title: string; missing: string[] }[];
+  /** 依存が輪になっていて互いの完了を待ち続け、永久に runnable にならないタスク群(輪ごとに 1 要素) */
+  dependencyCycles: { tasks: { id: string; title: string; waitingFor: string[] }[] }[];
   /**
    * `.agent/config.json` の schemaVersion とツールの対応版数の突き合わせ結果。
    * config.json が無い・JSON として読めない場合は null(schemaVersion を 0 とみなすと
@@ -5571,6 +5656,16 @@ export function collectStatusData(now: Date): StatusData {
     title: task.title,
     missing,
   }));
+  const dependencyCycles = findDependencyCycles(tasks).map((cycle) => {
+    const idsInCycle = new Set(cycle.map((t) => t.id));
+    return {
+      tasks: cycle.map((t) => ({
+        id: t.id,
+        title: t.title,
+        waitingFor: t.dependencies.filter((d) => idsInCycle.has(d)),
+      })),
+    };
+  });
 
   return {
     tasks,
@@ -5594,6 +5689,7 @@ export function collectStatusData(now: Date): StatusData {
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
     invalidTaskFiles,
     missingDependencies,
+    dependencyCycles,
     configSchema,
   };
 }
@@ -5691,6 +5787,17 @@ export function formatStatus(): string {
   );
   section(
     "要対応",
+    "依存が輪になっていて永久に始まらないタスク — 互いの完了を待ち合っているので、どれか 1 本の依存指定を消すと動き出す:",
+    data.dependencyCycles.map(
+      (c) =>
+        `輪になっているタスク: ${c.tasks.map((t) => t.id).join(" ")}` +
+        c.tasks
+          .map((t) => `\n      ${t.id}: ${t.title} — 待っている相手: ${t.waitingFor.join(" ")}`)
+          .join(""),
+    ),
+  );
+  section(
+    "要対応",
     "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
     pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
   );
@@ -5739,6 +5846,7 @@ export function formatStatus(): string {
       data.pendingDecisions.count +
       data.invalidTaskFiles.length +
       data.missingDependencies.length +
+      data.dependencyCycles.length +
       (configSchemaOutdated ? 1 : 0) ===
     0
   ) {
