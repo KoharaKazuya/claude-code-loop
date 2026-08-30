@@ -1,6 +1,6 @@
 ---
 title: "実行中のタスクの記録を他のセッションが書き換えないよう、仕組みで止めるか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T08:25:02.024Z
 ---

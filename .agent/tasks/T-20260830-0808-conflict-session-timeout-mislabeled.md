@@ -4,7 +4,7 @@ status: failed
 priority: 3
 dependencies: []
 retries: 3
-note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md, CHANGELOG.md)(元: 失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .…)"
+note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md, CHANGELOG.md)(元: 失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .…)。成果は退避ブランチに残っており T-20260830-0934-rescue-failure-kind-priority-work が取り込む"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 

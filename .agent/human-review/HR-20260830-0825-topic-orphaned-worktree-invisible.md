@@ -1,6 +1,6 @@
 ---
 title: "見失った作業場所を検出して知らせるか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T08:25:02.024Z
 ---
