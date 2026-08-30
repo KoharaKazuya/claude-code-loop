@@ -1835,16 +1835,21 @@ function runClaude(
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
 
+    // SIGTERM の猶予後に SIGKILL する二段構え。子が SIGTERM に応じて終了した場合は
+    // settle() で解除する(解除しないと、その pid が別プロセスに再利用されていたとき
+    // 無関係なプロセスグループを撃つ)。
+    let forceKillTimer: NodeJS.Timeout | undefined;
     const killTimer = setTimeout(() => {
       timedOut = true;
       try {
         process.kill(-child.pid!, "SIGTERM");
       } catch {}
-      setTimeout(() => {
+      forceKillTimer = setTimeout(() => {
         try {
           process.kill(-child.pid!, "SIGKILL");
         } catch {}
-      }, 10_000).unref();
+      }, 10_000);
+      forceKillTimer.unref();
     }, config.taskTimeoutMs);
 
     /**
@@ -1855,6 +1860,7 @@ function runClaude(
     const settle = (result: SessionResult): void => {
       if (pid !== undefined) childPids.delete(pid);
       clearTimeout(killTimer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
       if (shuttingDown) {
         if (childPids.size === 0) exitWhenSafe();
         return;
