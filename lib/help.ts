@@ -20,6 +20,7 @@ export const TOP_LEVEL_HELP = `ccloop: Claude Code を使った自律開発ル�
   watch    status を一定間隔で再描画し続ける
   list     タスク一覧(--json で機械可読出力)
   add      タスクを追加する
+  retry    failed / blocked タスクをやり直す(status を ready に戻す)
   init     .agent/ の雛形を配置する
   doctor   実行環境の自己診断(副作用なし)
   version  ccloop 自身のバージョンを表示する
@@ -95,6 +96,14 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
   --model <モデル名>  このタスクだけに使うモデル。既定は .agent/config.json の model
   --slug <slug>       タスク ID に使う slug(小文字英数字とハイフンのみ)。省略時はタイトルから
                       自動生成し、生成できなければ "task" にフォールバックする`,
+
+  retry: `使い方: ccloop [--repo <path>] retry <タスクID>
+
+failed / blocked のタスクを再実行対象に戻す: status を ready に、retries を 0 にする
+(snoozeUntil が設定されていれば併せて解除する)。実行中のタスクは対象外。
+戻す前に、そのタスクの直前の失敗理由(note と本文の「## 試行履歴」の最後の記録)を表示する。
+
+オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,
 
   init: `使い方: ccloop [--repo <path>] init [--yes] [--upgrade]
 

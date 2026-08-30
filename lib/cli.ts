@@ -15,7 +15,7 @@ import { checkNodeVersion, cmdDoctor } from "./doctor.ts";
 import { SUBCOMMAND_HELP, TOP_LEVEL_HELP } from "./help.ts";
 import { checkSchemaVersion, cmdInit, configReadErrorMessage, ensureAgentDir } from "./init.ts";
 import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
-import { cmdAdd, cmdList, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
+import { cmdAdd, cmdList, cmdRetry, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
 import { cmdWatch } from "./watch.ts";
 
 // checkNodeVersion の実体は doctor.ts(doctor の 1 項目でもあるため)。
@@ -25,7 +25,7 @@ export { checkNodeVersion };
 const USAGE = TOP_LEVEL_HELP;
 
 /** `.agent/` が揃っていることを前提とするサブコマンド(init / doctor / version を除く) */
-export const REPO_COMMANDS: readonly string[] = ["run", "status", "watch", "list", "add"];
+export const REPO_COMMANDS: readonly string[] = ["run", "status", "watch", "list", "add", "retry"];
 
 /**
  * ccloop 自身のバージョン。インストール先にも `package.json` を同梱する前提で、
@@ -190,6 +190,9 @@ export async function main(argv: string[]): Promise<void> {
       break;
     case "add":
       cmdAdd(args);
+      break;
+    case "retry":
+      cmdRetry(args);
       break;
   }
 }
