@@ -1,6 +1,6 @@
 ---
 title: "CHANGELOG 未リリース節の記載漏れ 3 件を補う"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 conflicts: [T-20260830-1440-doc-followup-changelog-readme]
