@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectLeakedBranches } from "./test-global-setup.ts";
+import { detectLeakedBranches, leakMessage } from "./test-global-setup.ts";
 
 describe("detectLeakedBranches", () => {
   it("ブランチが増えていなければ空を返す", () => {
@@ -37,5 +37,28 @@ describe("detectLeakedBranches", () => {
     const before = ["main"];
     const after = ["main", "feature-x", "agent/T-100"];
     expect(detectLeakedBranches(before, after, (taskId) => taskId === "T-100")).toEqual(["feature-x"]);
+  });
+
+  it("実在するタスクの衝突退避ブランチ agent/conflict/<taskId>-<時刻> は無視する", () => {
+    const before = ["main"];
+    const after = ["main", "agent/conflict/T-123-20260830T092322Z"];
+    expect(detectLeakedBranches(before, after, (taskId) => taskId === "T-123")).toEqual([]);
+  });
+
+  it("衝突退避ブランチでもタスクファイルが実在しなければ報告する", () => {
+    const before = ["main"];
+    const after = ["main", "agent/conflict/T-999-20260830T092322Z"];
+    expect(detectLeakedBranches(before, after, (taskId) => taskId === "T-123")).toEqual([
+      "agent/conflict/T-999-20260830T092322Z",
+    ]);
+  });
+});
+
+describe("leakMessage", () => {
+  it("検出したブランチ名と対処方針を含む", () => {
+    const message = leakMessage(["T-001", "agent/T-999"]);
+    expect(message).toContain("T-001");
+    expect(message).toContain("agent/T-999");
+    expect(message).toContain("使い捨てリポジトリ");
   });
 });

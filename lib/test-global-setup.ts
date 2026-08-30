@@ -36,7 +36,7 @@ function listBranches(root: string): string[] {
  *
  * - 減ったブランチは無視する(ccloop 自身の孤児ブランチ回収や他セッションの後片付けで
  *   正常に消えることがあるため)。
- * - 増えたブランチのうち `agent/<taskId>` の形で `isKnownTask(taskId)` が true のものは無視する
+ * - 増えたブランチのうち、実在するタスクに対応する Supervisor の作業ブランチは無視する
  *   (このリポジトリは自分自身をドッグフーディングしており、テスト実行中にも他の自律セッションが
  *   正当な作業ブランチを作ることがあるため)。
  */
@@ -47,11 +47,21 @@ export function detectLeakedBranches(
 ): string[] {
   const beforeSet = new Set(before);
   const added = after.filter((branch) => !beforeSet.has(branch));
-  return added.filter((branch) => {
-    const match = /^agent\/(.+)$/.exec(branch);
-    if (match === null) return true;
-    return !isKnownTask(match[1]);
-  });
+  return added.filter((branch) => !taskIdCandidates(branch).some(isKnownTask));
+}
+
+/**
+ * ブランチ名から、それが由来しうるタスク ID の候補を取り出す。
+ * Supervisor が作るブランチは `agent/<taskId>`(作業用)と
+ * `agent/conflict/<taskId>-<圧縮タイムスタンプ>`(衝突退避用、`lib/worktree.ts` を参照)の 2 形式ある。
+ * 後者はタイムスタンプが付くため、それを剥がした形も候補に含める。
+ */
+function taskIdCandidates(branch: string): string[] {
+  const match = /^agent\/(?:conflict\/)?(.+)$/.exec(branch);
+  if (match === null) return [];
+  const rest = match[1];
+  const parked = /^(.+)-\d{8}T\d{6}Z$/.exec(rest);
+  return parked === null ? [rest] : [rest, parked[1]];
 }
 
 /** `.agent/tasks/<taskId>.md` または `.agent/archive/tasks/<taskId>.md` が実在するか */
@@ -61,10 +71,23 @@ function isKnownTaskId(root: string, taskId: string): boolean {
   return fs.existsSync(active) || fs.existsSync(archived);
 }
 
+/** 汚染を検出したときに stderr へ出す文言(単体テストからも参照する) */
+export function leakMessage(leaked: string[]): string {
+  return (
+    `テストがリポジトリ本体にブランチを作成した: ${leaked.join(", ")}\n` +
+    "テストは一時ディレクトリに作った使い捨てリポジトリに対してのみ git を実行すること。"
+  );
+}
+
 /**
  * vitest 4 の globalSetup 作法: `setup` を export し、その戻り値の関数が teardown として
  * 実行される。git が使えない・git リポジトリでない場合は no-op の teardown を返し、
  * git まわりのエラーで全テストを落とさないようにする。
+ *
+ * 検出時に teardown から throw してはならない。vitest は teardown の例外を
+ * 「error during close」として出力するだけで終了コードを変えず、テストランは成功扱いのまま
+ * 終わってしまう(= この仕組みが防ごうとしている「緑のまま本体が汚れる」状態そのもの)。
+ * そのため `process.exitCode` を明示的に立てて失敗させる。
  */
 export function setup(): () => void {
   let root: string;
@@ -87,10 +110,7 @@ export function setup(): () => void {
     const leaked = detectLeakedBranches(before, after, (taskId) => isKnownTaskId(root, taskId));
     if (leaked.length === 0) return;
 
-    throw new Error(
-      "テストがリポジトリ本体にブランチを作成した: " +
-        `${leaked.join(", ")}\n` +
-        "テストは一時ディレクトリに作った使い捨てリポジトリに対してのみ git を実行すること。",
-    );
+    process.stderr.write(`${leakMessage(leaked)}\n`);
+    process.exitCode = 1;
   };
 }
