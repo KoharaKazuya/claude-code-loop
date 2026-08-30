@@ -3,8 +3,8 @@ title: "書庫への移動が同名ファイルを無警告で上書きして記
 status: completed
 priority: 3
 dependencies: []
-retries: 1
-note: "衝突時はスキップして毎回警告する方式で修理。typecheck/lint/test すべて通過"
+retries: 2
+note: "失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-0509-archive-move-overwrites-existing.md, CHANGELOG.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -))"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
@@ -45,9 +45,8 @@ CLI 経由の新規作成は `disambiguateId`(`lib/ids.ts`)が `.agent/archive/`
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
 
-### 試行 2(2026-08-30T05:31:41.879Z, セッション記録)
+### 試行 2(2026-08-30T05:40:57.124Z, Supervisor 記録: マージ衝突)
 
-- 確認済みの事実: 試行 1 の実装は既に `80d1485` としてコミット済みだった(再実装は不要)。衝突は `CHANGELOG.md` の「### 修正」節末尾のみで、両側とも独立した追記だったため両方残して解消し、マージを `4f7dd33` で完成させた
-- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npm run test`(31 ファイル 966 件)がすべて通過。reviewer サブエージェントのレビューも APPROVE
-- 確認済みの事実: reviewer が副作用を 1 件検出。衝突でタスクがアクティブ側と archive 側の両方に completed で残ると `ccloop status` の進捗表示が二重計上する(`lib/supervisor.ts:4676`, `4770`)。別タスク `T-20260830-0531-status-progress-double-counts-conflicts` として登録済み
-- 次の試行への提案: このタスクは完了。再開の必要はない
+- 結果: main へのマージが衝突した(.agent/tasks/T-20260830-0509-archive-move-overwrites-existing.md, CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない

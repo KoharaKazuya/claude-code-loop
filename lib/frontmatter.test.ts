@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
 
+/** 先頭 BOM(U+FEFF)。ソース中に不可視文字を直接書かないよう、コード値から組み立てる */
+const BOM = String.fromCharCode(0xfeff);
+
 describe("parseFrontmatter", () => {
   it("スカラー・整数・配列・本文をパースする", () => {
     const text = [
@@ -46,6 +49,32 @@ describe("parseFrontmatter", () => {
     const { data, body } = parseFrontmatter("---\nstatus: open\n---\n\n## 見出し\n\n---\n\n下段");
     expect(data.status).toBe("open");
     expect(body).toContain("下段");
+  });
+
+  it("先頭 BOM 付きの frontmatter をパースする", () => {
+    const { data, body } = parseFrontmatter(BOM + "---\nstatus: open\n---\n\n本文である。");
+    expect(data.status).toBe("open");
+    expect(body).toBe("本文である。");
+  });
+
+  it("CRLF 改行の frontmatter をパースし、body に \\r が残らない", () => {
+    const { data, body } = parseFrontmatter("---\r\nstatus: open\r\n---\r\n本文");
+    expect(data.status).toBe("open");
+    expect(body).toBe("本文");
+    expect(body).not.toContain("\r");
+  });
+
+  it("BOM と CRLF が組み合わさっていてもパースする", () => {
+    const { data, body } = parseFrontmatter(BOM + "---\r\nstatus: open\r\ntitle: タイトル\r\n---\r\n本文");
+    expect(data).toEqual({ status: "open", title: "タイトル" });
+    expect(body).toBe("本文");
+  });
+
+  it("frontmatter のない CRLF テキストは従来どおり全体が本文になる(data は空のまま)", () => {
+    // 正規化は frontmatter の有無に関わらず行うため、body の改行は LF になる
+    const { data, body } = parseFrontmatter("ただの\r\nテキスト");
+    expect(data).toEqual({});
+    expect(body).toBe("ただの\nテキスト");
   });
 });
 

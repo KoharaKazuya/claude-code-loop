@@ -1,8 +1,9 @@
 ---
 title: "BOM/CRLF の記録ファイルが frontmatter 未パースになりタスクが消える"
-status: ready
+status: completed
 priority: 2
 retries: 0
+note: "parseFrontmatter 冒頭で BOM 除去と CRLF→LF 正規化。main とのマージ衝突も解消済み"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
@@ -48,3 +49,13 @@ createdAt: 2026-08-30T05:09:36.602Z
 - `npm run` 経由の typecheck / lint / test がすべて通る
 - 利用者から見て「手で書いた記録ファイルが無視されなくなる」修正なので `CHANGELOG.md` の
   「## 未リリース」に 1 行足す
+
+## 試行履歴
+
+### 試行 2(2026-08-30T05:30:54.891Z, セッション記録)
+
+- 確認済みの事実: 実装は試行 1 のコミット 071c8a5 で完了済みだった。このセッションは main との
+  マージ衝突(CHANGELOG.md の「## 未リリース」に双方が別の項目を追記した加算的衝突)を解消し、
+  マージコミット 6a7f6ea を作成した。衝突は両方の項目を残す形で解消し、捨てた変更はない
+- 確認済みの事実: マージ後の作業ツリーで `npm run typecheck` / `npm run lint` / `npm run test`
+  がすべて通過(テスト 968 件、31 ファイル)。reviewer サブエージェントのレビューも指摘なしで通過

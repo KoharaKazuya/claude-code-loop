@@ -1,9 +1,10 @@
 ---
 title: "repoId のテストが実装の式を写しただけでアルゴリズム逸脱を検知できない"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "リテラル期待値化と symlink 検証を追加。実装を sha256 に変えると落ちることを実測で確認"
 createdAt: 2026-08-30T05:24:03.943Z
 ---
 

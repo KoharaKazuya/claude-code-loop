@@ -24,6 +24,9 @@ export interface ParsedFile {
  * 全体を本文として返す(壊れたファイルで例外を投げない)。不正な行は無視する。
  */
 export function parseFrontmatter(text: string): ParsedFile {
+  // 先頭 BOM(エディタ・一部ツールが付与する)と CRLF 改行を、判定・パースの前に正規化する
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  text = text.replaceAll("\r\n", "\n");
   if (!text.startsWith("---\n")) return { data: {}, body: text };
   const end = text.indexOf("\n---", 3);
   const afterEnd = end === -1 ? -1 : end + "\n---".length;
