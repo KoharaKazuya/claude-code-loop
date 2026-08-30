@@ -1,9 +1,10 @@
 ---
 title: "watch / init のエラー時使い方文言を help.ts から再利用して二重管理をなくす"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "watch / init のエラー文言を usageOf() 経由に置き換え、回帰テストを 2 件追加。test/typecheck/lint 通過"
 createdAt: 2026-08-30T03:17:10.313Z
 ---
 

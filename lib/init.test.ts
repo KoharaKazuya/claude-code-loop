@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { usageOf } from "./help.ts";
 import {
   applyInit,
   checkSchemaVersion,
@@ -163,6 +164,17 @@ describe("cmdInit", () => {
   it("未知のオプションは 1 を返す", async () => {
     expect(await cmdInit(paths, ["--force"], HOME)).toBe(1);
     expect(fs.existsSync(paths.goalPath)).toBe(false);
+  });
+
+  it("未知のオプションのエラー出力は help.ts の使い方(usageOf)と一致する", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await cmdInit(paths, ["--bogus"], HOME);
+      const output = spy.mock.calls.map((args) => args.join(" ")).join("\n");
+      expect(output).toContain(usageOf("init"));
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("--upgrade は schemaVersion 欠損の config を現行版数へ移行する", async () => {

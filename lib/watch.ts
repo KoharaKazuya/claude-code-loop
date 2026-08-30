@@ -10,6 +10,7 @@
  * 書き込みの途中を読んでしまう競合を自前で捌く必要が出るため、素朴なポーリングで十分とする。
  */
 
+import { usageOf } from "./help.ts";
 import { formatStatus } from "./supervisor.ts";
 
 /** 既定の再描画間隔 */
@@ -39,7 +40,7 @@ export function parseWatchArgs(argv: string[]): { intervalMs: number } {
     } else if (a.startsWith("--interval=")) {
       raw = a.slice("--interval=".length);
     } else {
-      throw new Error(`未知の引数: ${a}\n使い方: ccloop watch [--interval <秒>]`);
+      throw new Error(`未知の引数: ${a}\n${usageOf("watch")}`);
     }
     if (raw === undefined) throw new Error("--interval には秒数を指定すること");
     const seconds = Number(raw);
