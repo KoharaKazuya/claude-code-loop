@@ -2,6 +2,8 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-1156-archived-task-read-strategy](D-20260830-1156-archived-task-read-strategy.md) — 書庫タスクは frontmatter の部分読み + mtime キャッシュで読む
+- [ ] [D-20260830-1150-agent-dir-follows-current-worktree](D-20260830-1150-agent-dir-follows-current-worktree.md) — .agent/ の基準は実行中の作業ツリー、git 操作と state は本体ワークツリー
 - [ ] [D-20260830-1141-startup-conflict-test-expectations](D-20260830-1141-startup-conflict-test-expectations.md) — 起動時回収の衝突テスト 2 件の期待値を retries から conflictRetries へ更新した
 - [ ] [D-20260830-1129-abandon-marker-over-status-value](D-20260830-1129-abandon-marker-over-status-value.md) — 断念は status の新値ではなく abandonedAt マーカーで表す
 - [ ] [D-20260830-1128-startup-recovery-note-marker](D-20260830-1128-startup-recovery-note-marker.md) — 起動時復旧の削除と記録の間も、state のマーカーで塞ぐ
