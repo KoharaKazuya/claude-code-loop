@@ -1,9 +1,10 @@
 ---
 title: "手元の ccloop を最新の中身へ入れ替える手順を文書化する"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "docs/architecture.md に入れ替え手順を書き README からリンクした。推奨はリリース + 再ビルド"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 
@@ -55,3 +56,23 @@ docs にも書かれていないため、改善が手元に届かない状態が
 
 入れ替え用のサブコマンドは作らない(回答が「1」であるため)。`npm run release` による公開も
 行わない。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T03:55:59.827Z, セッション記録)
+- 確認済みの事実(実機で検証): `/usr/local/bin/ccloop` は `/usr/local/share/ccloop/bin/ccloop` への
+  symlink、インストール先は root 所有で `test -w` が失敗(作業ユーザーは書き込み不可)。`ccloop --version`
+  と `./bin/ccloop --version` はどちらも `0.4.1` だが `diff -rq` で 20 ファイル以上が食い違い、インストール
+  済み `lib/supervisor.ts` に `isInstalledSourceDrifted` は存在しない(バージョン番号が同じでも中身が
+  違いうることの実例)。
+- 確認済みの事実(実装読解): install.sh はリリースワークフローによるコピー後を前提としローカル checkout
+  には使えない。ビルド工程は存在せず(`build` スクリプト無し)ソースをそのまま配布している。
+- 未検証(推測で「動く」と書かなかった範囲): 推奨手順そのもの、すなわち `npm run release` →
+  GHCR publish → `.devcontainer/devcontainer.json` の参照更新 → コンテナ再ビルド。push・タグ作成・
+  リビルドを伴うためこのセッションでは実行できない。`devcontainer features test` も未実行。
+- 変更: `docs/architecture.md` の当該節を手順形式に書き換え(見出しを「手元の ccloop をリポジトリの
+  最新の中身へ入れ替える」に変更)、README「開発」節からアンカーリンクを追加、見出し変更に追従して
+  `lib/supervisor.ts:2301` の乖離警告メッセージの参照文言を修正。
+- 検証: `npm run typecheck` / `npm run lint` / `npm test`(814 tests)すべて通過。
+- reviewer 指摘: 見出し変更で `lib/supervisor.ts` の警告文が実在しない見出しを指す件(必須)→ 修正済み。
+  日本語の不自然さ(軽微)→ 修正済み。

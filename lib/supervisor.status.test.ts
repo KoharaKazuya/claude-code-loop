@@ -13,6 +13,7 @@ import { writeRunnerRecord, type RunnerRecord } from "./liveness.ts";
 import {
   collectStatusData,
   formatStatus,
+  hrSummary,
   repoPaths,
   setRepoPaths,
   useRepoRoot,
@@ -46,11 +47,21 @@ describe("collectStatusData / formatStatus", () => {
 
   /** open な Human Review(未回答)。チェックボックスを付けないことで open のまま保つ */
   function writeOpenHr(id: string, importance: "BLOCK" | "REVIEW", title: string): void {
+    writeOpenHrWithBody(id, importance, title, "## 回答\n\n");
+  }
+
+  /** 本文を指定できる版。summary 抽出のテストなど、`## 確認事項` を含む本文を検証したい場合に使う */
+  function writeOpenHrWithBody(
+    id: string,
+    importance: "BLOCK" | "REVIEW",
+    title: string,
+    body: string,
+  ): void {
     const hrDir = path.join(dir, ".agent", "human-review");
     fs.mkdirSync(hrDir, { recursive: true });
     fs.writeFileSync(
       path.join(hrDir, `${id}.md`),
-      serializeFrontmatter({ title, status: "open", importance }, "## 回答\n\n"),
+      serializeFrontmatter({ title, status: "open", importance }, body),
     );
   }
 
@@ -105,6 +116,89 @@ describe("collectStatusData / formatStatus", () => {
     expect(out).toContain("…他 2 件");
   });
 
+  it("「一言でいうと」形式の確認事項は強調記号を落として表示される", () => {
+    writeOpenHrWithBody(
+      "HR-1",
+      "REVIEW",
+      "確認したい事項",
+      ["## 確認事項", "", "一言でいうと: **これは重要な確認内容だよ**", "", "## 回答", "", ""].join("\n"),
+    );
+
+    const out = formatStatus();
+    // 本文の「一言でいうと:」はそのまま活き、表示側は見出し語を重ねない
+    expect(out).toContain("→ 一言でいうと: これは重要な確認内容だよ");
+    expect(out).not.toContain("**");
+  });
+
+  it("「一言でいうと」形式でなくても確認事項見出し直後の文が表示される", () => {
+    writeOpenHrWithBody(
+      "HR-1",
+      "REVIEW",
+      "確認したい事項",
+      ["## 確認事項", "", "ふつうの文から始まる確認内容です。", "", "## 回答", "", ""].join("\n"),
+    );
+
+    const out = formatStatus();
+    expect(out).toContain("→ ふつうの文から始まる確認内容です。");
+  });
+
+  it("確認事項見出しが無くても本文冒頭が使われ、例外にならない", () => {
+    writeOpenHrWithBody(
+      "HR-1",
+      "REVIEW",
+      "確認したい事項",
+      ["見出しの無い本文の冒頭行です。", "", "## 回答", "", ""].join("\n"),
+    );
+
+    expect(() => formatStatus()).not.toThrow();
+    const out = formatStatus();
+    expect(out).toContain("→ 見出しの無い本文の冒頭行です。");
+  });
+
+  it("本文が回答テンプレートのみ(確認事項なし・実質空)なら summary 行を出さない", () => {
+    writeOpenHr("HR-1", "REVIEW", "確認したい事項");
+
+    const out = formatStatus();
+    expect(out).toContain("HR-1: 確認したい事項");
+    expect(out).not.toContain("      → ");
+  });
+
+  it("非常に長い一言は省略記号付きで1行に収まる", () => {
+    const longLine = "x".repeat(120);
+    writeOpenHrWithBody(
+      "HR-1",
+      "REVIEW",
+      "確認したい事項",
+      ["## 確認事項", "", longLine, "", "## 回答", "", ""].join("\n"),
+    );
+
+    const out = formatStatus();
+    expect(out).toContain(`${"x".repeat(80)}…`);
+    expect(out).not.toContain("x".repeat(81));
+    const summaryLine = out.split("\n").find((l) => l.includes("→ "));
+    expect(summaryLine).toBeDefined();
+    expect(summaryLine!.length).toBeLessThan(200);
+  });
+
+  it("note がある snoozed タスクは note を表示し、無いタスクは [snoozed until ...] のみ表示する", () => {
+    writeTask("T-snoozed-note", {
+      status: "ready",
+      title: "スヌーズ中(note あり)",
+      snoozeUntil: "2026-09-01T00:00:00.000Z",
+      note: "外部 API のレート制限解除待ち",
+    });
+    writeTask("T-snoozed-plain", {
+      status: "ready",
+      title: "スヌーズ中(note なし)",
+      snoozeUntil: "2026-09-02T00:00:00.000Z",
+    });
+
+    const out = formatStatus();
+    expect(out).toContain("note: 外部 API のレート制限解除待ち");
+    expect(out).toContain("T-snoozed-plain");
+    expect(out).toContain("[snoozed until");
+  });
+
   describe("ループ本体(ccloop run)の生存表示", () => {
     function writeRunner(record: RunnerRecord): void {
       writeRunnerRecord(repoPaths().runnerPath, record);
@@ -157,5 +251,44 @@ describe("collectStatusData / formatStatus", () => {
       const out = formatStatus();
       expect(out).toContain("状態の更新:");
     });
+  });
+});
+
+describe("hrSummary", () => {
+  it("空文字列を渡すと空文字を返す", () => {
+    expect(hrSummary("")).toBe("");
+  });
+
+  it("見出しだけで本文が無ければ空文字を返す", () => {
+    expect(hrSummary("## 確認事項\n\n## 回答\n\n")).toBe("");
+  });
+
+  it("先頭のリスト記号を落とす", () => {
+    expect(hrSummary("## 確認事項\n\n- 一言でいうと: リスト記法の確認事項\n")).toBe(
+      "一言でいうと: リスト記法の確認事項",
+    );
+  });
+
+  it("ソフトラップされた日本語の段落は空白を挟まず連結する", () => {
+    expect(hrSummary("## 確認事項\n\n一言でいうと: 途中で折り返された\n日本語の一文です。\n\n次の段落\n")).toBe(
+      "一言でいうと: 途中で折り返された日本語の一文です。",
+    );
+  });
+
+  it("連結の境界に英数字があれば単語が潰れないよう空白を挟む", () => {
+    expect(hrSummary("## 確認事項\n\nfoo\nbar\n")).toBe("foo bar");
+  });
+
+  it("段落は空行または次の見出しで区切る", () => {
+    expect(hrSummary("## 確認事項\n\nあいう\n\n## 暫定判断\n\nえおか\n")).toBe("あいう");
+  });
+
+  it("確認事項見出しが無ければ本文冒頭を使う", () => {
+    expect(hrSummary("本文の冒頭行\n\n## 回答\n\n")).toBe("本文の冒頭行");
+  });
+
+  it("maxLen を超えると省略記号を付けて切り詰める", () => {
+    const result = hrSummary("## 確認事項\n\nabc", 2);
+    expect(result).toBe("ab…");
   });
 });

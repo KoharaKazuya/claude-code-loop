@@ -30,26 +30,49 @@ feature(参照先は `.devcontainer/devcontainer.json`。バージョンはリ�
 
 `lib/` のローカル変更は `./bin/ccloop` を直接実行して検証する。
 
-## リポジトリの lib/ 変更を ccloop コマンドへ反映する
+## 手元の ccloop をリポジトリの最新の中身へ入れ替える
 
 `ccloop` コマンドの実体はインストール先(`/usr/local/share/ccloop/`)にあり、このリポジトリの `lib/` を
-編集しただけでは反映されない。このリポジトリの DevContainer が使う `ccloop` も同様で、
+編集しただけでは手元の挙動は変わらない。このリポジトリの DevContainer が使う `ccloop` も同様で、
 `.devcontainer/devcontainer.json` はバージョン固定の公開済み feature
 (`ghcr.io/koharakazuya/claude-code-loop/ccloop:x.y.z`)を参照しているため、コンテナを再ビルドしても
-インストールされるのはその公開済みバージョンであり、この checkout の `lib/` ではない。
+インストールされるのはその公開済みバージョンであり、この checkout の `lib/` ではない。改善を実装しても
+入れ替えるまでは自分の手元に届かないので、届かせたいときは以下の手順に従う。
 
-`features/ccloop/install.sh` を checkout に対して直接実行する経路は使えない。このスクリプトは
+### 手元が古いかどうかの見分け方
+
+バージョン番号は当てにならない。publish はタグ push 時にしか起きないため、`ccloop --version` と
+リポジトリの `package.json` が同じ値でも、インストール先と `lib/` の中身が食い違っている状態が普通に
+起きる。自己ホスト時に限り `ccloop status` が両者のソースを比較し、乖離していれば警告を 1 行表示する。
+開発中はほぼ常時点灯するのが正常で、消すべき異常ではない。
+
+### 推奨: リリースして再ビルドする
+
+インストール先を実際に入れ替える方法はこれだけである。未リリースの変更は入れ替えられないため、
+リリースしてよい状態(検証が通っている)まで仕上げてから実行する。
+
+1. `npm run release <patch|minor|major>` を実行する(スクリプトの詳細は README「開発」節)。タグが
+   push され、GitHub Actions が `lib/` / `bin/` / `package.json` を feature にバンドルして GHCR へ
+   publish する。
+2. publish の完了後、`.devcontainer/devcontainer.json` の ccloop feature 参照を新バージョンへ手で
+   更新する(バージョン同期スクリプトの対象外)。
+3. コンテナを再ビルドする。`.devcontainer/devcontainer-lock.json` は再ビルド時に devcontainer CLI が
+   解決し直す。
+
+### 素早く試すだけなら `./bin/ccloop`
+
+入れ替えずに checkout の `lib/` をその場で動かす手段。`bin/ccloop` は自身の実体から見た `../lib` を
+`CCLOOP_HOME` として解決するランチャーなので、リポジトリ内から `./bin/ccloop <subcommand>` を実行すれば
+編集中のコードが動く。日常の検証はこれで足りる。PATH 上の `ccloop` はインストール先を指したままである。
+
+### インストール先を手でコピーして差し替える経路は無い
+
+`/usr/local/share/ccloop/` は root 所有で作業ユーザーからは書き込めない。仮に書き換えても再ビルドで
+消えるうえ、実行中の ccloop 自身を壊しうる(インストール先を固定コピーにしている理由がこれである)。
+`features/ccloop/install.sh` を checkout に対して直接実行する経路も使えない。このスクリプトは
 リリースワークフロー(`.github/workflows/release.yml`)が `lib/` / `bin/` / `package.json` を
 `features/ccloop/` へコピーした後の状態を前提にしており、コピー前のローカル checkout に対して実行すると
 エラーで止まる。
-
-`lib/` の変更を実際にインストール済みの `ccloop` へ反映するには、リリース(`npm run release`)でタグを
-push し、GitHub Actions が GHCR へ新バージョンを publish したうえで、`.devcontainer/devcontainer.json` の
-feature 参照バージョンを新バージョンへ更新し、コンテナを再ビルドする必要がある。`lib/` の変更を素早く
-試すだけなら `./bin/ccloop <subcommand>` を直接実行する。
-
-`ccloop status` はインストール済みの `ccloop` とこのリポジトリの `lib/` が乖離している(自己ホスト時に
-限り判定できる)ことを検出すると警告を表示する。
 
 ## `.claude/` を要求しない
 

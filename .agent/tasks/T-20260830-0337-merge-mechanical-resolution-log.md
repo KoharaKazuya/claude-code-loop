@@ -1,9 +1,10 @@
 ---
 title: "機械的マージ解決のログ文言を実際に解決した対象に合わせる"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "renumbered に resolved を持たせ、ログを解決対象に応じて書き分けた。test/typecheck/lint 通過"
 createdAt: 2026-08-30T03:37:51.554Z
 ---
 
