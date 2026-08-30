@@ -2,7 +2,9 @@
 title: "ターン上限で打ち切られたセッションが失敗として数えられない"
 status: ready
 priority: 2
-retries: 0
+dependencies: []
+retries: 2
+note: "失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-0537-max-turns-not-failure.md, CHANGELOG.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -))"
 createdAt: 2026-08-30T05:37:00.000Z
 ---
 
@@ -63,3 +65,15 @@ ccloop 側はこの `is_error` / `subtype` を `metrics.jsonl` へ記録する�
 実装後に OVERVIEW へ書き添えること。
 
 ## 試行履歴
+
+### 試行 1(2026-08-30T05:50:56.082Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 2(2026-08-30T06:05:53.183Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/tasks/T-20260830-0537-max-turns-not-failure.md, CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない

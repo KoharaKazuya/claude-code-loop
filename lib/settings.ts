@@ -13,6 +13,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { log } from "./log.ts";
 import { ccloopHome, type Paths } from "./paths.ts";
 
 export interface SettingsPermissions {
@@ -81,19 +82,29 @@ function selfProtectDenyEntries(paths: Paths): string[] {
   );
 }
 
-/** 利用側リポジトリの追記用 settings(`.agent/claude-settings.json`)。無ければ null */
+/**
+ * 利用側リポジトリの追記用 settings(`.agent/claude-settings.json`)。
+ * ファイルが無ければ(通常のケース)何も出力せず null を返す。ファイルは在るが JSON として
+ * 読めない場合は、テンプレートの permissions だけで続行することを警告してから null を返す
+ * (`loadDenyRules`(lib/supervisor.ts)と同じ、読み込み失敗を握りつぶさない方針に揃えている)。
+ */
 export function readRepoSettings(paths: Paths): unknown {
   const file = path.join(paths.agentDir, "claude-settings.json");
+  if (!fs.existsSync(file)) return null;
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  } catch {
+  } catch (err) {
+    log(`警告: ${file} の読み込みに失敗したため、ccloop 側テンプレートの permissions だけで続行する: ${String(err)}`);
     return null;
   }
 }
 
 /**
  * 自律実行セッション用の settings を生成し、`paths.generatedSettingsPath` へ書き出す。
- * 書き出したパスを返す。`ccloop run` の起動時に 1 回だけ呼べばよい。
+ * 書き出したパスを返す。セッションを 1 本起動するたびに呼び出され、`.agent/claude-settings.json`
+ * の追記が次のセッションから反映されるようにする(`refreshGeneratedSessionInputs`(lib/supervisor.ts)
+ * を参照)。書き出しは `.tmp` + rename による原子的な置き換えなので、走行中の別セッションが
+ * このファイルを読んでいる最中に差し替わっても壊れない。
  */
 export function generateSettings(paths: Paths, opts: { home?: string } = {}): string {
   const templateText = fs.readFileSync(settingsTemplatePath(opts.home ?? ccloopHome()), "utf8");

@@ -46,6 +46,13 @@ describe("collectStatusData / formatStatus", () => {
     fs.writeFileSync(path.join(tasksDir, `${id}.md`), serializeFrontmatter(fields, "本文"));
   }
 
+  /** `.agent/archive/tasks/` へタスクを書く。rotate で退避済みの completed タスクを模す */
+  function writeArchivedTask(id: string, fields: Record<string, string | number | string[]>): void {
+    const archivedTasksDir = path.join(dir, ".agent", "archive", "tasks");
+    fs.mkdirSync(archivedTasksDir, { recursive: true });
+    fs.writeFileSync(path.join(archivedTasksDir, `${id}.md`), serializeFrontmatter(fields, "本文"));
+  }
+
   /** open な Human Review(未回答)。チェックボックスを付けないことで open のまま保つ */
   function writeOpenHr(id: string, importance: "BLOCK" | "REVIEW", title: string): void {
     writeOpenHrWithBody(id, importance, title, "## 回答\n\n");
@@ -103,6 +110,35 @@ describe("collectStatusData / formatStatus", () => {
     expect(out).toContain("blocked タスク");
     expect(out).toContain("未承認の決定");
     expect(out).not.toContain("要対応事項なし");
+  });
+
+  it("片付けの衝突で同じ ID がアクティブ側と archive 側の両方に completed で残っても 1 件として数える", () => {
+    // T-a は片付けの移動が衝突で見送られ、アクティブ側にも archive 側にも同じ ID で残っている想定
+    writeTask("T-a", { status: "completed", title: "完了したタスクA" });
+    writeTask("T-b", { status: "completed", title: "完了したタスクB" });
+    writeArchivedTask("T-a", { status: "completed", title: "完了したタスクA(archive側)" });
+    writeArchivedTask("T-c", { status: "completed", title: "完了したタスクC(archiveのみ)" });
+
+    const data = collectStatusData(NOW);
+    // archive 側のうちアクティブ側と重複しない T-c のみが加算対象
+    expect(data.archivedCompletedCount).toBe(1);
+
+    const out = formatStatus();
+    // 分子(T-a, T-b, T-c の3件)・分母(同じく3件)とも二重計上されない
+    expect(out).toContain("完了 3/3");
+  });
+
+  it("衝突が無ければこれまでどおり archive 分をそのまま足して数える", () => {
+    writeTask("T-a", { status: "completed", title: "完了したタスクA" });
+    writeTask("T-b", { status: "ready", title: "未着手のタスクB" });
+    writeArchivedTask("T-c", { status: "completed", title: "完了したタスクC" });
+    writeArchivedTask("T-d", { status: "completed", title: "完了したタスクD" });
+
+    const data = collectStatusData(NOW);
+    expect(data.archivedCompletedCount).toBe(2);
+
+    const out = formatStatus();
+    expect(out).toContain("完了 3/4");
   });
 
   it("未承認の決定がプレビュー上限(3件)を超えると残り件数を表示する", () => {

@@ -14,6 +14,9 @@
  * 冪等: 移動対象・index.md の変更が無ければ何もしない(2 回連続実行しても 2 回目は全カウント 0、
  * index.md も無変更)。
  * state.json など本モジュールが扱わない種別のファイルには一切触れない。
+ *
+ * 移動先の archive 側に同名ファイルが既にある場合は上書きせず移動をスキップし、呼び出し側へ
+ * 報告する(ファイル名 = ID は他ファイルからの参照キーのため、リネームして退避すると参照が壊れる)。
  */
 
 import * as fs from "node:fs";
@@ -44,17 +47,30 @@ function statusOf(dir: string, fileName: string): string {
 
 /**
  * agentDir/<sub>/ 配下の files を agentDir/archive/<sub>/ へ移動する。
- * files が空なら何もせず 0 を返す。
+ * 移動先に同名ファイルが既にある場合は上書きせずスキップし、そのファイル名を skipped に積む。
+ * files が空なら何もせず { moved: 0, skipped: [] } を返す(mkdirSync もしない)。
  */
-function moveToArchive(agentDir: string, sub: string, files: string[]): number {
-  if (files.length === 0) return 0;
+function moveToArchive(
+  agentDir: string,
+  sub: string,
+  files: string[],
+): { moved: number; skipped: string[] } {
+  if (files.length === 0) return { moved: 0, skipped: [] };
   const srcDir = path.join(agentDir, sub);
   const destDir = path.join(agentDir, "archive", sub);
   fs.mkdirSync(destDir, { recursive: true });
+  let moved = 0;
+  const skipped: string[] = [];
   for (const file of files) {
-    fs.renameSync(path.join(srcDir, file), path.join(destDir, file));
+    const destPath = path.join(destDir, file);
+    if (fs.existsSync(destPath)) {
+      skipped.push(file);
+      continue;
+    }
+    fs.renameSync(path.join(srcDir, file), destPath);
+    moved++;
   }
-  return files.length;
+  return { moved, skipped };
 }
 
 // ---------- decisions: index.md のリコンサイル & アーカイブ ----------
@@ -78,9 +94,13 @@ function summaryFromDecisionFile(decisionsDir: string, id: string): string {
  * decisions のリコンサイル + アーカイブ。
  * 1. index.md を実体ファイル(D-*.md)と突き合わせ、無い行を削除・未登録の行を未チェックで追加する。
  * 2. リコンサイル後に `[x]` が付いた ID を archive/decisions/ へ移動し、index.md から取り除く。
- * 戻り値は移動したファイル数(index.md の書き換え件数は含まない)。
+ *    移動先に同名ファイルが既にあってスキップした決定は、実体ファイルが残ったままなので
+ *    index.md の行も `[x]` を付けたまま残す(消すと次回リコンサイルで未チェックとして
+ *    再追加され、人間が付けたチェックが失われる)。
+ * 戻り値は移動したファイル数(index.md の書き換え件数は含まない)と、衝突でスキップした
+ * ファイルの `decisions/<ファイル名>` 形式の一覧。
  */
-function rotateDecisions(agentDir: string): number {
+function rotateDecisions(agentDir: string): { moved: number; conflicts: string[] } {
   const decisionsDir = path.join(agentDir, "decisions");
   const indexPath = path.join(decisionsDir, DECISIONS_INDEX_FILE);
 
@@ -103,7 +123,7 @@ function rotateDecisions(agentDir: string): number {
   }
 
   // 決定ファイルも index.md も無ければ何もしない(index.md を新規作成しない)
-  if (existingIdSet.size === 0 && originalText === undefined) return 0;
+  if (existingIdSet.size === 0 && originalText === undefined) return { moved: 0, conflicts: [] };
 
   const { header, entries, footer } = parseDecisionsIndex(originalText ?? "");
   const byId = new Map(entries.map((e) => [e.id, e] as const));
@@ -123,18 +143,19 @@ function rotateDecisions(agentDir: string): number {
   const reconciled = [...byId.keys()].sort().reverse().map((id) => byId.get(id)!);
 
   const toArchiveFiles = reconciled.filter((e) => e.checked).map((e) => `${e.id}.md`);
-  const remaining = reconciled.filter((e) => !e.checked);
 
   // 先に移動してから index.md を書く。逆順だと移動に失敗したとき index.md からだけ行が消え、
   // 次回リコンサイルで人間が付けたチェックが失われる。
-  const moved = moveToArchive(agentDir, "decisions", toArchiveFiles);
+  const { moved, skipped } = moveToArchive(agentDir, "decisions", toArchiveFiles);
+  const skippedIds = new Set(skipped.map((f) => f.slice(0, -".md".length)));
+  const remaining = reconciled.filter((e) => !e.checked || skippedIds.has(e.id));
 
   const newText = buildDecisionsIndexText(header, remaining, footer);
   if (newText !== originalText) {
     fs.writeFileSync(indexPath, newText);
   }
 
-  return moved;
+  return { moved, conflicts: skipped.map((f) => `decisions/${f}`) };
 }
 
 // ---------- 公開 API ----------
@@ -143,29 +164,50 @@ export interface RotateResult {
   tasks: number;
   decisions: number;
   humanReview: number;
+  /**
+   * 移動先の archive 側に同名ファイルが既にあり、上書きを避けて移動をスキップしたものの一覧。
+   * 要素は `"tasks/T-xxx.md"` のような `<種別>/<ファイル名>` 形式(区切りは常に `/`)で、
+   * tasks / decisions / human-review の順に並ぶ。
+   */
+  conflicts: string[];
 }
 
-/** ローテーション対象が 1 件も無いか(ログを出す必要が無いか) */
+/** ローテーション対象(移動・スキップとも)が 1 件も無いか(ログを出す必要が無いか) */
 export function rotateResultIsEmpty(result: RotateResult): boolean {
-  return result.tasks === 0 && result.decisions === 0 && result.humanReview === 0;
+  return (
+    result.tasks === 0 &&
+    result.decisions === 0 &&
+    result.humanReview === 0 &&
+    result.conflicts.length === 0
+  );
 }
 
 /**
  * agentDir(通常 .agent/)配下のローテーションを実行する。
  * state.json など本モジュールが扱わないファイルには一切触れない。
+ * 移動先に同名ファイルが既にある場合は上書きせずスキップし、`conflicts` に積んで報告する。
  */
 export function rotate(agentDir: string): RotateResult {
   const tasksDir = path.join(agentDir, "tasks");
   const tasksToArchive = listMdFiles(tasksDir).filter((f) => statusOf(tasksDir, f) === "completed");
+  const tasksResult = moveToArchive(agentDir, "tasks", tasksToArchive);
+
+  const decisionsResult = rotateDecisions(agentDir);
 
   const humanReviewDir = path.join(agentDir, "human-review");
   const humanReviewToArchive = listMdFiles(humanReviewDir).filter(
     (f) => statusOf(humanReviewDir, f) === "closed",
   );
+  const humanReviewResult = moveToArchive(agentDir, "human-review", humanReviewToArchive);
 
   return {
-    tasks: moveToArchive(agentDir, "tasks", tasksToArchive),
-    decisions: rotateDecisions(agentDir),
-    humanReview: moveToArchive(agentDir, "human-review", humanReviewToArchive),
+    tasks: tasksResult.moved,
+    decisions: decisionsResult.moved,
+    humanReview: humanReviewResult.moved,
+    conflicts: [
+      ...tasksResult.skipped.map((f) => `tasks/${f}`),
+      ...decisionsResult.conflicts,
+      ...humanReviewResult.skipped.map((f) => `human-review/${f}`),
+    ],
   };
 }

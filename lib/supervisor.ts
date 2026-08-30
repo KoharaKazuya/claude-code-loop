@@ -47,6 +47,7 @@ import {
   writeRunnerRecord,
   type LoopLiveness,
 } from "./liveness.ts";
+import { log } from "./log.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
@@ -475,16 +476,6 @@ function saveState(state: State): void {
   saveStateIn(repoPaths().root, state);
 }
 
-/**
- * コンソールへ 1 行出力する(ファイルには残さない)。
- * セッションの中身は Claude Code 自身が transcript として保存しており、
- * セッション ID からたどれる(README「セッションログを追う」参照)。
- */
-function log(message: string): void {
-  const time = new Date().toTimeString().slice(0, 8);
-  console.log(`${styleText("dim", time)} ${message}`);
-}
-
 // ---------- .agent/ の自動コミット ----------
 
 /** 自動コミットのコミットメッセージに付与する trailer。人間向け履歴からの除外フィルタに使う */
@@ -740,14 +731,25 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
 
 // ---------- .agent/ 状態ファイルのローテーション ----------
 
-/** 何かを移動した場合だけログ 1 行を出し、移動の要約文字列を返す(移動が無ければ null) */
+/**
+ * 何かを移動した場合だけログ 1 行を出し、移動の要約文字列を返す(移動が無ければ null)。
+ * 移動先に同名ファイルが既にあってスキップされたものがあれば、件数に関わらず警告ログを 1 件ずつ出す
+ * (記録が失われないよう移動を見送っているため、人間が気づいて手で解決する必要がある)。
+ */
 export function runRotate(agentDir: string = repoPaths().agentDir): string | null {
   const result = rotate(agentDir);
+  for (const conflict of result.conflicts) {
+    log(
+      `警告: archive に同名ファイルがあるため移動をスキップした: ${conflict}` +
+        `(記録が失われないよう移動を見送った。両方の内容を確認して手で解決すること)`,
+    );
+  }
   if (rotateResultIsEmpty(result)) return null;
   const parts: string[] = [];
   if (result.tasks > 0) parts.push(`tasks ${result.tasks} 件`);
   if (result.decisions > 0) parts.push(`decisions ${result.decisions} 件`);
   if (result.humanReview > 0) parts.push(`human-review ${result.humanReview} 件`);
+  if (parts.length === 0) return null;
   const summary = parts.join(", ");
   log(`archive へ移動: ${summary}`);
   return summary;
@@ -1764,7 +1766,8 @@ export function buildClaudeArgs(
   ];
   if (opts.commonRules !== false) {
     // 共通ルールは `-p` の本文ではなく system prompt へ置く(lib/prompt.ts の説明を参照)。
-    // ファイルの生成は run の起動時に 1 回(generateSystemPrompt)。
+    // ファイルはセッションを 1 本起動するたびに再生成される(runClaude 冒頭の
+    // refreshGeneratedSessionInputs を参照)。
     args.push("--append-system-prompt-file", repoPaths().generatedSystemPromptPath);
     // サブエージェント(reviewer 等)は利用側の `.claude/agents/` ではなくツール本体が持つ
     args.push(...agentsArgs());
@@ -1772,6 +1775,27 @@ export function buildClaudeArgs(
   if (config.maxTurns > 0) args.push("--max-turns", String(config.maxTurns));
   args.push(...extraArgs);
   return args;
+}
+
+/**
+ * セッションを 1 本起動するたびに、生成物(settings / system prompt)を組み立て直す。
+ *
+ * 利用側が `.agent/claude-settings.json` へ追記した権限や `.agent/PROMPT.local.md` の編集が、
+ * `ccloop run` を再起動しなくても次のセッションから効くようにするため(README / lib/prompt/PROMPT.md
+ * が約束している挙動)。`mainLoop` 起動時の 1 回だけでは、ループを動かしたまま利用側が追記しても
+ * 反映されない。
+ *
+ * 失敗しても起動自体は止めない(例外を投げない)。再生成できなかったファイルは直前に生成済みの
+ * 内容のままセッションへ渡す(settings と system prompt は個別に書き出すため、片方だけが
+ * 新しくなることもある)。
+ */
+export function refreshGeneratedSessionInputs(paths: Paths = repoPaths()): void {
+  try {
+    generateSettings(paths);
+    generateSystemPrompt(paths);
+  } catch (err) {
+    log(`警告: settings / system prompt の再生成に失敗したため、前回生成した内容のままセッションを起動する: ${String(err)}`);
+  }
 }
 
 /**
@@ -1785,6 +1809,7 @@ function runClaude(
   cwd: string,
   opts: { extraArgs?: string[]; env?: Record<string, string>; commonRules?: boolean } = {},
 ): Promise<SessionResult> {
+  refreshGeneratedSessionInputs();
   const args = buildClaudeArgs(config, prompt, model, opts.extraArgs ?? [], { commonRules: opts.commonRules });
 
   return new Promise((resolve) => {
@@ -1810,16 +1835,21 @@ function runClaude(
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
 
+    // SIGTERM の猶予後に SIGKILL する二段構え。子が SIGTERM に応じて終了した場合は
+    // settle() で解除する(解除しないと、その pid が別プロセスに再利用されていたとき
+    // 無関係なプロセスグループを撃つ)。
+    let forceKillTimer: NodeJS.Timeout | undefined;
     const killTimer = setTimeout(() => {
       timedOut = true;
       try {
         process.kill(-child.pid!, "SIGTERM");
       } catch {}
-      setTimeout(() => {
+      forceKillTimer = setTimeout(() => {
         try {
           process.kill(-child.pid!, "SIGKILL");
         } catch {}
-      }, 10_000).unref();
+      }, 10_000);
+      forceKillTimer.unref();
     }, config.taskTimeoutMs);
 
     /**
@@ -1830,6 +1860,7 @@ function runClaude(
     const settle = (result: SessionResult): void => {
       if (pid !== undefined) childPids.delete(pid);
       clearTimeout(killTimer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
       if (shuttingDown) {
         if (childPids.size === 0) exitWhenSafe();
         return;
@@ -3266,10 +3297,11 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
     log(`警告: ${guard.warning}`);
   }
 
-  // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
-  // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
+  // 自律実行セッションへ渡す settings / 共通ルール(system prompt)は、ここでは初回の用意と
+  // 早期の失敗検出のためだけに組み立てる。ループを動かしたまま利用側が `.agent/claude-settings.json`
+  // や `.agent/PROMPT.local.md` を編集しても反映されるよう、以降はセッションを 1 本起動するたびに
+  // runClaude 側の refreshGeneratedSessionInputs が組み立て直す。
   generateSettings(repoPaths());
-  // 共通ルール(+ 利用側の PROMPT.local.md)も同じタイミングで組み立て直す
   generateSystemPrompt(repoPaths());
   // config.json の内容が壊れていると loadConfig が例外を投げる。未捕捉のまま投げさせると
   // スタックトレースだけが出て `ccloop run` が落ちるので、ここで捕まえて人間向けメッセージだけ出す。
@@ -4626,7 +4658,10 @@ export function pendingDecisionsSectionLines(pd: PendingDecisions): string[] {
  */
 export interface StatusData {
   tasks: Task[];
-  /** archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う) */
+  /**
+   * archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う)。
+   * アクティブ側 `tasks` と同じ ID を持つ archive タスクは二重計上を避けるため除く
+   */
   archivedCompletedCount: number;
   state: State;
   humanReview: { openBlock: HrEntry[]; openReview: HrEntry[]; answered: HrEntry[] };
@@ -4669,8 +4704,13 @@ export function collectStatusData(now: Date): StatusData {
   const state = loadState();
   const hr = parseHumanReview();
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、
-  // ローテーション後も「完了 X/N」が累積の実績を反映するようにする
-  const archivedCompletedCount = loadArchivedTasks().filter((t) => t.status === "completed").length;
+  // ローテーション後も「完了 X/N」が累積の実績を反映するようにする。
+  // 片付けが移動先の同名ファイルとの衝突で移動を見送ると同じ ID が両側に残るため、
+  // アクティブ側にある ID は archive 側から除いて二重計上を防ぐ
+  const activeTaskIds = new Set(tasks.map((t) => t.id));
+  const archivedCompletedCount = loadArchivedTasks().filter(
+    (t) => t.status === "completed" && !activeTaskIds.has(t.id),
+  ).length;
   const overview = loadOverview();
   const humanReview = classifyHumanReview(hr);
 

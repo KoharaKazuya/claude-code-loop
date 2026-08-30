@@ -1,6 +1,6 @@
 ---
 title: "書庫への移動が同名ファイルを無警告で上書きして記録を失う"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 2

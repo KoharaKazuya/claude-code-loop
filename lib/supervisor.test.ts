@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
 import { readProcStartToken, writeRunnerRecord } from "./liveness.ts";
+import { createPaths, type Paths } from "./paths.ts";
 import {
   AGENT_COMMIT_TRAILER,
   allTaskIds,
@@ -66,6 +67,7 @@ import {
   recordFailure,
   recordPermissionDenials,
   recoverStartupIn,
+  refreshGeneratedSessionInputs,
   repoPaths,
   resolvePriority,
   resolveTaskSlug,
@@ -1831,6 +1833,69 @@ describe("buildClaudeArgs", () => {
   });
 });
 
+describe("refreshGeneratedSessionInputs", () => {
+  let dir: string;
+  let paths: Paths;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-refresh-test-"));
+    paths = createPaths(dir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(paths.stateDir, { recursive: true, force: true });
+  });
+
+  it("呼び出しのたびに .agent/claude-settings.json を読み直す(run の起動時 1 回ではない)", () => {
+    refreshGeneratedSessionInputs(paths);
+    const before = JSON.parse(fs.readFileSync(paths.generatedSettingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    expect(before.permissions?.allow ?? []).not.toContain("Bash(cargo *)");
+
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(paths.agentDir, "claude-settings.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(cargo *)"] } }),
+    );
+    refreshGeneratedSessionInputs(paths);
+
+    const after = JSON.parse(fs.readFileSync(paths.generatedSettingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    expect(after.permissions?.allow).toContain("Bash(cargo *)");
+  });
+
+  it("呼び出しのたびに .agent/PROMPT.local.md を読み直す(run の起動時 1 回ではない)", () => {
+    refreshGeneratedSessionInputs(paths);
+    const before = fs.readFileSync(paths.generatedSystemPromptPath, "utf8");
+    expect(before).not.toContain("リポジトリ固有の追加ルールのテキスト");
+
+    fs.mkdirSync(paths.agentDir, { recursive: true });
+    fs.writeFileSync(paths.promptLocalPath, "リポジトリ固有の追加ルールのテキスト");
+    refreshGeneratedSessionInputs(paths);
+
+    const after = fs.readFileSync(paths.generatedSystemPromptPath, "utf8");
+    expect(after).toContain("リポジトリ固有の追加ルールのテキスト");
+  });
+
+  it("生成に失敗しても例外を投げず、警告を出すだけで続行する", () => {
+    // generatedSettingsPath の親ディレクトリになる場所を、あらかじめ通常ファイルとして
+    // 作っておくと mkdirSync(recursive: true) が ENOTDIR で失敗する
+    const blocker = path.join(paths.stateDir, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+    const badPaths: Paths = { ...paths, generatedSettingsPath: path.join(blocker, "claude-settings.json") };
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(() => refreshGeneratedSessionInputs(badPaths)).not.toThrow();
+    expect(logSpy).toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args) => String(args[0])).join("\n");
+    expect(logged).toContain("再生成に失敗");
+    logSpy.mockRestore();
+  });
+});
+
 describe("buildExplorePrompt", () => {
   function ctx(overrides: Partial<ExploreContext> = {}): ExploreContext {
     return { trigger: "idle", goalChanged: null, newAnsweredIds: null, runningTasks: [], ...overrides };
@@ -2404,6 +2469,25 @@ describe("runRotate", () => {
     expect(runRotate(dir)).toBe("tasks 1 件, human-review 1 件");
     // 実際に archive へ移動されている(要約文字列だけのモックではない)
     expect(fs.existsSync(path.join(dir, "archive", "tasks", "T-001.md"))).toBe(true);
+  });
+
+  it("移動先に同名ファイルがあり衝突だけの場合は null を返す(空文字列ではない)", () => {
+    const tasksDir = path.join(dir, "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(path.join(tasksDir, "T-001.md"), serializeFrontmatter({ status: "completed" }, "本文"));
+    const archiveTasksDir = path.join(dir, "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(archiveTasksDir, "T-001.md"),
+      serializeFrontmatter({ status: "completed" }, "archive 側の本文"),
+    );
+
+    expect(runRotate(dir)).toBeNull();
+    // 衝突したファイルは移動されず、archive 側も上書きされない
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(archiveTasksDir, "T-001.md"), "utf8")).toBe(
+      serializeFrontmatter({ status: "completed" }, "archive 側の本文"),
+    );
   });
 });
 

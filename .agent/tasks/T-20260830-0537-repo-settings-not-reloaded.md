@@ -1,8 +1,9 @@
 ---
 title: "権限の追記がループを再起動するまで効かず、理由もどこにも出ない"
-status: ready
+status: completed
 priority: 2
 retries: 0
+note: "runClaude 冒頭で settings / system prompt を再生成。readRepoSettings の解析失敗を警告ログ化"
 createdAt: 2026-08-30T05:37:00.000Z
 ---
 
