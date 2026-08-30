@@ -4128,7 +4128,7 @@ export function classifyHumanReview(hr: HrEntry[]): {
  * `対応: <note>` を追記する(既存の探索セッションが人間向けに使ってきた記法を踏襲)。
  * note を省略すると本文は変更しない(Stage 1 の決定論クローズ用)。
  */
-function closeHumanReview(id: string, note?: string): void {
+export function closeHumanReview(id: string, note?: string): void {
   const file = path.join(repoPaths().humanReviewDir, `${id}.md`);
   const { data, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
   data.status = "closed";

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { serializeFrontmatter } from "./frontmatter.ts";
+import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
 import { readProcStartToken, writeRunnerRecord } from "./liveness.ts";
 import {
   AGENT_COMMIT_TRAILER,
@@ -17,6 +17,7 @@ import {
   buildTaskPrompt,
   byPriorityThenCreatedAt,
   classifyHumanReview,
+  closeHumanReview,
   collectSubagentStats,
   commitAgentDir,
   type Config,
@@ -102,6 +103,9 @@ import {
   worktreePathFor,
 } from "./worktree.ts";
 import { type LoopInput, planLoopStep } from "./scheduler.ts";
+
+/** 先頭 BOM(U+FEFF)。ソース中に不可視文字を直接書かないよう、コード値から組み立てる */
+const BOM = String.fromCharCode(0xfeff);
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -649,6 +653,56 @@ describe("taskFromFile", () => {
     fs.mkdirSync(path.join(dir, "T-007.md"));
 
     expect(taskFromFile(dir, "T-007.md")).toBeNull();
+  });
+
+  it("先頭 BOM 付きファイルでも status が読め、null にならない(一覧から消えない)", () => {
+    const text = BOM + ["---", "title: タイトル", "status: ready", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-009.md"), text);
+
+    expect(taskFromFile(dir, "T-009.md")).toEqual({
+      id: "T-009",
+      title: "タイトル",
+      status: "ready",
+      priority: 3,
+      dependencies: [],
+      retries: 0,
+      createdAt: "",
+      body: "本文",
+    });
+  });
+
+  it("CRLF 改行のファイルでも status が読め、null にならない(一覧から消えない)", () => {
+    const text = ["---", "title: タイトル", "status: ready", "---", "本文"].join("\r\n");
+    fs.writeFileSync(path.join(dir, "T-011.md"), text);
+
+    expect(taskFromFile(dir, "T-011.md")).toEqual({
+      id: "T-011",
+      title: "タイトル",
+      status: "ready",
+      priority: 3,
+      dependencies: [],
+      retries: 0,
+      createdAt: "",
+      body: "本文",
+    });
+  });
+
+  it("BOM 付き依存先タスクが一覧から消えないため、未完了の依存を持つ後続タスクが誤って runnable にならない", () => {
+    // 修正前は BOM 付きファイルが taskFromFile で null になり、依存先が「一覧にない」= 充足済み
+    // 扱いになって、未完了の依存を持つ後続タスクが誤って動き出していた
+    const depText = BOM + ["---", "title: 依存先", "status: working", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-020.md"), depText);
+    const text = ["---", "title: 後続", "status: ready", "dependencies: [T-020]", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-021.md"), text);
+
+    const tasks = fs
+      .readdirSync(dir)
+      .map((f) => taskFromFile(dir, f))
+      .filter((t): t is Task => t !== null);
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+
+    expect(byId.get("T-020")?.status).toBe("working");
+    expect(depSatisfied(byId, "T-020")).toBe(false);
   });
 });
 
@@ -1943,6 +1997,52 @@ describe("classifyHumanReview", () => {
   it("旧方式(status: answered)も answered に分類する", () => {
     const entry = hr({ status: "answered", body: "## 回答\n\n対応不要。" });
     expect(classifyHumanReview([entry]).answered).toEqual([entry]);
+  });
+});
+
+describe("closeHumanReview", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-close-hr-"));
+    useRepoRoot(dir);
+    fs.mkdirSync(repoPaths().humanReviewDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("CRLF の Human Review ファイルを close しても title/importance/createdAt が失われず、status が closed になる", () => {
+    // 修正前は parseFrontmatter が CRLF を判定できず、data が空({})のまま status だけ足して
+    // 書き戻すため、title/importance/createdAt が消え、壊れた元テキストが本文に埋め込まれていた
+    const text = [
+      "---",
+      "title: 確認事項タイトル",
+      "importance: BLOCK",
+      "createdAt: 2026-08-12T00:00:00.000Z",
+      "status: open",
+      "---",
+      "## 回答",
+      "",
+      "- [x] 対応不要(このままクローズしてよい)",
+    ].join("\r\n");
+    const file = path.join(repoPaths().humanReviewDir, "HR-20260812-01.md");
+    fs.writeFileSync(file, text);
+
+    closeHumanReview("HR-20260812-01");
+
+    const { data, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    expect(data).toEqual({
+      title: "確認事項タイトル",
+      importance: "BLOCK",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      status: "closed",
+    });
+    expect(body).toContain("対応不要(このままクローズしてよい)");
   });
 });
 

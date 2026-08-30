@@ -1,10 +1,9 @@
 ---
 title: "BOM/CRLF の記録ファイルが frontmatter 未パースになりタスクが消える"
-status: ready
+status: completed
 priority: 2
-dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -)"
+retries: 0
+note: "parseFrontmatter 冒頭で BOM 除去と CRLF→LF 正規化。main とのマージ衝突も解消済み"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
@@ -53,8 +52,10 @@ createdAt: 2026-08-30T05:09:36.602Z
 
 ## 試行履歴
 
-### 試行 1(2026-08-30T05:27:18.414Z, Supervisor 記録: マージ衝突)
+### 試行 2(2026-08-30T05:30:54.891Z, セッション記録)
 
-- 結果: main へのマージが衝突した(CHANGELOG.md)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない
+- 確認済みの事実: 実装は試行 1 のコミット 071c8a5 で完了済みだった。このセッションは main との
+  マージ衝突(CHANGELOG.md の「## 未リリース」に双方が別の項目を追記した加算的衝突)を解消し、
+  マージコミット 6a7f6ea を作成した。衝突は両方の項目を残す形で解消し、捨てた変更はない
+- 確認済みの事実: マージ後の作業ツリーで `npm run typecheck` / `npm run lint` / `npm run test`
+  がすべて通過(テスト 968 件、31 ファイル)。reviewer サブエージェントのレビューも指摘なしで通過
