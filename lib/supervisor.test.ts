@@ -648,7 +648,7 @@ describe("taskFromFile", () => {
     });
   });
 
-  it("廃止済みの updatedAt など未知の frontmatter フィールドは無視して読める", () => {
+  it("updatedAt など Task 型が知らない frontmatter フィールドは extra に退避して読める(失われない)", () => {
     const text = [
       "---",
       "title: タイトル",
@@ -671,9 +671,41 @@ describe("taskFromFile", () => {
       retries: 0,
       conflictRetries: 0,
       createdAt: "2026-08-01T00:00:00.000Z",
+      extra: { updatedAt: "2026-08-02T00:00:00.000Z" },
       body: "本文",
     });
     expect(task).not.toHaveProperty("updatedAt");
+  });
+
+  it("未知フィールドが無いファイルでは extra プロパティ自体が存在しない", () => {
+    const text = ["---", "title: タイトル", "status: ready", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-022.md"), text);
+
+    const task = taskFromFile(dir, "T-022.md");
+
+    expect(task).not.toHaveProperty("extra");
+  });
+
+  it("配列・数値を含む複数の未知フィールドも extra にまとめて退避される", () => {
+    const text = [
+      "---",
+      "title: タイトル",
+      "status: ready",
+      "updatedAt: 2026-08-02T00:00:00.000Z",
+      "reviewers: [alice, bob]",
+      "attempts: 4",
+      "---",
+      "本文",
+    ].join("\n");
+    fs.writeFileSync(path.join(dir, "T-023.md"), text);
+
+    const task = taskFromFile(dir, "T-023.md");
+
+    expect(task?.extra).toEqual({
+      updatedAt: "2026-08-02T00:00:00.000Z",
+      reviewers: ["alice", "bob"],
+      attempts: 4,
+    });
   });
 
   it("status 欠落なら null", () => {
@@ -839,6 +871,67 @@ describe("taskFrontmatter 往復", () => {
     const restored = taskFromFile(dir, `${original.id}.md`);
 
     expect(restored).toEqual(original);
+  });
+
+  it("extra を持つ Task も往復一致し、書き出したテキストに未知フィールドの行が残る", () => {
+    const original = makeTask({
+      id: "T-014",
+      extra: { updatedAt: "2026-08-15T00:00:00.000Z" },
+    });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+    expect(text).toContain("updatedAt: 2026-08-15T00:00:00.000Z");
+    fs.writeFileSync(path.join(dir, `${original.id}.md`), text);
+    const restored = taskFromFile(dir, `${original.id}.md`);
+
+    expect(restored).toEqual(original);
+  });
+
+  // cmdAbandon / cmdRetry を直接呼ぶ既存テストの枠組みがこのファイルに無いため(loadTask/saveTask
+  // が repoPaths() の対象リポジトリ固定で、CLI 関数自体も process.exit を伴う)、両コマンドが行う
+  // frontmatter 変更(status/retries/conflictRetries/abandonedAt の書き換えのみ、他フィールドは
+  // 保持)を taskFromFile → 変更 → taskFrontmatter → ファイル書き出し → taskFromFile の往復で再現し、
+  // 未知フィールド(updatedAt)が消えないことを確認する。
+  it("ccloop abandon / retry 相当の変更を経ても updatedAt など未知フィールドが失われない", () => {
+    const text = [
+      "---",
+      "title: タイトル",
+      "status: failed",
+      "priority: 3",
+      "retries: 2",
+      "createdAt: 2026-08-01T00:00:00.000Z",
+      "updatedAt: 2026-08-02T00:00:00.000Z",
+      "---",
+      "本文",
+    ].join("\n");
+    const file = path.join(dir, "T-015.md");
+    fs.writeFileSync(file, text);
+
+    // --- ccloop abandon 相当: abandonedAt を設定して書き戻す ---
+    const loaded = taskFromFile(dir, "T-015.md");
+    expect(loaded?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+    const abandoned: Task = { ...loaded!, abandonedAt: "2026-08-03T00:00:00.000Z" };
+    fs.writeFileSync(file, serializeFrontmatter(taskFrontmatter(abandoned), abandoned.body));
+
+    const afterAbandon = taskFromFile(dir, "T-015.md");
+    expect(afterAbandon?.abandonedAt).toBe("2026-08-03T00:00:00.000Z");
+    expect(afterAbandon?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+
+    // --- ccloop retry 相当: status/retries/conflictRetries/abandonedAt をリセットして書き戻す ---
+    const retried: Task = {
+      ...afterAbandon!,
+      status: "ready",
+      retries: 0,
+      conflictRetries: 0,
+      abandonedAt: undefined,
+    };
+    fs.writeFileSync(file, serializeFrontmatter(taskFrontmatter(retried), retried.body));
+
+    const afterRetry = taskFromFile(dir, "T-015.md");
+    expect(afterRetry?.status).toBe("ready");
+    expect(afterRetry).not.toHaveProperty("abandonedAt");
+    expect(afterRetry?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+    expect(fs.readFileSync(file, "utf8")).toContain("updatedAt: 2026-08-02T00:00:00.000Z");
   });
 });
 

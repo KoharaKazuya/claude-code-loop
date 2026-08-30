@@ -167,6 +167,9 @@ export interface Task {
   /** この時刻(ISO 8601)に `ccloop abandon` で断念を記録した(failed のみ設定されうる)。
    * 次回の rotate で .agent/archive/tasks/ へ退避される。`ccloop retry` で解除される */
   abandonedAt?: string;
+  /** Task 型が知らない frontmatter フィールド。読み書きで失われないようそのまま保持して書き戻す
+   *(例: 共通ルールがセッションに記録させる `updatedAt`)。未知フィールドが無ければ省略する */
+  extra?: Record<string, FrontmatterValue>;
   /** frontmatter 以降の本文(自己完結した説明・進捗の詳細) */
   body: string;
 }
@@ -288,6 +291,24 @@ function str(v: FrontmatterValue | undefined): string {
 /** status が不正なファイルの警告は 1 プロセスにつき 1 回だけ出す(ポーリング毎の繰り返しを防ぐ) */
 const warnedInvalidFiles = new Set<string>();
 
+/**
+ * taskFrontmatter が書き出す既知キー。これ以外は Task.extra に退避して往復で保持する。
+ * この定数と taskFrontmatter が返すキーが食い違うと未知フィールドの取りこぼし・重複が起きる。
+ */
+const KNOWN_TASK_FIELDS: ReadonlySet<string> = new Set([
+  "title",
+  "status",
+  "priority",
+  "dependencies",
+  "retries",
+  "conflictRetries",
+  "model",
+  "note",
+  "snoozeUntil",
+  "abandonedAt",
+  "createdAt",
+]);
+
 /** 1 ファイルを Task として読む。status が不正・読み込み不能なら null */
 export function taskFromFile(dir: string, fileName: string): Task | null {
   try {
@@ -310,6 +331,8 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
     if (str(data.model) !== "") task.model = str(data.model);
     if (str(data.snoozeUntil) !== "") task.snoozeUntil = str(data.snoozeUntil);
     if (str(data.abandonedAt) !== "") task.abandonedAt = str(data.abandonedAt);
+    const extraEntries = Object.entries(data).filter(([key]) => !KNOWN_TASK_FIELDS.has(key));
+    if (extraEntries.length > 0) task.extra = Object.fromEntries(extraEntries);
     return task;
   } catch {
     return null;
@@ -393,6 +416,8 @@ export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | unde
     snoozeUntil: t.snoozeUntil,
     abandonedAt: t.abandonedAt,
     createdAt: t.createdAt,
+    // 既知フィールドとの衝突は taskFromFile 側で KNOWN_TASK_FIELDS を使って分離済みのため起きない
+    ...t.extra,
   };
 }
 
