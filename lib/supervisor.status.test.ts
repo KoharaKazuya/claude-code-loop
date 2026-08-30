@@ -634,6 +634,52 @@ describe("collectStatusData / formatStatus", () => {
     });
   });
 
+  describe("次に実行予定のタスクが無いときの待ち理由表示", () => {
+    // 実時刻から hours 時間後の ISO 文字列。固定日時だと経過とともにスヌーズが解除されて壊れる
+    const futureIso = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+    it("next が空でスヌーズ待ちのみのとき「なし(スヌーズ待ち N 件、最短解除 <日時>)」と表示し、最短解除は複数中で最も早い時刻になる", () => {
+      // formatStatus() は内部で new Date() を使うため、固定日時を書くとその日時を過ぎた時点で
+      // スヌーズが解除されテストが壊れる。実時刻からの相対で未来の解除時刻を作る
+      const early = futureIso(24);
+      const late = futureIso(48);
+      writeTask("T-snoozed-late", { status: "ready", title: "スヌーズ中(解除が遅い方)", snoozeUntil: late });
+      writeTask("T-snoozed-early", { status: "ready", title: "スヌーズ中(解除が早い方)", snoozeUntil: early });
+
+      const data = collectStatusData(NOW);
+      expect(data.nextRunnableTasks).toEqual([]);
+      expect(data.snoozedTasks.map((t) => t.id)).toEqual(["T-snoozed-early", "T-snoozed-late"]);
+
+      const out = formatStatus();
+      expect(out).toContain(`なし(スヌーズ待ち 2 件、最短解除 ${early})`);
+    });
+
+    it("next が空で競合待ちとスヌーズ待ちが両方あるとき「なし(競合待ち N 件、スヌーズ待ち N 件、最短解除 <日時>)」と表示する", () => {
+      writeTask("T-running", { status: "ready", title: "実行中のタスク" });
+      writeTask("T-conflict", {
+        status: "ready",
+        title: "競合するタスク",
+        conflicts: ["T-running"],
+      });
+      const snoozeUntil = futureIso(24);
+      writeTask("T-snoozed", { status: "ready", title: "スヌーズ中のタスク", snoozeUntil });
+      fs.writeFileSync(
+        statePathOf(dir),
+        JSON.stringify({
+          runningSessions: [{ kind: "task", taskId: "T-running", startedAt: "2026-08-29T00:00:00.000Z" }],
+        }),
+      );
+
+      const data = collectStatusData(NOW);
+      expect(data.nextRunnableTasks).toEqual([]);
+      expect(data.conflictHeldTotal).toBe(1);
+      expect(data.snoozedTasks.map((t) => t.id)).toEqual(["T-snoozed"]);
+
+      const out = formatStatus();
+      expect(out).toContain(`なし(競合待ち 1 件、スヌーズ待ち 1 件、最短解除 ${snoozeUntil})`);
+    });
+  });
+
   describe("config.json の schemaVersion 食い違い", () => {
     it("config.json が無ければ configSchema は null で「要対応事項なし」のまま", () => {
       const data = collectStatusData(NOW);
