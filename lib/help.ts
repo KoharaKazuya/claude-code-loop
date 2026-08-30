@@ -41,7 +41,7 @@ export const TOP_LEVEL_HELP = `ccloop: Claude Code を使った自律開発ル�
     (既定の人間向け整形出力とは別の出口で、挙動は変わらない)`;
 
 export const SUBCOMMAND_HELP: Readonly<Record<string, string>> = {
-  run: `使い方: ccloop [--repo <path>] run
+  run: `使い方: ccloop [--repo <path>] run [--force]
 
 常駐ループを起動し、.agent/ の ready なタスクを優先度順に Claude Code セッションへ割り当てて
 実行する。ready なタスクが無ければまず探索セッションが動き、GOAL.md からタスクを導出する。
@@ -56,7 +56,11 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
   2回目          緊急停止(SIGTERM → 猶予後 SIGKILL)
   3回目          即 SIGKILL
 
-オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,
+同一リポジトリに対して ccloop run は同時に 1 つだけ実行できる。既に動いていると判定した場合は
+状態を一切書き換えずに起動を拒否する。
+
+オプション:
+  --force  同一リポジトリで既にループが動いていると判定されても起動する(通常は使わない)`,
 
   status: `使い方: ccloop [--repo <path>] status [--json]
 

@@ -1,10 +1,12 @@
 ---
 title: "同じリポジトリでループを二重起動したときに状態が壊れるのを防ぐ"
-status: ready
+status: completed
 priority: 2
 dependencies: [T-20260830-0424-liveness-unreadable-record]
 retries: 0
+note: "mainLoop 先頭に二重起動ガードを追加。--force で強制起動可"
 createdAt: 2026-08-30T04:43:06.417Z
+updatedAt: 2026-08-30T04:54:35.542Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。不具合の修理のため個別確認は取っていない。
@@ -52,3 +54,19 @@ createdAt: 2026-08-30T04:43:06.417Z
 
 `T-20260830-0424-liveness-unreadable-record`(生存記録が読めないときの表示)と
 `lib/liveness.ts` で衝突しうるため依存に入れている。先にそちらを取り込むこと。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T04:54:35.542Z, セッション記録)
+- 確認済みの事実: コミット c6dcc4c で完了条件をすべて実装した。`lib/liveness.ts` に純粋関数
+  `evaluateStartupGuard` を追加し、`mainLoop` の先頭(`generateSettings` より前)で評価して
+  拒否時は `process.exitCode = 1` で即 return する。`ccloop run --force` を逃げ道として追加し、
+  README・`lib/help.ts`・CHANGELOG「## 未リリース」に反映した。テストは `evaluateStartupGuard` の
+  6 variant 全網羅と、`mainLoop` が拒否時に `state.runningSessions` を書き換えない回帰テスト。
+  検証は `npm run typecheck` / `npm run lint` / `npm test`(31 files 949 tests)すべて成功。
+  判定方針は `.agent/decisions/D-20260830-0453-startup-guard-refusal-policy.md` に記録した。
+  reviewer サブエージェントのレビューは APPROVE。指摘(警告の接頭辞)は 2868beb で対応済み。
+- 未検証の推測: 実プロセス 2 本を同時起動する E2E 確認は行っていない(ユニット/統合テストのみ)。
+  非 Linux 環境では `procStartToken` が取れず PID 使い回しで誤って拒否する可能性が残るが、
+  `--force` で回避できる。
+- 次の試行への提案: 追加作業は不要。関連箇所を触る場合は上記 decision の判定方針を先に読むこと。

@@ -307,3 +307,67 @@ export function describeLoopLiveness(l: LoopLiveness): string {
       return `ループ本体: 不明 (この状態は別のホスト ${l.host} で記録されました。最終応答 ${l.heartbeatAt})`;
   }
 }
+
+/** `ccloop run` の起動可否。allow=false なら二重起動とみなして起動を拒否する */
+export type StartupGuard = { allow: true; warning: string | null } | { allow: false; message: string };
+
+/**
+ * 生存記録から「今 `ccloop run` を起動してよいか」を判定する(副作用なし)。
+ *
+ * 起動処理(generateSettings・recoverStartup など)は state を無条件に書き換えるため、後発の
+ * `ccloop run` がそれらを呼んでしまうと先発プロセスの実行状態を壊す。ここでの判定を、状態を
+ * 書き換える前に必ず確認させることでその事故を防ぐ。
+ *
+ * 判定は「少しでも先発が生きている可能性があれば拒否」に倒す。許可を誤ると実行状態の破壊という
+ * 重い代償を伴うが、拒否を誤っても起動をやり直せば済むだけで代償が軽いため、疑わしきは拒否側にする。
+ */
+export function evaluateStartupGuard(l: LoopLiveness): StartupGuard {
+  switch (l.status) {
+    case "running":
+      // 生死判定の最終結果が running である以上、二重起動そのもの。無条件に拒否する。
+      return {
+        allow: false,
+        message:
+          `このリポジトリでは既に ccloop run が動いています (PID ${l.pid} / 起動 ${l.startedAt})。\n` +
+          "同じリポジトリに対して ccloop run を同時に 2 つ起動すると、先に動いている方の実行状態が壊れます。\n" +
+          "先に停止するか、`ccloop status` で状態を確認してください。\n" +
+          "それでもどうしても起動する場合は `ccloop run --force` を使ってください(通常は使わない)。",
+      };
+    case "unknown":
+      if (l.reason === "heartbeat-stale") {
+        // PID は存在し、Linux では起動時刻トークンの照合も通っている(evaluateLoopLiveness 参照)。
+        // 心拍が止まっているだけで実体は生きている可能性を排除できないため、running と同様に拒否する。
+        return {
+          allow: false,
+          message:
+            `PID ${l.pid} の ccloop run から ${l.heartbeatAt} を最後に応答がありませんが、` +
+            "プロセス自体はまだ存在します。\n" +
+            "応答が止まっているだけで動作中の可能性があるため起動を拒否します。\n" +
+            `本当に落ちているなら、先に PID ${l.pid} のプロセスを停止してから起動し直してください。\n` +
+            "それでもどうしても起動する場合は `ccloop run --force` を使ってください(通常は使わない)。",
+        };
+      }
+      if (l.reason === "record-unreadable") {
+        // 記録が壊れているだけで先発プロセスの生死は分からない。ここで起動を拒否し続けると
+        // 記録が壊れたままループを二度と起動できなくなるため、必ず起動を許し警告に留める。
+        return {
+          allow: true,
+          warning: `生存記録を読み取れませんでした (${l.detail})。二重起動の判定ができないまま起動します。`,
+        };
+      }
+      // foreign-host: 別ホスト・別コンテナで記録された PID はこのプロセスからは確認しようがない。
+      // 判定不能なので起動は許し、警告だけ出す。
+      return {
+        allow: true,
+        warning: `生存記録が別のホスト (${l.host}) で記録されたものです。二重起動の判定ができないまま起動します。`,
+      };
+    case "stopped":
+      if (l.reason === "no-record") return { allow: true, warning: null };
+      // process-gone: 前回の記録はあるが PID (または起動時刻トークン) が食い違う = 異常終了。
+      // 起動は許すが、前回が正常に終わっていない旨だけ一言添える。
+      return {
+        allow: true,
+        warning: `前回の ccloop run (PID ${l.pid}) は異常終了した可能性があります。`,
+      };
+  }
+}
