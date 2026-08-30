@@ -217,6 +217,8 @@ export interface PendingRecoveryNote {
   extraLines?: string[];
   /** 未コミット差分の退避結果(あれば)。記録の後に試行履歴へ追記する内容 */
   leftovers?: { patchFile: string; paths: string[] };
+  /** 再生時に recordStartupRecoveryNote へ渡す失敗種別。未指定は "recovery" 扱い */
+  kind?: FailureKind;
 }
 
 interface State {
@@ -521,6 +523,9 @@ function normalizePendingRecoveryNote(raw: unknown): PendingRecoveryNote | null 
     leftoversRaw.paths.every((x) => typeof x === "string")
   ) {
     note.leftovers = { patchFile: leftoversRaw.patchFile, paths: leftoversRaw.paths as string[] };
+  }
+  if (typeof r.kind === "string" && Object.hasOwn(FAILURE_KIND_LABEL, r.kind)) {
+    note.kind = r.kind as FailureKind;
   }
   return note;
 }
@@ -1389,12 +1394,14 @@ function agentWorktreesByBranch(root: string, worktreeDir: string): Map<string, 
  * 既に completed / failed で決着しているタスクには何も書かない。completed は成果が
  * 無事に main へ渡った証拠であり、failed は既に人間の判断待ちで、どちらも
  * ここで retries を消費させる意味が無いため。extraLines は記録の末尾に足す補足。
+ * opts.kind は recordFailure へ渡す失敗種別。省略時は "recovery"(retries を消費)。
+ * マージ衝突を検知した経路では "merge-conflict" を渡し、conflictRetries を消費させる。
  */
 function recordStartupRecoveryNote(
   root: string,
   config: Config,
   taskId: string,
-  opts: { reason: string; at: string; extraLines?: string[] },
+  opts: { reason: string; at: string; extraLines?: string[]; kind?: FailureKind },
 ): boolean {
   const t = loadTaskIn(root, taskId);
   if (t === null) {
@@ -1406,7 +1413,7 @@ function recordStartupRecoveryNote(
     maxRetries: config.maxRetries,
     maxConflictRetries: config.maxConflictRetries,
     reason: opts.reason,
-    kind: "recovery",
+    kind: opts.kind ?? "recovery",
     at: opts.at,
   });
   if (opts.extraLines !== undefined && opts.extraLines.length > 0) {
@@ -1504,6 +1511,7 @@ function recoverOrphanBranch(
       recordStartupRecoveryNote(root, config, taskId, {
         reason: conflictReason,
         at,
+        kind: "merge-conflict",
       });
     } else {
       const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
@@ -1514,6 +1522,7 @@ function recoverOrphanBranch(
         reason: conflictReason,
         at,
         extraLines: [`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`],
+        kind: "merge-conflict",
       };
       // 改名の前にマーカーを書く。改名と記録の間で強制終了されても、次回起動時に
       // branch(改名前の名前)がもう存在しないことから改名済みと判り、記録を再生できる
@@ -1640,6 +1649,7 @@ function resumeInterruptedRecoveryNotes(
       reason: note.reason,
       at: note.at,
       extraLines: note.extraLines,
+      kind: note.kind,
     });
     handled.add(note.taskId);
     if (recorded) {
