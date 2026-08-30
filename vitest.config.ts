@@ -6,5 +6,6 @@ export default defineConfig({
   test: {
     include: ["lib/**/*.test.ts", "scripts/**/*.test.ts"],
     setupFiles: ["lib/test-setup.ts"],
+    globalSetup: ["lib/test-global-setup.ts"],
   },
 });
