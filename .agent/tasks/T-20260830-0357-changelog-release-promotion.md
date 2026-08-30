@@ -1,9 +1,10 @@
 ---
 title: "リリース時に変更履歴の未リリース節をバージョン見出しへ繰り上げる"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "選択肢 A(自動化)を採用。npm version の version フックで繰り上げ、release.mjs は読み取り専用の事前確認のみ"
 createdAt: 2026-08-30T03:57:06.341Z
 ---
 

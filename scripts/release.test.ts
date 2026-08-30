@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { checkRepoState, parseAheadBehind, parseArgs } from "./release.mjs";
+import { checkRepoState, describeChangelogPreview, nextVersion, parseAheadBehind, parseArgs } from "./release.mjs";
 
 describe("parseArgs", () => {
   it.each(["patch", "minor", "major"])("%s を受理する", (bump) => {
@@ -77,5 +77,41 @@ describe("checkRepoState", () => {
   it("複数条件に違反していると全エラーがまとめて返る", () => {
     const errors = checkRepoState({ branch: "feature/x", porcelain: " M a.txt\n", behind: 1 });
     expect(errors).toHaveLength(3);
+  });
+});
+
+describe("nextVersion", () => {
+  it("patch を 1 つ上げる", () => {
+    expect(nextVersion("0.4.1", "patch")).toBe("0.4.2");
+  });
+
+  it("minor を 1 つ上げ patch を 0 に戻す", () => {
+    expect(nextVersion("0.4.1", "minor")).toBe("0.5.0");
+  });
+
+  it("major を 1 つ上げ minor・patch を 0 に戻す", () => {
+    expect(nextVersion("0.4.1", "major")).toBe("1.0.0");
+  });
+
+  it("x.y.z 形式でない入力は例外を投げる", () => {
+    expect(() => nextVersion("0.4.1-beta.1", "patch")).toThrow(/x\.y\.z/);
+    expect(() => nextVersion("v0.4.1", "patch")).toThrow(/x\.y\.z/);
+    expect(() => nextVersion("0.4", "patch")).toThrow(/x\.y\.z/);
+  });
+});
+
+describe("describeChangelogPreview", () => {
+  it("CHANGELOG.md が無ければ null を返す(表示しない)", () => {
+    expect(describeChangelogPreview({ missing: true, entryCount: 0 })).toBeNull();
+  });
+
+  it("件数が 0 件なら空である旨を表示する", () => {
+    expect(describeChangelogPreview({ missing: false, entryCount: 0 })).toBe("変更履歴: 未リリース節は空です");
+  });
+
+  it("件数が 1 件以上なら繰り上がる件数を表示する", () => {
+    expect(describeChangelogPreview({ missing: false, entryCount: 3 })).toBe(
+      "変更履歴: 未リリースの 3 件がバージョン見出しへ繰り上がります",
+    );
   });
 });
