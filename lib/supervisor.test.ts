@@ -39,6 +39,7 @@ import {
   nextStopEscalation,
   normalizeState,
   overviewSectionLines,
+  parseDeps,
   parseNameStatus,
   parseOverview,
   partitionDeniedByRules,
@@ -57,6 +58,7 @@ import {
   recordPermissionDenials,
   recoverStartupIn,
   repoPaths,
+  resolvePriority,
   resolveTaskSlug,
   retryContextSection,
   type RunningSessionState,
@@ -3854,5 +3856,53 @@ describe("resolveTaskSlug", () => {
 
   it("--slug 未指定かつ日本語だけの title なら既定値 task にフォールバックする", () => {
     expect(resolveTaskSlug("タスクの整理", undefined)).toBe("task");
+  });
+});
+
+describe("resolvePriority", () => {
+  it("未指定なら既定値 3 を返す", () => {
+    expect(resolvePriority(undefined)).toBe(3);
+  });
+
+  it("整数文字列はそのまま数値にする", () => {
+    expect(resolvePriority("1")).toBe(1);
+  });
+
+  it("数値でない値は throw する", () => {
+    expect(() => resolvePriority("abc")).toThrow(/--priority/);
+  });
+
+  it("空文字は throw する", () => {
+    expect(() => resolvePriority("")).toThrow(/--priority/);
+  });
+
+  it("小数は throw する", () => {
+    expect(() => resolvePriority("1.5")).toThrow(/--priority/);
+  });
+
+  it("Infinity は throw する", () => {
+    expect(() => resolvePriority("Infinity")).toThrow(/--priority/);
+  });
+
+  it("空白のみの文字列は throw する(Number では 0 になってしまうため)", () => {
+    expect(() => resolvePriority("   ")).toThrow(/--priority/);
+  });
+
+  it("16 進数表記は throw する(Number では 16 になってしまうため)", () => {
+    expect(() => resolvePriority("0x10")).toThrow(/--priority/);
+  });
+});
+
+describe("parseDeps", () => {
+  it("未指定なら空配列を返す", () => {
+    expect(parseDeps(undefined)).toEqual([]);
+  });
+
+  it("カンマ区切りの後の空白を trim して登録する", () => {
+    expect(parseDeps("T-a, T-b")).toEqual(["T-a", "T-b"]);
+  });
+
+  it("末尾カンマや空要素は捨てる", () => {
+    expect(parseDeps("T-a,,T-b,")).toEqual(["T-a", "T-b"]);
   });
 });

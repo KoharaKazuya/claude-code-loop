@@ -3543,6 +3543,39 @@ export function resolveTaskSlug(title: string, explicit?: string): string {
   return slugify(title) ?? "task";
 }
 
+/**
+ * `--priority` の値を決定する。`raw` が未指定なら既定値 3(新規タスクは通常このあたりの優先度)を
+ * 返す。指定されている場合は整数であることのみ検証する(1 が最高優先度という意味はあるが、
+ * 1〜5 のような範囲は仕様として定まっていないため範囲チェックはしない)。不正な値(数値でない、
+ * 小数、Infinity、空文字など)は throw する。process.exit を伴わない純粋関数にして cmdAdd から
+ * 切り出し、単体テストできるようにしている。
+ *
+ * 判定に `Number()` の結果ではなく整数リテラルの正規表現を使うのは、`Number()` が空文字・
+ * 空白のみの文字列を 0 に、"0x10" を 16 に変換してしまい、ユーザーの意図と違う priority が
+ * エラーにならず書き込まれるためである。
+ */
+export function resolvePriority(raw: string | undefined): number {
+  if (raw === undefined) return 3;
+  if (!/^-?\d+$/.test(raw.trim())) {
+    throw new Error(`--priority は整数で指定する(例: 2): ${raw}`);
+  }
+  return Number(raw.trim());
+}
+
+/**
+ * `--deps` の値をカンマ区切りのタスク ID 配列に変換する。`raw` が未指定なら空配列を返す。
+ * "T-a, T-b" のようにカンマの後に空白を入れるのは自然な書き方なので各要素を trim し、
+ * 空要素(連続カンマや末尾カンマ由来)は捨てる。trim しないと " T-b" のような先頭空白付き ID が
+ * 登録され、依存関係が黙って無効になる。
+ */
+export function parseDeps(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function cmdAdd(argv: string[]): void {
   const positional = positionalArgs(argv);
   const title = positional[0];
@@ -3557,8 +3590,12 @@ export function cmdAdd(argv: string[]): void {
   const now = new Date().toISOString();
   const fallbackBody = positional.slice(1).join("\n") || title;
   let slug: string;
+  let priority: number;
+  let dependencies: string[];
   try {
     slug = resolveTaskSlug(title, opt("slug"));
+    priority = resolvePriority(opt("priority"));
+    dependencies = parseDeps(opt("deps"));
   } catch (err) {
     console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -3567,8 +3604,8 @@ export function cmdAdd(argv: string[]): void {
     id: newTaskId(slug, now),
     title,
     status: "ready",
-    priority: Number(opt("priority") ?? 3),
-    dependencies: opt("deps")?.split(",").filter(Boolean) ?? [],
+    priority,
+    dependencies,
     retries: 0,
     createdAt: now,
     body: opt("desc") ?? fallbackBody,
