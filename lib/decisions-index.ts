@@ -8,6 +8,9 @@
  * rotate 実行時に無用な差分が出ないようにするため)。
  */
 
+/** `.agent/decisions/` 配下の index.md のファイル名 */
+export const DECISIONS_INDEX_FILE = "index.md";
+
 /** `- [ ] [<ID>](<ID>.md) — <要約>` 形式の行にマッチ。要約は省略可 */
 export const DECISIONS_INDEX_LINE_RE = /^- \[( |x|X)\] \[([^\]]+)\]\([^)]*\)(?:\s*—\s*(.*))?\s*$/;
 

@@ -1,9 +1,10 @@
 ---
 title: "status の未承認決定カウントで index.md のチェック済みを除外する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "loadPendingDecisions が index.md のチェック状態を参照するようにし、テスト 5 件を追加"
 createdAt: 2026-08-30T10:07:16.000Z
 ---
 

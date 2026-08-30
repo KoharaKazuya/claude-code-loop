@@ -34,6 +34,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { styleText } from "node:util";
 import { normalizeConfig, type Config } from "./config.ts";
+import { DECISIONS_INDEX_FILE, parseDecisionsIndex } from "./decisions-index.ts";
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
 import { usageOf } from "./help.ts";
 import { buildId, disambiguateId, isValidSlug, slugify, SLUG_MAX_LENGTH } from "./ids.ts";
@@ -5174,9 +5175,12 @@ interface PendingDecisions {
 }
 
 /**
- * `.agent/decisions/` に残っている `D-*.md`(index.md 等は除く)を未承認の決定として読む。
- * チェック済みの決定は rotateDecisions が archive へ移動するため、ここに残っているものが
- * 「人間の確認待ち」。ディレクトリが無い・読めない場合は 0 件として扱う(例外を投げない)。
+ * `.agent/decisions/` に残っている `D-*.md`(index.md 等は除く)のうち、index.md で
+ * まだ `[x]` チェックが付いていないものを未承認の決定として読む。チェック済みの実体ファイルを
+ * archive へ移動するのは rotate の責務であり、status はそれを行わない読み取り専用の集計(index.md
+ * を書き換えたり rotate を呼んだりしない)。人間がチェックを付けてから次回 rotate で archive へ
+ * 移るまでの間は、実体ファイルは残っていても index.md 側で除外する。
+ * ディレクトリが無い・読めない場合は 0 件として扱う(例外を投げない)。
  */
 export function loadPendingDecisions(decisionsDir: string = repoPaths().decisionsDir): PendingDecisions {
   let ids: string[];
@@ -5190,6 +5194,17 @@ export function loadPendingDecisions(decisionsDir: string = repoPaths().decision
   } catch {
     return { count: 0, preview: [] };
   }
+
+  let checkedIds: Set<string>;
+  try {
+    const indexText = fs.readFileSync(path.join(decisionsDir, DECISIONS_INDEX_FILE), "utf8");
+    const { entries } = parseDecisionsIndex(indexText);
+    checkedIds = new Set(entries.filter((e) => e.checked).map((e) => e.id));
+  } catch {
+    checkedIds = new Set();
+  }
+  ids = ids.filter((id) => !checkedIds.has(id));
+
   const preview = ids.slice(0, 3).map((id) => {
     let title = id;
     try {
