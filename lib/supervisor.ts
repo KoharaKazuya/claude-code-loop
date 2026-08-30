@@ -91,6 +91,10 @@ let currentPaths: Paths | null = null;
 /**
  * 対象リポジトリのパス一式。未確定なら cwd から解決する
  * (テストや直接 import での利用を、CLI を経由せずとも動くようにするため)。
+ *
+ * ただしこのフォールバックに依存してよいのは設定・タスク・state の読み書きまでである。
+ * worktree やブランチを作成・削除・改名・マージする関数は、対象リポジトリのルートを
+ * 引数で受け取ること(cwd 由来の暗黙値のまま呼ばれると、意図しないリポジトリのブランチを壊す)。
  */
 export function repoPaths(): Paths {
   if (currentPaths === null) currentPaths = createPaths(resolveRepoRoot());
@@ -1322,7 +1326,7 @@ function recoverOrphanBranch(
 
   if (outcome.result === "conflict") {
     if (worktreeExists) {
-      reproduceMergeConflict(worktree, { root });
+      reproduceMergeConflict(worktree, root);
       const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
       counts.keptConflicts += 1;
       recordStartupRecoveryNote(root, config, taskId, {
@@ -2890,6 +2894,12 @@ export interface TaskSessionContext {
   /** コンフリクト解消の継続セッションか */
   resuming: boolean;
   startedAt: string;
+  /**
+   * 対象リポジトリのルート。破壊的な git 操作(worktree/ブランチの削除・改名・マージ)の
+   * 対象を、プロセスの cwd 由来の暗黙値ではなく起動時に確定した値で固定するため、
+   * 起動時の文脈として持ち回す
+   */
+  root: string;
 }
 
 /** `git status --porcelain -- .agent` に何か出るか(自動コミットで流し切れたかの確認) */
@@ -2920,8 +2930,9 @@ function startTaskSession(
     return null;
   }
 
-  commitAgentDir();
-  if (agentDirDirty()) {
+  const root = repoPaths().root;
+  commitAgentDir(undefined, root);
+  if (agentDirDirty(root)) {
     log(`警告: .agent の差分をコミットできなかったため ${task.id} を起動しない(人間の並行作業を保護)`);
     return null;
   }
@@ -2955,7 +2966,7 @@ function startTaskSession(
   // cwd はリポジトリ本体のまま。CLI が --worktree の worktree へ移動する(worktree 自体は
   // WorktreeCreate hook が作る / 既にあれば再利用する)
   const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
-  const result = runClaude(config, buildTaskPrompt(config, t, { resuming, startedAt, deadline }), model, repoPaths().root, {
+  const result = runClaude(config, buildTaskPrompt(config, t, { resuming, startedAt, deadline }), model, root, {
     extraArgs: ["--worktree", t.id],
     env: {
       CLAUDE_AGENT_SESSION_KIND: "task",
@@ -2965,7 +2976,7 @@ function startTaskSession(
     },
   });
 
-  return { ctx: { task: t, model, branch, worktree, launchStatus: t.status, resuming, startedAt }, result };
+  return { ctx: { task: t, model, branch, worktree, launchStatus: t.status, resuming, startedAt, root }, result };
 }
 
 /**
@@ -3081,8 +3092,7 @@ export function taskFileChangedOnBranch(root: string, branch: string, taskId: st
  * 衝突はすべて内容の対立(substantive)なので、ここでは何も先行解決せず、衝突マーカーを
  * 残したまま次のセッションへ渡す。
  */
-function reproduceMergeConflict(worktree: string, opts: { root?: string } = {}): void {
-  const root = opts.root ?? repoPaths().root;
+function reproduceMergeConflict(worktree: string, root: string): void {
   try {
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root }).toString().trim();
     execFileSync("git", ["merge", head], { cwd: worktree, stdio: "ignore" });
@@ -3153,12 +3163,7 @@ export function loadSalvageFailures(root: string = repoPaths().root): SalvageFai
 }
 
 /** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する */
-function salvageWorktreeDiff(
-  taskId: string,
-  worktree: string,
-  at: Date,
-  root: string = repoPaths().root,
-): SalvageOutcome {
+function salvageWorktreeDiff(taskId: string, worktree: string, at: Date, root: string): SalvageOutcome {
   try {
     const patchFile = path.join(patchesDirOf(root), patchFileName(taskId, at));
     const paths = salvagePatch(worktree, patchFile);
@@ -3177,10 +3182,10 @@ function salvageWorktreeDiff(
  * 成果を消さずに人間が後から拾えるようにするため。既に片付け済み(成功経路)なら何もしない。
  * 試行履歴へ追記する説明行を返す。
  */
-function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: Date): string[] {
+function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: Date, root: string): string[] {
   if (!fs.existsSync(worktree)) return [];
   const lines: string[] = [];
-  const salvage = salvageWorktreeDiff(taskId, worktree, at);
+  const salvage = salvageWorktreeDiff(taskId, worktree, at, root);
   if (salvage.kind === "saved") {
     lines.push(
       `- 未コミット差分を \`${salvage.patchFile}\` へ退避した(${formatDiffPathList(salvage.paths)})。復元は \`git apply ${salvage.patchFile}\``,
@@ -3192,9 +3197,9 @@ function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: 
     return lines;
   }
   try {
-    removeWorktree(repoPaths().root, worktree);
+    removeWorktree(root, worktree);
     const parked = parkedBranchNameFor(taskId, at);
-    renameBranch(repoPaths().root, branch, parked);
+    renameBranch(root, branch, parked);
     lines.push(`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`);
     log(`${taskId}: worktree を削除し、ブランチを ${parked} へ退避した`);
   } catch (err) {
@@ -3240,7 +3245,7 @@ export function describeMergeOutcome(outcome: MergeOutcome): string {
  * 失敗させる原因になりうるため(実際に本番でこの経路が発生し main が固まった)、
  * 書き込み側は必ずこれを先にチェックしてスキップする。
  */
-export function skipMainWriteIfGitBusy(taskId: string, root: string = repoPaths().root): boolean {
+export function skipMainWriteIfGitBusy(taskId: string, root: string): boolean {
   if (!gitOperationInProgress(root)) return false;
   log(`警告: ${taskId}: main がマージ途中のため記録を書かない(復旧後の再試行で再評価される)`);
   return true;
@@ -3344,9 +3349,13 @@ export function classifyTaskSessionResult(input: {
  *
  * タイムアウト・クラッシュ・レートリミットで終わったセッションでもマージは必ず試みる
  * (途中までコミットされた成果を worktree に閉じ込めないため)。
+ *
+ * worktree/ブランチの破壊的操作の対象リポジトリは、プロセスの cwd 由来の暗黙値ではなく
+ * `ctx.root`(起動時に確定した値)を使う。`.agent/` や state の読み書きは共有の `repoPaths()` を
+ * 経由するが、こちらは対象を取り違えてもリポジトリの履歴を壊さない読み書きであるため区別している。
  */
 export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: SessionResult): void {
-  const { task, model, branch, worktree } = ctx;
+  const { task, model, branch, worktree, root } = ctx;
   const taskId = task.id;
   const now = new Date();
   const at = now.toISOString();
@@ -3388,7 +3397,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
       commitAgentDir(undefined, worktree);
 
       // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる
-      taskFileChanged = taskFileChangedOnBranch(repoPaths().root, branch, taskId);
+      taskFileChanged = taskFileChangedOnBranch(root, branch, taskId);
 
       // 3. 統合。中断された git 操作が残ったまま終わったセッションは worktree をそのまま残す
       mergeStuck = worktreeConflictPending(worktree);
@@ -3399,8 +3408,8 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
         // main 側の `.agent/` に未コミットの差分が残っていると、取り込み側の変更と
         // 競合して git merge が「ローカル変更の上書き」を検知し blocked になりうるため、
         // マージ直前に main 側もコミットしておく
-        commitAgentDir();
-        outcome = mergeAgentBranch(repoPaths().root, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
+        commitAgentDir(undefined, root);
+        outcome = mergeAgentBranch(root, branch, taskId, task.title, AGENT_COMMIT_TRAILER);
         mergeLabel = outcome.result;
         // main が実際に変わったときだけ探索理由(mainDirty)を立てる。
         // クラッシュ・衝突・マージ不能では立てない(見直す対象が増えていないため)
@@ -3409,7 +3418,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
         if (outcome.result === "conflict") {
           conflictPaths = outcome.paths;
           conflictKind = outcome.conflictKind;
-          reproduceMergeConflict(worktree);
+          reproduceMergeConflict(worktree, root);
         } else if (outcome.result === "wedged") {
           // main が git merge --abort の失敗で固まっている。ここでは stderr を全文ログに
           // 残すだけに留め、worktree・ブランチ・stale なコンフリクトには一切触れない
@@ -3417,13 +3426,13 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
           log(`error: ${taskId}: ${describeMergeOutcome(outcome)}`);
         } else if (outcome.result !== "blocked") {
           // blocked は main 側でマージを開始すらできていない状態。worktree に手を触れず次の試行へ回す
-          const salvage = salvageWorktreeDiff(taskId, worktree, now);
+          const salvage = salvageWorktreeDiff(taskId, worktree, now, root);
           if (salvage.kind === "saved") leftovers = salvage;
           if (salvage.kind === "failed") {
             log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
           } else {
-            removeWorktree(repoPaths().root, worktree);
-            if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+            removeWorktree(root, worktree);
+            if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
           }
         }
       }
@@ -3453,7 +3462,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
     recordPermissionDenials(taskId, res, worktree);
 
     const fail = (reason: string, kind: FailureKind): void => {
-      if (skipMainWriteIfGitBusy(taskId)) return;
+      if (skipMainWriteIfGitBusy(taskId, root)) return;
       const t = loadTask(taskId);
       if (t === null) {
         log(`警告: ${taskId} のタスクファイルが見つからないため結果を記録できない`);
@@ -3470,7 +3479,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
       // 情報なので main の変化として扱う。リトライ待ちに戻るだけの場合は立てない
       if (mainChangedByTaskOutcome(null, t.status)) mainChangedSinceExplore = true;
       if (t.status === "failed") {
-        const lines = parkTaskWorktree(taskId, worktree, branch, now);
+        const lines = parkTaskWorktree(taskId, worktree, branch, now, root);
         if (lines.length > 0) t.body = `${t.body}\n${lines.join("\n")}`;
       }
       saveTask(t);
@@ -3536,7 +3545,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
     }
 
     // 7. 退避したパッチを試行履歴へ残す(worktree はもう無く、ここにしか手がかりがない)
-    if (leftovers !== null && !skipMainWriteIfGitBusy(taskId)) {
+    if (leftovers !== null && !skipMainWriteIfGitBusy(taskId, root)) {
       const t = loadTask(taskId);
       if (t === null) {
         log(`警告: 未コミット差分を記録しようとしたが ${taskId} が見つからない`);

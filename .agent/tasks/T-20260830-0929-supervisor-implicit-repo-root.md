@@ -1,9 +1,10 @@
 ---
 title: "supervisor の破壊的操作が repoPaths() の暗黙デフォルトに依存している"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "破壊的操作(park/salvage/reproduceMergeConflict/skipMainWriteIfGitBusy)の root を必須引数化し、TaskSessionContext.root で持ち回す形にした"
 createdAt: 2026-08-30T09:29:00.000Z
 ---
 
