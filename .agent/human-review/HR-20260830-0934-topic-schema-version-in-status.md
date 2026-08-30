@@ -1,7 +1,8 @@
 ---
 title: "設定ファイルが古いことを ccloop status の「要対応」に出すか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-1053-status-config-schema-outdated]
 createdAt: 2026-08-30T09:34:06.873Z
 ---
 

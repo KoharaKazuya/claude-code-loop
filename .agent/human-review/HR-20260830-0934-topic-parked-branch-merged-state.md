@@ -1,7 +1,8 @@
 ---
 title: "退避された作業ブランチが「もう消してよいもの」かどうかを status に出すか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-1053-status-parked-branch-merged-state]
 createdAt: 2026-08-30T09:34:06.873Z
 ---
 
