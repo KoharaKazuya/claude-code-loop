@@ -184,6 +184,10 @@ npm test
 (`bin/ccloop` は自身の実体から見た `../lib` を `CCLOOP_HOME` として解決するランチャー)。feature 自体の
 動作は `devcontainer features test` で検証する(CI の `feature-test` ジョブと同じ手順)。
 
+`lib/` の変更を PATH 上の `ccloop` コマンドへ実際に反映する(手元のインストールを最新の中身へ入れ替える)
+手順は [docs/architecture.md「手元の ccloop をリポジトリの最新の中身へ入れ替える」](docs/architecture.md#手元の-ccloop-をリポジトリの最新の中身へ入れ替える)
+を参照。手元が古いかどうかの見分け方もそこにある。
+
 リリースは `npm run release <patch|minor|major>` を実行する。`npm version` を直接叩いてはいけない
 (`npm run release` のみを使う)。このスクリプトは main ブランチであること・作業ツリーがクリーンであること・
 origin/main と同期していることを確認したうえで `check:version` / `typecheck` / `lint` / `test` を実行し、
