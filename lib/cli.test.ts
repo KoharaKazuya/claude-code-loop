@@ -747,3 +747,206 @@ describe("ccloop retry(子プロセスで検証)", () => {
     }
   });
 });
+
+describe("ccloop abandon(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+  let tasksDir: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-abandon-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    tasksDir = path.join(repo, ".agent", "tasks");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, ...args], {
+      encoding: "utf8",
+    });
+    return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+  }
+
+  /** .agent/tasks/<id>.md を frontmatter + 本文で直接書く(cmdAdd を経由せず任意の status を作るため) */
+  function writeTask(id: string, fields: Record<string, string | number>, body = "本文"): string {
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(tasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  /** .agent/archive/tasks/<id>.md を直接書く(rotate を経由せず退避済みの状態を作るため) */
+  function writeArchivedTask(id: string, fields: Record<string, string | number>, body = "本文"): string {
+    const archiveTasksDir = path.join(repo, ".agent", "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(archiveTasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  it("failed タスクを abandon すると abandonedAt が書かれ exit 0", () => {
+    const id = "T-20260101-0000-fail-task";
+    const file = writeTask(id, {
+      title: "失敗タスク",
+      status: "failed",
+      priority: 3,
+      retries: 2,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["abandon", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`タスク ${id} を断念として記録しました。`);
+    expect(result.stdout).toContain(".agent/archive/tasks/");
+    expect(result.stdout).toContain(`ccloop retry ${id}`);
+    const text = fs.readFileSync(file, "utf8");
+    expect(text).toContain("status: failed");
+    expect(text).toMatch(/abandonedAt: \d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("ready など failed でないタスクは exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0001-ready-task";
+    const file = writeTask(id, {
+      title: "未着手タスク",
+      status: "ready",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const before = fs.readFileSync(file, "utf8");
+
+    const result = run(["abandon", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("failed タスクにのみ使えます");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("completed タスクは exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0002-done-task";
+    const file = writeTask(id, {
+      title: "完了タスク",
+      status: "completed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const before = fs.readFileSync(file, "utf8");
+
+    const result = run(["abandon", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("failed タスクにのみ使えます");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("存在しない ID は exit 1 で stderr に「見つかりません」が含まれる", () => {
+    const result = run(["abandon", "T-no-such-id"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("見つかりません");
+  });
+
+  it("archive にのみ存在する ID を指定すると exit 1 で退避済みを案内する", () => {
+    const id = "T-20260101-0000-archived-task";
+    writeArchivedTask(id, {
+      title: "退避済みタスク",
+      status: "failed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["abandon", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`タスク ${id} はすでに .agent/archive/tasks/ へ退避されています。`);
+  });
+
+  it("実行中のタスク(state.json の runningSessions に登録済み)は exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0003-running-task";
+    const file = writeTask(id, {
+      title: "実行中タスク",
+      status: "failed",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const before = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(
+      statePathOf(repo),
+      JSON.stringify({
+        runningSessions: [{ kind: "task", taskId: id, startedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+    );
+
+    const result = run(["abandon", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("実行中です");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("二重に abandon すると exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0004-twice-task";
+    const file = writeTask(id, {
+      title: "二重断念タスク",
+      status: "failed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const first = run(["abandon", id]);
+    expect(first.status).toBe(0);
+    const afterFirst = fs.readFileSync(file, "utf8");
+
+    const second = run(["abandon", id]);
+
+    expect(second.status).toBe(1);
+    expect(second.stderr).toContain("すでに断念済みです");
+    expect(fs.readFileSync(file, "utf8")).toBe(afterFirst);
+  });
+
+  it("abandon 済みタスクに retry すると abandonedAt が消え status: ready に戻る", () => {
+    const id = "T-20260101-0005-retry-after-abandon";
+    const file = writeTask(id, {
+      title: "断念後にやり直すタスク",
+      status: "failed",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const abandonResult = run(["abandon", id]);
+    expect(abandonResult.status).toBe(0);
+
+    const retryResult = run(["retry", id]);
+
+    expect(retryResult.status).toBe(0);
+    expect(retryResult.stdout).toContain("断念(abandonedAt)を解除しました。");
+    const text = fs.readFileSync(file, "utf8");
+    expect(text).toContain("status: ready");
+    expect(text).not.toContain("abandonedAt");
+  });
+
+  it("引数なし・2 個以上・-- で始まる引数は usageOf(\"abandon\") を stderr へ出して exit 1", () => {
+    for (const args of [[], ["a", "b"], ["--bogus"]]) {
+      const result = run(["abandon", ...args]);
+      expect(result.status).toBe(1);
+      expect(result.stderr.startsWith("使い方: ccloop")).toBe(true);
+    }
+  });
+});

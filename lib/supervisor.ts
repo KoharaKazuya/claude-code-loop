@@ -157,6 +157,9 @@ export interface Task {
   model?: string;
   /** この時刻(ISO 8601)まで選択対象から外す(任意) */
   snoozeUntil?: string;
+  /** この時刻(ISO 8601)に `ccloop abandon` で断念を記録した(failed のみ設定されうる)。
+   * 次回の rotate で .agent/archive/tasks/ へ退避される。`ccloop retry` で解除される */
+  abandonedAt?: string;
   /** frontmatter 以降の本文(自己完結した説明・進捗の詳細) */
   body: string;
 }
@@ -295,6 +298,7 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
     if (str(data.note) !== "") task.note = str(data.note);
     if (str(data.model) !== "") task.model = str(data.model);
     if (str(data.snoozeUntil) !== "") task.snoozeUntil = str(data.snoozeUntil);
+    if (str(data.abandonedAt) !== "") task.abandonedAt = str(data.abandonedAt);
     return task;
   } catch {
     return null;
@@ -376,6 +380,7 @@ export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | unde
     model: t.model,
     note: t.note,
     snoozeUntil: t.snoozeUntil,
+    abandonedAt: t.abandonedAt,
     createdAt: t.createdAt,
   };
 }
@@ -4409,9 +4414,73 @@ export function cmdRetry(argv: string[]): void {
   task.conflictRetries = 0;
   const hadSnooze = task.snoozeUntil !== undefined;
   if (hadSnooze) task.snoozeUntil = undefined;
+  const hadAbandoned = task.abandonedAt !== undefined;
+  if (hadAbandoned) task.abandonedAt = undefined;
   saveTask(task);
   if (hadSnooze) console.log("待機指定(snoozeUntil)を解除しました。");
+  if (hadAbandoned) console.log("断念(abandonedAt)を解除しました。");
   console.log(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0 / conflictRetries: 0)。`);
+}
+
+/**
+ * `ccloop abandon <タスクID>`。failed のタスクに断念を記録する(status は failed のまま変えない)。
+ * `ccloop status` の「[要対応] failed タスク」から即座に外れ、次回の rotate で
+ * `.agent/archive/tasks/` へ退避される。取り消しは `ccloop retry <ID>`。
+ * 実行中のタスクや failed 以外の status は対象外(安全のため何も変更せず終了する)。
+ */
+export function cmdAbandon(argv: string[]): void {
+  if (argv.length !== 1 || argv[0]!.startsWith("-")) {
+    console.error(usageOf("abandon"));
+    process.exit(1);
+  }
+  const id = argv[0]!;
+
+  if (!fs.existsSync(taskFilePath(id))) {
+    if (fs.existsSync(archivedTaskFilePath(id))) {
+      console.error(`タスク ${id} はすでに .agent/archive/tasks/ へ退避されています。`);
+      console.error("やり直す場合はファイルを .agent/tasks/ へ戻してから再実行してください。");
+      process.exit(1);
+    }
+    console.error(`タスクが見つかりません: ${id}`);
+    const suggestions = suggestSimilarTaskIds(id, allTaskIds());
+    if (suggestions.length > 0) {
+      console.error("もしかして:");
+      for (const s of suggestions) console.error(`  ${s}`);
+    }
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const runningTaskIds = new Set(
+    state.runningSessions.map((s) => s.taskId).filter((tid): tid is string => tid !== undefined),
+  );
+  if (runningTaskIds.has(id)) {
+    console.error(`タスク ${id} は実行中です。セッションの終了を待ってから再実行してください。`);
+    process.exit(1);
+  }
+
+  const task = loadTask(id);
+  if (task === null) {
+    // ファイルは存在するが frontmatter の status が不正で読めない(通常起こらない想定)
+    console.error(`タスクが見つかりません: ${id}`);
+    process.exit(1);
+  }
+  if (task.status !== "failed") {
+    console.error(
+      `ccloop abandon は failed タスクにのみ使えます(タスク ${id} の status は ${task.status} です)。何も変更していません。`,
+    );
+    process.exit(1);
+  }
+  if (task.abandonedAt !== undefined) {
+    console.error(`タスク ${id} は ${task.abandonedAt} にすでに断念済みです。何も変更していません。`);
+    process.exit(1);
+  }
+
+  task.abandonedAt = new Date().toISOString();
+  saveTask(task);
+  console.log(`タスク ${id} を断念として記録しました。`);
+  console.log("次回のローテーションで .agent/archive/tasks/ へ退避されます。");
+  console.log(`取り消す場合は \`ccloop retry ${id}\` を使ってください。`);
 }
 
 // ---------- 表示共通(色・ステータス表現) ----------
@@ -5423,7 +5492,9 @@ export function formatStatus(): string {
   for (const l of overviewLines) push(`  ${l}`);
 
   const { openBlock, openReview, answered } = data.humanReview;
-  const failed = by("failed");
+  // 断念済み(abandonedAt 設定済み)の failed タスクは、次回ローテーションで
+  // archive へ退避されるまでの間も要対応から即座に外す
+  const failed = by("failed").filter((t) => t.abandonedAt === undefined);
   const blocked = by("blocked");
   /**
    * open 行の表示用ラベル。何を聞かれているかが一目で分かるよう summary を添え、回答本文はあるが
@@ -5448,7 +5519,7 @@ export function formatStatus(): string {
   section("要対応", "open な Human Review (BLOCK) — タスクまたはフェーズ進行が停止中:", openBlock.map(hrLine));
   section(
     "要対応",
-    "failed タスク — タスクファイルの status を ready に戻して再挑戦するか、断念を判断:",
+    "failed タスク — `ccloop retry <ID>` で再挑戦するか、`ccloop abandon <ID>` で断念する:",
     failed.map((t) => `${t.id}: ${t.title}${t.note ? `\n      note: ${t.note}` : ""}`),
   );
   section(

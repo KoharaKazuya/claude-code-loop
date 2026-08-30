@@ -21,6 +21,7 @@ export const TOP_LEVEL_HELP = `ccloop: Claude Code を使った自律開発ル�
   list     タスク一覧(--json で機械可読出力)
   add      タスクを追加する
   retry    failed / blocked タスクをやり直す(status を ready に戻す)
+  abandon  failed タスクを断念する(要対応から外し、次回ローテーションで archive へ退避する)
   init     .agent/ の雛形を配置する
   doctor   実行環境の自己診断(副作用なし)
   version  ccloop 自身のバージョンを表示する
@@ -107,6 +108,15 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
 failed / blocked のタスクを再実行対象に戻す: status を ready に、retries と conflictRetries を
 0 にする(snoozeUntil が設定されていれば併せて解除する)。実行中のタスクは対象外。
 戻す前に、そのタスクの直前の失敗理由(note と本文の「## 試行履歴」の最後の記録)を表示する。
+
+オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,
+
+  abandon: `使い方: ccloop [--repo <path>] abandon <タスクID>
+
+failed のタスクに断念を記録する(status: failed のまま abandonedAt を記録するだけで、
+status 自体は変えない)。記録した時点で \`ccloop status\` の「[要対応] failed タスク」から外れ、
+次回のローテーションで .agent/archive/tasks/ へ退避される。実行中のタスクは対象外。
+取り消したい場合は \`ccloop retry <タスクID>\` で断念を解除できる。
 
 オプション: なし(--repo はグローバルオプション。サブコマンドの前後どちらでも指定可)`,
 

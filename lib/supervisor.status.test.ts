@@ -115,6 +115,23 @@ describe("collectStatusData / formatStatus", () => {
     expect(out).not.toContain("要対応事項なし");
   });
 
+  it("abandonedAt が設定された failed タスクは「要対応」の failed タスク一覧から外れる", () => {
+    writeTask("T-failed-active", { status: "failed", title: "断念していない失敗タスク" });
+    writeTask("T-failed-abandoned", {
+      status: "failed",
+      title: "断念した失敗タスク",
+      abandonedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const data = collectStatusData(NOW);
+    // 集計上は abandonedAt の有無に関わらず failed のまま数える(rotate で退避されるまでの間)
+    expect(data.tasks.filter((t) => t.status === "failed")).toHaveLength(2);
+
+    const out = formatStatus();
+    expect(out).toContain("T-failed-active");
+    expect(out).not.toContain("T-failed-abandoned");
+  });
+
   it("片付けの衝突で同じ ID がアクティブ側と archive 側の両方に completed で残っても 1 件として数える", () => {
     // T-a は片付けの移動が衝突で見送られ、アクティブ側にも archive 側にも同じ ID で残っている想定
     writeTask("T-a", { status: "completed", title: "完了したタスクA" });
