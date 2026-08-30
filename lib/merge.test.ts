@@ -65,6 +65,7 @@ describe("classifyConflicts", () => {
     expect(classifyConflicts(stages, TASK_ID)).toEqual({
       kind: "mechanical",
       ownTaskFile: `.agent/tasks/${TASK_ID}.md`,
+      decisionsIndex: null,
     });
   });
 
@@ -73,6 +74,37 @@ describe("classifyConflicts", () => {
     expect(classifyConflicts(stages, TASK_ID)).toEqual({
       kind: "mechanical",
       ownTaskFile: `.agent/tasks/${TASK_ID}.md`,
+      decisionsIndex: null,
+    });
+  });
+
+  it(".agent/decisions/index.md が add/add(stage {2,3})なら decisionsIndex として mechanical、hasBase は false", () => {
+    const stages = new Map([[".agent/decisions/index.md", new Set([2, 3])]]);
+    expect(classifyConflicts(stages, TASK_ID)).toEqual({
+      kind: "mechanical",
+      ownTaskFile: null,
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: false },
+    });
+  });
+
+  it(".agent/decisions/index.md が modify/modify(stage {1,2,3})でも decisionsIndex として mechanical、hasBase は true", () => {
+    const stages = new Map([[".agent/decisions/index.md", new Set([1, 2, 3])]]);
+    expect(classifyConflicts(stages, TASK_ID)).toEqual({
+      kind: "mechanical",
+      ownTaskFile: null,
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: true },
+    });
+  });
+
+  it("own-task-file と decisions/index.md の両方が衝突しても mechanical(両方は排他ではなく併存しうる)", () => {
+    const stages = new Map([
+      [`.agent/tasks/${TASK_ID}.md`, new Set([2, 3])],
+      [".agent/decisions/index.md", new Set([1, 2, 3])],
+    ]);
+    expect(classifyConflicts(stages, TASK_ID)).toEqual({
+      kind: "mechanical",
+      ownTaskFile: `.agent/tasks/${TASK_ID}.md`,
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: true },
     });
   });
 
@@ -125,17 +157,37 @@ describe("mergeCommitMessage", () => {
     expect(message.split("\n")[0]).toBe("Merge branch 'agent/T-001'");
   });
 
-  it("resolvedTaskFilePath があれば本文にタスクファイル採用の記録を入れる", () => {
-    const message = mergeCommitMessage(
-      "agent/T-001",
-      "T-001",
-      "タイトル",
-      TRAILER,
-      ".agent/tasks/T-001.md",
-    );
+  it("resolved.ownTaskFile があれば本文にタスクファイル採用の記録を入れる", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+    });
     expect(message).toBe(
       "Merge branch 'agent/T-001' (T-001 タイトル)\n\n" +
         "タスクファイルはブランチ側を採用: .agent/tasks/T-001.md\n\n" +
+        TRAILER,
+    );
+  });
+
+  it("resolved.decisionsIndex があれば本文に決定インデックス統合の記録を入れる", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      decisionsIndex: ".agent/decisions/index.md",
+    });
+    expect(message).toBe(
+      "Merge branch 'agent/T-001' (T-001 タイトル)\n\n" +
+        "決定インデックスは両ブランチの項目を統合: .agent/decisions/index.md\n\n" +
+        TRAILER,
+    );
+  });
+
+  it("resolved に両方あれば本文に両方の記録を入れる", () => {
+    const message = mergeCommitMessage("agent/T-001", "T-001", "タイトル", TRAILER, {
+      ownTaskFile: ".agent/tasks/T-001.md",
+      decisionsIndex: ".agent/decisions/index.md",
+    });
+    expect(message).toBe(
+      "Merge branch 'agent/T-001' (T-001 タイトル)\n\n" +
+        "タスクファイルはブランチ側を採用: .agent/tasks/T-001.md\n" +
+        "決定インデックスは両ブランチの項目を統合: .agent/decisions/index.md\n\n" +
         TRAILER,
     );
   });
@@ -360,6 +412,146 @@ describe("mergeAgentBranch", () => {
     expect(git(["ls-files", "-u"]).trim()).toBe("");
     expect(git(["status", "--porcelain"]).trim()).toBe("");
     expect(git(["log", "-1", "--pretty=%B"])).toContain("タスクファイルはブランチ側を採用: .agent/tasks/T-042.md");
+  });
+
+  const DECISIONS_HEADER =
+    "# 決定インデックス\n\nチェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。\n\n";
+
+  it("main 側と branch 側が .agent/decisions/index.md の先頭にそれぞれ別の行を追記すると機械的に解決し、両方の行が ID 降順で入る", () => {
+    const indexPath = ".agent/decisions/index.md";
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-001](D-001.md) — 既存の決定\n`);
+    commitAll("init: 決定インデックスの基点を追加する");
+    git(["branch", "agent/T-020"]);
+
+    writeFile(
+      indexPath,
+      `${DECISIONS_HEADER}- [ ] [D-002](D-002.md) — main 側で追加した決定\n- [ ] [D-001](D-001.md) — 既存の決定\n`,
+    );
+    commitAll("docs(agent): main 側の決定記録を追加する");
+
+    git(["checkout", "agent/T-020"]);
+    writeFile(
+      indexPath,
+      `${DECISIONS_HEADER}- [ ] [D-003](D-003.md) — branch 側で追加した決定\n- [ ] [D-001](D-001.md) — 既存の決定\n`,
+    );
+    commitAll("docs(agent): branch 側の決定記録を追加する");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-020", "T-020", "index.md のみの衝突", TRAILER);
+
+    expect(outcome.result).toBe("renumbered");
+    const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
+    const lines = text.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines).toEqual([
+      "- [ ] [D-003](D-003.md) — branch 側で追加した決定",
+      "- [ ] [D-002](D-002.md) — main 側で追加した決定",
+      "- [ ] [D-001](D-001.md) — 既存の決定",
+    ]);
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+    expect(git(["log", "-1", "--pretty=%B"])).toContain(
+      "決定インデックスは両ブランチの項目を統合: .agent/decisions/index.md",
+    );
+  });
+
+  it("index.md が真の add/add(共通祖先に存在しない)でも機械的に解決し、両方の行が ID 降順で入る(hasBase===false の経路)", () => {
+    const indexPath = ".agent/decisions/index.md";
+    // 分岐前のコミットには index.md が存在しない(base に無い = 真の add/add)
+    writeFile(".gitkeep", "");
+    commitAll("init: index.md 無しの基点を追加する");
+    git(["branch", "agent/T-050"]);
+
+    // header は両側で同一にする(食い違うと機械的解決を諦める仕様のため)
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-101](D-101.md) — main 側で新規追加した決定\n`);
+    commitAll("docs(agent): main 側の決定記録を追加する");
+
+    git(["checkout", "agent/T-050"]);
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-102](D-102.md) — branch 側で新規追加した決定\n`);
+    commitAll("docs(agent): branch 側の決定記録を追加する");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-050", "T-050", "index.md の真の add/add", TRAILER);
+
+    expect(outcome).toEqual({ result: "renumbered" });
+    const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
+    const lines = text.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines).toEqual([
+      "- [ ] [D-102](D-102.md) — branch 側で新規追加した決定",
+      "- [ ] [D-101](D-101.md) — main 側で新規追加した決定",
+    ]);
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+  });
+
+  it("own-task-file と index.md が同時に衝突しても機械的に解決される", () => {
+    const indexPath = ".agent/decisions/index.md";
+    writeFile(".agent/tasks/T-030.md", "base\n");
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-001](D-001.md) — 既存の決定\n`);
+    commitAll("init: 基点ファイルを追加する");
+    git(["branch", "agent/T-030"]);
+
+    writeFile(".agent/tasks/T-030.md", "main(Supervisor)が書いた失敗記録\n");
+    writeFile(
+      indexPath,
+      `${DECISIONS_HEADER}- [ ] [D-002](D-002.md) — main 側で追加した決定\n- [ ] [D-001](D-001.md) — 既存の決定\n`,
+    );
+    commitAll("docs(agent): main 側の変更");
+
+    git(["checkout", "agent/T-030"]);
+    writeFile(".agent/tasks/T-030.md", "branch(セッション)が書いた最終状態\n");
+    writeFile(
+      indexPath,
+      `${DECISIONS_HEADER}- [ ] [D-003](D-003.md) — branch 側で追加した決定\n- [ ] [D-001](D-001.md) — 既存の決定\n`,
+    );
+    commitAll("docs(agent): branch 側の変更");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-030", "T-030", "own-task-file と index.md の同時衝突", TRAILER);
+
+    expect(outcome.result).toBe("renumbered");
+    expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-030.md"), "utf8")).toBe(
+      "branch(セッション)が書いた最終状態\n",
+    );
+    const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
+    const lines = text.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines).toEqual([
+      "- [ ] [D-003](D-003.md) — branch 側で追加した決定",
+      "- [ ] [D-002](D-002.md) — main 側で追加した決定",
+      "- [ ] [D-001](D-001.md) — 既存の決定",
+    ]);
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+    const message = git(["log", "-1", "--pretty=%B"]);
+    expect(message).toContain("タスクファイルはブランチ側を採用: .agent/tasks/T-030.md");
+    expect(message).toContain("決定インデックスは両ブランチの項目を統合: .agent/decisions/index.md");
+  });
+
+  it("index.md と個別の決定ファイル(.agent/decisions/D-xxx.md)が同時に衝突したら substantive になり merge が abort される", () => {
+    const indexPath = ".agent/decisions/index.md";
+    writeFile(indexPath, DECISIONS_HEADER);
+    commitAll("init: 決定インデックスの基点を追加する");
+    git(["branch", "agent/T-040"]);
+
+    // main 側は index.md へ独自に追記し、同じ ID(= 同じ分・同じ slug)の決定ファイルも追加する
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-020-dup](D-020-dup.md) — main 側の決定\n`);
+    writeFile(".agent/decisions/D-020-dup.md", "main content\n");
+    commitAll("docs(agent): main 側の決定記録");
+
+    // branch 側は独立に同じ ID の決定ファイルを別内容で追加し、index.md へも別内容を追記する
+    git(["checkout", "agent/T-040"]);
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-020-dup](D-020-dup.md) — branch 側の決定\n`);
+    writeFile(".agent/decisions/D-020-dup.md", "branch content\n");
+    commitAll("docs(agent): branch 側の決定記録");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-040", "T-040", "index.md と個別決定ファイルの同時衝突", TRAILER);
+
+    expect(outcome.result).toBe("conflict");
+    if (outcome.result !== "conflict") throw new Error("unreachable");
+    expect([...outcome.paths].sort()).toEqual([".agent/decisions/D-020-dup.md", indexPath]);
+    expect(outcome.conflictKind).toBe("substantive");
+    expect(fs.existsSync(path.join(dir, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
   });
 
   it("entry guard: main が既に別の git 操作の途中なら、その衝突に触れず即座に blocked を返す", () => {

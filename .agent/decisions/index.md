@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0221-decisions-index-mechanical-merge](D-20260830-0221-decisions-index-mechanical-merge.md) — decisions/index.md のマージ衝突を 3-way マージで機械的に解決する
 - [ ] [D-20260830-0209-decisions-index-approval-archive](D-20260830-0209-decisions-index-approval-archive.md) — 決定のアーカイブ条件を件数基準から人間のチェックに変更する
 - [ ] [D-20260830-0118-devcontainer-json-manual-version](D-20260830-0118-devcontainer-json-manual-version.md) — .devcontainer/devcontainer.json のバージョン同期を廃止し手動更新にする
 - [ ] [D-20260829-0314-defer-agent-commit](D-20260829-0314-defer-agent-commit.md) — `.agent/` の自動コミットを wait 時の即時実行からタイミング集約(JIT)へ変更
