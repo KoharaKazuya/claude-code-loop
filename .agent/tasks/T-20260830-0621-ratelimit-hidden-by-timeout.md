@@ -1,9 +1,10 @@
 ---
 title: "利用上限が時間切れに隠れると、やり直し回数を消費しモデルまで昇格して費用が増える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "分類順を「利用上限 → タイムアウト」に変更。タイムアウト時は stderr のみを判定対象にして誤検出を抑えた"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 

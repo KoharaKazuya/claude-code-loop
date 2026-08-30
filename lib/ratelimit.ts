@@ -14,3 +14,20 @@ export function detectRateLimit(text: string, exitCode: number | null): boolean 
     text,
   );
 }
+
+/**
+ * セッション結果からレートリミットを検出する。`--output-format json` を使っているため、
+ * タイムアウトで kill されたセッションは CLI が結果 JSON を出力し終える前に殺される。
+ * つまりタイムアウトしたセッションの stdout に上限らしき文言が載っていても、それは CLI が
+ * 実行中に出したものではなく(既存出力の断片や偶然の一致であり)誤検出の元になる。
+ * CLI が実行中に出す通知は stderr に出るため、タイムアウト時は stderr のみを判定対象にする。
+ */
+export function detectSessionRateLimit(res: {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}): boolean {
+  const text = res.timedOut ? res.stderr : `${res.stdout}\n${res.stderr}`;
+  return detectRateLimit(text, res.exitCode);
+}

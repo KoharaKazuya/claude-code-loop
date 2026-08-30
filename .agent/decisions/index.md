@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-0801-ratelimit-under-timeout-evidence](D-20260830-0801-ratelimit-under-timeout-evidence.md) — タイムアウトに隠れた利用上限は stderr の文言だけを根拠に判定する
 - [ ] [D-20260830-0730-conflict-resolution-anchor-strategy](D-20260830-0730-conflict-resolution-anchor-strategy.md) — マージ衝突の解消は main 先端との差分アンカーを避けて行う
 - [ ] [D-20260830-0618-stopped-loop-running-sessions-display](D-20260830-0618-stopped-loop-running-sessions-display.md) — ループ停止時の「実行中のタスク」節は経過時間を出さず記録扱いで表示する
 - [ ] [D-20260830-0614-invalid-task-files-in-action-section](D-20260830-0614-invalid-task-files-in-action-section.md) — status が不正なタスクファイルは「要対応」節の 1 セクションとして出す
