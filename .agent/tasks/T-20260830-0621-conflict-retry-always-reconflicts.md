@@ -4,8 +4,9 @@ status: failed
 priority: 2
 dependencies: []
 retries: 3
-note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0621-conflict-retry-always-reconflicts.md)(元: 失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks…)"
+note: "3 回ともマージ衝突で失敗し failed。ただし成果は T-20260830-0825-rescue-conflict-retry-work が main へ取り込み済み"
 createdAt: 2026-08-30T06:21:28.294Z
+updatedAt: 2026-08-30T08:13:38.542Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。
@@ -78,17 +79,82 @@ Supervisor が残した記録から確認できる)。
 
 ## 試行履歴
 
+### 試行 1(2026-08-30T07:47:40.000Z, セッション記録)
+- 確認済みの事実: 仮説を実験で裏取りした。両側が同じ挿入点へ追記すると正しい 3-way マージでも
+  必ず衝突し、解消しても main が進めば再発する。`.gitattributes` の `merge=union` を効かせると
+  衝突せず両側が残る(union はマージ実行側のツリー = main に存在して初めて効く)。
+- 確認済みの事実: 真因は `classifyConflicts`(lib/merge.ts:124)が「衝突パスが担当タスクファイルと
+  `.agent/decisions/index.md` だけ」のときしか機械解決せず、他のパスが 1 つでも混ざると全体を
+  substantive に倒すこと。CHANGELOG.md が混ざったせいでタスクファイル分まで手作業に回っていた。
+- 確認済みの事実: コミット 630f914 で `.gitattributes`(`/CHANGELOG.md merge=union`)、
+  `conflictResolutionSection` への申し送り追加、`docs/architecture.md` の節追加、判断記録 2 件
+  (D-20260830-0745 / D-20260830-0746)を入れた。`npm run typecheck` と
+  `npx vitest run lib/supervisor.test.ts`(373 件)が通ることを確認済み。
+  `git check-attr merge` で union が CHANGELOG.md にのみ効くことを確認済み。
+- 次の試行への提案: 残りは「マージ衝突を retries と別枠にする」実装(`conflictRetries` /
+  `maxConflictRetries` 既定 5)。方針は D-20260830-0745 に確定済みなのでそこから始めること。
+
+### 試行 1 の続き(2026-08-30T07:57:40.000Z, セッション記録)
+- 確認済みの事実: コミット f6bf85b で衝突リトライの別枠化を実装した(`Task.conflictRetries` /
+  `config.maxConflictRetries` 既定 5、schemaVersion 2 への移行、`ccloop retry` の両カウンタリセット、
+  `ccloop status` の `衝突=N` 表示)。モデルエスカレーション判定は `retries` のみのまま。
+- 確認済みの事実: コミット 0f57a7b でレビュー指摘(変更履歴への追記漏れ、解消方針の使い分けが
+  未明文化)に対応した。
+- 確認済みの事実: `npm run typecheck` / `npm run lint` / `npx vitest run`(31 ファイル 1029 件)が
+  すべて通ることを最終状態で確認済み。reviewer は 630f914 に対し REQUEST_CHANGES(変更履歴の
+  追記漏れ)を出し、0f57a7b で解消した。
+- 未検証の推測: `maxConflictRetries` は既存の `.agent/config.json`(schemaVersion 1)を壊さないよう
+  `checkInt` の必須検証ではなく既定値補完(`triage` / `parallel` と同じ流儀)にしてある。
+  `ccloop init --upgrade` 経由の移行は実リポジトリでは未実行。
+
 ### 試行 1(2026-08-30T07:58:07.813Z, Supervisor 記録: マージ衝突)
 
 - 結果: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.finish.test.ts)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
 
+### 試行 2(2026-08-30T08:10:03.708Z, セッション記録)
+- 確認済みの事実: main とのマージ衝突 2 件を解消しコミット 4fcfcde を作った。
+  `.agent/decisions/index.md` は両側の新規項目 4 件を ID 降順で残した(捨てた項目は無い)。
+  `lib/supervisor.finish.test.ts` は main 側が追加したテスト (c') をそのまま取り込み、
+  (d) はブランチ側の衝突リトライ上限版の題名・本文を採用した。CHANGELOG.md は
+  `.gitattributes` の union 属性により衝突せず両側の項目が残った(本タスクの成果が
+  実際に効いたことの実地確認になっている)。
+- 確認済みの事実: reviewer が観点 A(マージ解消)を APPROVE、観点 B で「やること」項目 5
+  (回帰テスト)の未達を指摘した。コミット d6f5c35 で `lib/merge.test.ts` に 2 件追加して解消した。
+  1 件目は「タスクファイルの試行履歴追記 + CHANGELOG.md の両側追記」が同時に起きても
+  `renumbered`(機械的解決)になることを確認する。2 件目は対照で、`.gitattributes` が無いと
+  同じ状況が `conflict`(conflictKind: substantive)になることを確認する。union 属性が
+  効いていること自体がテストで固定された。
+- 確認済みの事実: 最終状態で `npm run typecheck` / `npm run lint` / `npm test`
+  (31 ファイル 1054 件)が通ることを確認済み。
+- 確認済みの事実: own-task-file の機械的解決は「ブランチ側を丸ごと採用」であり、両側の内容を
+  マージするわけではない(追加したテストで実挙動として確認)。つまり衝突時、main 側の
+  タスクファイルへ Supervisor が書いた試行履歴エントリは失われる。実害は小さいが、
+  この挙動を前提に読むこと。
+- 確認済みの事実: 作業中に `.agent/decisions/index.md` へ未掲載の決定記録が 9 件あることを
+  発見した。承認の導線を素通りする問題なので、本タスクでは直さず
+  `T-20260830-0810-decisions-index-missing-entries` として登録した。
+- 確認済みの事実: 本セッションはタスクファイルを main へ寄せず `## 試行履歴` を残したまま終える。
+  `docs/architecture.md:241-253` の「main へ寄せよ」という指示は衝突が `retries` を食い潰す前提の
+  防御策であり、その前提が本タスクで無くなったため。判断は `D-20260830-0812` に記録した。
+
 ### 試行 2(2026-08-30T08:13:38.210Z, Supervisor 記録: マージ衝突)
 
 - 結果: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0621-conflict-retry-always-reconflicts.md, CHANGELOG.md, docs/architecture.md, lib/supervisor.test.ts, lib/supervisor.ts)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 3(2026-08-30T08:13:38.542Z, セッション記録)
+
+- 確認済みの事実: 3 回目の衝突は前回と別物で、main に並走タスク 2 件(分割ヒント、探索時の片付け)が
+  入ったことによる実質的な衝突だった。`retryContextSection` は両側が同じ関数を書き換えていたため、
+  衝突リトライ別枠カウント(ブランチ側)と分割ヒントの lines 配列化(main 側)を統合して解消した。
+  `lib/supervisor.test.ts` / `docs/architecture.md` / `.agent/decisions/index.md` は両側の追加を両方残した。
+- 確認済みの事実: main 側の機械記録(retries: 2、試行 1・2 の Supervisor 記録)をブランチ側へ
+  取り込んだ(own-task-file の機械的解決はブランチ側を丸ごと採用するため、取り込まないと失われる)。
+- 確認済みの事実: マージ基点 c20ae88 以降の main の前進は自タスクファイルのみ(git diff --stat で確認)。
+  よって最終マージで再衝突しうるのは own-task-file だけで、インストール版 0.4.1 でも機械解決される。
 
 ### 試行 3(2026-08-30T08:23:29.090Z, Supervisor 記録: マージ衝突)
 
@@ -97,3 +163,9 @@ Supervisor が残した記録から確認できる)。
 - この記録は機械的検出のみで、失敗原因の分析ではない
 - 未コミット差分を `/home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z.patch` へ退避した(`CHANGELOG.md`, `lib/ratelimit.test.ts`, `lib/ratelimit.ts`, `lib/supervisor.finish.test.ts`, `lib/supervisor.ts`)。復元は `git apply /home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z.patch`
 - コミット済みの成果はブランチ `agent/conflict/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z` に退避した(削除していない)
+
+### 救出(2026-08-30, T-20260830-0825-rescue-conflict-retry-work のセッション記録)
+
+- 確認済みの事実: 退避ブランチのコミット済み成果一式を
+  `T-20260830-0825-rescue-conflict-retry-work` のブランチへ取り込んだ。`status` は `failed` のまま
+  (実際に 3 回失敗した事実を残すため)。以降このタスクを再実行する必要はない。
