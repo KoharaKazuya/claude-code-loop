@@ -57,7 +57,13 @@ import {
   type MergeOutcome,
   type WedgedStep,
 } from "./merge.ts";
-import { ccloopHome, createPaths, resolveRepoRoots, type Paths } from "./paths.ts";
+import {
+  compareSchemaVersion,
+  CURRENT_SCHEMA_VERSION,
+  readSchemaVersion,
+  type SchemaCompat,
+} from "./migrations.ts";
+import { AGENT_DIR_NAME, ccloopHome, createPaths, resolveRepoRoots, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
@@ -167,6 +173,9 @@ export interface Task {
   /** この時刻(ISO 8601)に `ccloop abandon` で断念を記録した(failed のみ設定されうる)。
    * 次回の rotate で .agent/archive/tasks/ へ退避される。`ccloop retry` で解除される */
   abandonedAt?: string;
+  /** Task 型が知らない frontmatter フィールド。読み書きで失われないようそのまま保持して書き戻す
+   *(例: 共通ルールがセッションに記録させる `updatedAt`)。未知フィールドが無ければ省略する */
+  extra?: Record<string, FrontmatterValue>;
   /** frontmatter 以降の本文(自己完結した説明・進捗の詳細) */
   body: string;
 }
@@ -203,6 +212,21 @@ export interface RunningSessionState {
   taskFileChanged?: boolean;
 }
 
+/** 起動時復旧が worktree・ブランチを畳む前に書き残す「これから残す記録」。
+ *  削除と記録の間で強制終了されても、次回起動時にこれを再生して痕跡を残す */
+export interface PendingRecoveryNote {
+  taskId: string;
+  /** 畳む対象のブランチ名。再生時に「まだ残っていないか」の判定に使う */
+  branch: string;
+  reason: string;
+  at: string;
+  extraLines?: string[];
+  /** 未コミット差分の退避結果(あれば)。記録の後に試行履歴へ追記する内容 */
+  leftovers?: { patchFile: string; paths: string[] };
+  /** 再生時に recordStartupRecoveryNote へ渡す失敗種別。未指定は "recovery" 扱い */
+  kind?: FailureKind;
+}
+
 interface State {
   /** 実行中セッションの一覧。探索セッションも並列枠を 1 つ消費するため、
    * タスクセッションと探索セッションの合計が parallel.maxSessions を超えることはない
@@ -237,6 +261,9 @@ interface State {
   stopMode?: StopMode;
   sessionCount: number;
   updatedAt: string | null;
+  /** 起動時復旧が worktree・ブランチの削除・改名の前に書き残した、再生待ちの記録の一覧。
+   * 次回起動時にブランチ・worktree が既に無ければ再生して消す(recoverOrphanBranch 参照) */
+  pendingRecoveryNotes?: PendingRecoveryNote[];
 }
 
 // ---------- ファイル IO(すべて同期・アトミック書き込み) ----------
@@ -288,6 +315,24 @@ function str(v: FrontmatterValue | undefined): string {
 /** status が不正なファイルの警告は 1 プロセスにつき 1 回だけ出す(ポーリング毎の繰り返しを防ぐ) */
 const warnedInvalidFiles = new Set<string>();
 
+/**
+ * taskFrontmatter が書き出す既知キー。これ以外は Task.extra に退避して往復で保持する。
+ * この定数と taskFrontmatter が返すキーが食い違うと未知フィールドの取りこぼし・重複が起きる。
+ */
+const KNOWN_TASK_FIELDS: ReadonlySet<string> = new Set([
+  "title",
+  "status",
+  "priority",
+  "dependencies",
+  "retries",
+  "conflictRetries",
+  "model",
+  "note",
+  "snoozeUntil",
+  "abandonedAt",
+  "createdAt",
+]);
+
 /** 1 ファイルを Task として読む。status が不正・読み込み不能なら null */
 export function taskFromFile(dir: string, fileName: string): Task | null {
   try {
@@ -310,6 +355,8 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
     if (str(data.model) !== "") task.model = str(data.model);
     if (str(data.snoozeUntil) !== "") task.snoozeUntil = str(data.snoozeUntil);
     if (str(data.abandonedAt) !== "") task.abandonedAt = str(data.abandonedAt);
+    const extraEntries = Object.entries(data).filter(([key]) => !KNOWN_TASK_FIELDS.has(key));
+    if (extraEntries.length > 0) task.extra = Object.fromEntries(extraEntries);
     return task;
   } catch {
     return null;
@@ -395,6 +442,8 @@ export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | unde
     snoozeUntil: t.snoozeUntil,
     abandonedAt: t.abandonedAt,
     createdAt: t.createdAt,
+    // 既知フィールドとの衝突は taskFromFile 側で KNOWN_TASK_FIELDS を使って分離済みのため起きない
+    ...t.extra,
   };
 }
 
@@ -463,6 +512,43 @@ function normalizeRunningSessions(r: Record<string, unknown>): RunningSessionSta
   return [];
 }
 
+/** PendingRecoveryNote 1 件分のゆるい検証。taskId / branch / reason / at が非空文字列でなければ
+ *  要素ごと落とす(壊れた 1 件のために配列全体を捨てない) */
+function normalizePendingRecoveryNote(raw: unknown): PendingRecoveryNote | null {
+  const r = isPlainObject(raw) ? raw : {};
+  if (typeof r.taskId !== "string" || r.taskId === "") return null;
+  if (typeof r.branch !== "string" || r.branch === "") return null;
+  if (typeof r.reason !== "string" || r.reason === "") return null;
+  if (typeof r.at !== "string" || r.at === "") return null;
+  const note: PendingRecoveryNote = { taskId: r.taskId, branch: r.branch, reason: r.reason, at: r.at };
+  if (Array.isArray(r.extraLines) && r.extraLines.every((x) => typeof x === "string")) {
+    note.extraLines = r.extraLines as string[];
+  }
+  const leftoversRaw = isPlainObject(r.leftovers) ? r.leftovers : {};
+  if (
+    typeof leftoversRaw.patchFile === "string" &&
+    Array.isArray(leftoversRaw.paths) &&
+    leftoversRaw.paths.every((x) => typeof x === "string")
+  ) {
+    note.leftovers = { patchFile: leftoversRaw.patchFile, paths: leftoversRaw.paths as string[] };
+  }
+  if (typeof r.kind === "string" && Object.hasOwn(FAILURE_KIND_LABEL, r.kind)) {
+    note.kind = r.kind as FailureKind;
+  }
+  return note;
+}
+
+/** pendingRecoveryNotes を正規化する。配列でなければ空。要素ごとにゆるく検証し、壊れた要素は落とす */
+function normalizePendingRecoveryNotes(raw: unknown): PendingRecoveryNote[] {
+  if (!Array.isArray(raw)) return [];
+  const result: PendingRecoveryNote[] = [];
+  for (const item of raw) {
+    const note = normalizePendingRecoveryNote(item);
+    if (note !== null) result.push(note);
+  }
+  return result;
+}
+
 /** state.json の生の中身から State を組み立てる。旧スカラー形式は runningSessions へ合成する */
 export function normalizeState(raw: unknown): State {
   const r = isPlainObject(raw) ? raw : {};
@@ -486,6 +572,8 @@ export function normalizeState(raw: unknown): State {
   if (typeof r.supervisorSourceHash === "string" || r.supervisorSourceHash === null)
     state.supervisorSourceHash = r.supervisorSourceHash;
   if (r.stopMode === "none" || r.stopMode === "clean") state.stopMode = r.stopMode;
+  const pendingRecoveryNotes = normalizePendingRecoveryNotes(r.pendingRecoveryNotes);
+  if (pendingRecoveryNotes.length > 0) state.pendingRecoveryNotes = pendingRecoveryNotes;
   return state;
 }
 
@@ -1151,10 +1239,42 @@ export interface StartupRecovery {
   /** finishTaskSession の後始末(worktree・ブランチの削除)が完了する前に中断され、
    * ブランチ・worktree は既に消えているが status が更新されないまま残っていたタスク数 */
   interruptedFinishes: number;
+  /** recoverOrphanBranch が worktree・ブランチを畳む前に書いたマーカーが残ったまま
+   * 中断され、次回起動時にその記録を再生したタスク数 */
+  resumedRecoveryNotes: number;
 }
 
 export function startupRecoveryTotal(r: StartupRecovery): number {
-  return r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes;
+  return (
+    r.recoveredMerges + r.keptConflicts + r.parked + r.legacyWorking + r.interruptedFinishes + r.resumedRecoveryNotes
+  );
+}
+
+/**
+ * 退避ブランチの中身が main(root の現在の HEAD)に取り込まれ切っているか。
+ * `git rev-list --count HEAD..<branch>` が 0 のときだけ true を返す。
+ * 判定できない場合(git が失敗する・出力が数値でない等)は false = 未取り込み扱いにする。
+ *
+ * patch-id のような内容比較は意図的に行わない。取り込み時にコミットが再構成される
+ * (手で当て直す・squash される)と一致が外れ、消してはいけないブランチを
+ * 「削除してよい」と表示する事故になるため。中身が別の形で main に入っている場合に
+ * 「未取り込み」と出るのは安全側の外れ方として許容する。
+ */
+export function parkedBranchMergedIntoHead(root: string, branch: string): boolean {
+  try {
+    // 判定失敗は黙って「未取り込み」に倒す方針。execFileSync は既定で子の stderr を
+    // 親へ流すため、git の fatal が status の出力に混ざらないよう明示的に pipe する
+    const out = execFileSync("git", ["rev-list", "--count", `HEAD..${branch}`], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+      .toString()
+      .trim();
+    const n = Number(out);
+    return Number.isFinite(n) && n === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** `refs/heads/agent` 配下のローカルブランチを (先端 SHA, ブランチ名) で列挙する */
@@ -1282,24 +1402,26 @@ function agentWorktreesByBranch(root: string, worktreeDir: string): Map<string, 
  * 既に completed / failed で決着しているタスクには何も書かない。completed は成果が
  * 無事に main へ渡った証拠であり、failed は既に人間の判断待ちで、どちらも
  * ここで retries を消費させる意味が無いため。extraLines は記録の末尾に足す補足。
+ * opts.kind は recordFailure へ渡す失敗種別。省略時は "recovery"(retries を消費)。
+ * マージ衝突を検知した経路では "merge-conflict" を渡し、conflictRetries を消費させる。
  */
 function recordStartupRecoveryNote(
   root: string,
   config: Config,
   taskId: string,
-  opts: { reason: string; at: string; extraLines?: string[] },
-): void {
+  opts: { reason: string; at: string; extraLines?: string[]; kind?: FailureKind },
+): boolean {
   const t = loadTaskIn(root, taskId);
   if (t === null) {
     log(`警告: ${taskId} のタスクファイルが見つからないため復旧の記録を残せない`);
-    return;
+    return false;
   }
-  if (t.status === "completed" || t.status === "failed") return;
+  if (t.status === "completed" || t.status === "failed") return false;
   recordFailure(t, {
     maxRetries: config.maxRetries,
     maxConflictRetries: config.maxConflictRetries,
     reason: opts.reason,
-    kind: "recovery",
+    kind: opts.kind ?? "recovery",
     at: opts.at,
   });
   if (opts.extraLines !== undefined && opts.extraLines.length > 0) {
@@ -1307,6 +1429,33 @@ function recordStartupRecoveryNote(
   }
   saveTaskIn(root, t);
   log(`recover: ${taskId} -> ${t.status} (retries=${t.retries})`);
+  return true;
+}
+
+/**
+ * これから worktree・ブランチを畳んで記録を残す taskId のマーカーを state.json へ書く。
+ * 削除と記録の間で強制終了された場合、次回起動時にこのマーカーを再生して痕跡を残す
+ * (resumeInterruptedRecoveryNotes 参照)。同じ taskId の既存マーカーは置き換える。
+ */
+function writePendingRecoveryNote(root: string, note: PendingRecoveryNote): void {
+  const state = loadStateIn(root);
+  const notes = (state.pendingRecoveryNotes ?? []).filter((n) => n.taskId !== note.taskId);
+  notes.push(note);
+  state.pendingRecoveryNotes = notes;
+  saveStateIn(root, state);
+}
+
+/** taskId の再生待ちマーカーを取り除く。記録が正常に済んだ後・退避に失敗してブランチが
+ *  残ったままの後始末の両方で呼ぶ(いずれの場合も同じマーカーを残し続ける意味は無い) */
+function clearPendingRecoveryNote(root: string, taskId: string): void {
+  const state = loadStateIn(root);
+  const notes = state.pendingRecoveryNotes;
+  if (notes === undefined) return;
+  const filtered = notes.filter((n) => n.taskId !== taskId);
+  if (filtered.length === notes.length) return;
+  if (filtered.length > 0) state.pendingRecoveryNotes = filtered;
+  else delete state.pendingRecoveryNotes;
+  saveStateIn(root, state);
 }
 
 /**
@@ -1370,20 +1519,30 @@ function recoverOrphanBranch(
       recordStartupRecoveryNote(root, config, taskId, {
         reason: conflictReason,
         at,
+        kind: "merge-conflict",
       });
     } else {
       const conflictReason = `セッションが中断され、main へのマージが衝突した(${outcome.paths.join(", ")})`;
       const parked = parkedBranchNameFor(taskId, now);
+      const note: PendingRecoveryNote = {
+        taskId,
+        branch,
+        reason: conflictReason,
+        at,
+        extraLines: [`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`],
+        kind: "merge-conflict",
+      };
+      // 改名の前にマーカーを書く。改名と記録の間で強制終了されても、次回起動時に
+      // branch(改名前の名前)がもう存在しないことから改名済みと判り、記録を再生できる
+      writePendingRecoveryNote(root, note);
       try {
         renameBranch(root, branch, parked);
         counts.parked += 1;
         log(`${taskId}: worktree が無く衝突したためブランチを ${parked} へ退避した`);
-        recordStartupRecoveryNote(root, config, taskId, {
-          reason: conflictReason,
-          at,
-          extraLines: [`- コミット済みの成果はブランチ \`${parked}\` に退避した(削除していない)`],
-        });
+        recordStartupRecoveryNote(root, config, taskId, note);
+        clearPendingRecoveryNote(root, taskId);
       } catch (err) {
+        clearPendingRecoveryNote(root, taskId); // 退避できていない = ブランチは残っている
         log(`警告: ${taskId} のブランチ退避に失敗した: ${String(err)}`);
       }
     }
@@ -1392,21 +1551,13 @@ function recoverOrphanBranch(
 
   // merged / renumbered / nothing-to-merge: 成果は main 側にあるので worktree とブランチを畳む
   const salvage = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : ({ kind: "none" } as const);
-  if (salvage.kind === "failed") {
-    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
-  } else {
-    if (worktreeExists) removeWorktree(root, worktree);
-    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
-  }
-  if (outcome.result !== "nothing-to-merge") {
-    counts.recoveredMerges += 1;
-    log(`${taskId}: 中断していたタスクの成果を回収した`);
-  }
 
   // マージ後のタスクファイルが completed なら、セッションは実質やり切っている。
   // その場合に retries を進めると、完了済みのタスクに失敗の記録が残ってしまう
   // (この判定は recordStartupRecoveryNote 側が持つ)
-  recordStartupRecoveryNote(root, config, taskId, {
+  const note: PendingRecoveryNote = {
+    taskId,
+    branch,
     reason:
       outcome.result === "nothing-to-merge"
         ? "セッションが中断された(ブランチに成果は残っていなかった)"
@@ -1418,7 +1569,26 @@ function recoverOrphanBranch(
             `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
           ]
         : undefined,
-  });
+  };
+  if (salvage.kind === "saved") {
+    note.leftovers = { patchFile: salvage.patchFile, paths: salvage.paths };
+  }
+  // worktree・ブランチの削除の前にマーカーを書く。削除と記録の間で強制終了されても、
+  // 次回起動時に branch も worktree も無いことから削除済みと判り、記録を再生できる
+  writePendingRecoveryNote(root, note);
+
+  if (salvage.kind === "failed") {
+    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+  } else {
+    if (worktreeExists) removeWorktree(root, worktree);
+    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  }
+  if (outcome.result !== "nothing-to-merge") {
+    counts.recoveredMerges += 1;
+    log(`${taskId}: 中断していたタスクの成果を回収した`);
+  }
+
+  recordStartupRecoveryNote(root, config, taskId, note);
 
   const leftovers = salvage.kind === "saved" ? salvage : null;
   if (leftovers !== null) {
@@ -1430,6 +1600,77 @@ function recoverOrphanBranch(
       saveTaskIn(root, t);
       log(`${taskId}: 未コミット差分を ${leftovers.patchFile} へ退避し試行履歴へ記録した(${leftovers.paths.length} 件)`);
     }
+  }
+  clearPendingRecoveryNote(root, taskId);
+}
+
+/**
+ * 未コミット差分の退避結果を試行履歴へ追記する(recoverOrphanBranch の該当処理と同じ手順)。
+ * taskId が見つからない場合は警告のみ。
+ */
+function appendLeftoversRecord(
+  root: string,
+  taskId: string,
+  at: string,
+  leftovers: { patchFile: string; paths: string[] },
+): void {
+  const t = loadTaskIn(root, taskId);
+  if (t === null) {
+    log(`警告: 未コミット差分を記録しようとしたが ${taskId} が見つからない`);
+    return;
+  }
+  t.body = appendUncommittedDiffRecord(t.body, { at, patchFile: leftovers.patchFile, paths: leftovers.paths });
+  saveTaskIn(root, t);
+  log(`${taskId}: 未コミット差分を ${leftovers.patchFile} へ退避し試行履歴へ記録した(${leftovers.paths.length} 件)`);
+}
+
+/**
+ * recoverOrphanBranch が worktree・ブランチを畳む前に書き残したマーカー(pendingRecoveryNotes)を
+ * 走査し、削除が完了しているのに記録が残っていないものを再生する。
+ *
+ * ブランチか worktree がまだ存在する場合は、削除より前に中断されたケースなので触らない
+ * (孤児ブランチ回収(2〜3)が改めて処理する)。
+ *
+ * 再生したタスクは handled へ入れる。後段の中断検出(5〜6)が同じ中断に対して二重に
+ * 失敗を計上し、retries を余分に消費するのを防ぐため。
+ */
+function resumeInterruptedRecoveryNotes(
+  root: string,
+  config: Config,
+  counts: StartupRecovery,
+  handled: Set<string>,
+): void {
+  const state = loadStateIn(root);
+  const notes = state.pendingRecoveryNotes;
+  if (notes === undefined || notes.length === 0) return;
+
+  const branchNames = new Set(listAgentBranches(root).map((b) => b.branch));
+  const remaining: PendingRecoveryNote[] = [];
+  for (const note of notes) {
+    const worktree = worktreePathFor(config.parallel.worktreeDir, note.taskId);
+    if (branchNames.has(note.branch) || fs.existsSync(worktree)) {
+      // 削除の前に中断された。マーカーは残し、孤児ブランチ回収に任せる
+      remaining.push(note);
+      continue;
+    }
+    const recorded = recordStartupRecoveryNote(root, config, note.taskId, {
+      reason: note.reason,
+      at: note.at,
+      extraLines: note.extraLines,
+      kind: note.kind,
+    });
+    handled.add(note.taskId);
+    if (recorded) {
+      counts.resumedRecoveryNotes += 1;
+      if (note.leftovers !== undefined) appendLeftoversRecord(root, note.taskId, note.at, note.leftovers);
+    }
+    // 記録の成否によらずマーカーは取り除く(同じ痕跡を毎回書き続けないため)
+  }
+
+  if (remaining.length !== notes.length) {
+    if (remaining.length > 0) state.pendingRecoveryNotes = remaining;
+    else delete state.pendingRecoveryNotes;
+    saveStateIn(root, state);
   }
 }
 
@@ -1445,6 +1686,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     parked: 0,
     legacyWorking: 0,
     interruptedFinishes: 0,
+    resumedRecoveryNotes: 0,
   };
 
   // 1. main に残った中断マージ
@@ -1476,7 +1718,13 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     }
   }
 
-  // 4. 旧バージョンが status: working のまま残したタスク(現行の Supervisor は working を書かない)
+  // 4. recoverOrphanBranch が削除・改名の前に書き残したマーカーのうち、削除は完了したのに
+  //    記録が残っていないものを再生する。孤児ブランチ回収(2〜3)の直後、かつ後段(5)が
+  //    state を読み直す前に行うこと(後にすると 5 が読んだ古い state の保存でここでの
+  //    マーカー削除が巻き戻る)
+  resumeInterruptedRecoveryNotes(root, config, counts, handled);
+
+  // 5. 旧バージョンが status: working のまま残したタスク(現行の Supervisor は working を書かない)
   for (const t of loadTasksIn(root)) {
     if (t.status !== "working" || handled.has(t.id)) continue;
     counts.legacyWorking += 1;
@@ -1491,7 +1739,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     log(`recover: ${t.id} working -> ${t.status} (retries=${t.retries})`);
   }
 
-  // 5. finishTaskSession は phase を "finishing" にしてから main へのマージ・worktree/ブランチの
+  // 6. finishTaskSession は phase を "finishing" にしてから main へのマージ・worktree/ブランチの
   //    削除・結果の記録(recordFailure 等)を順に進める。worktree とブランチの削除が終わった
   //    「直後」、結果を記録する「前」に強制終了されると、成果は main に入っているのに
   //    タスクファイルの status は ready のまま残る。ブランチも worktree も既に無いため孤児
@@ -1532,7 +1780,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     });
   }
 
-  // 6. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
+  // 7. 起動直後に走っているセッションは無いので、前回の残骸は必ず捨てる。あわせて起動時点の
   //    supervisor ソースのハッシュを記録し、稼働中プロセスとソースの乖離を status で検出できるようにする
   //    (変化が無いときに書かないのは、内容を語らない state.json だけのコミットを増やさないため)
   let stateChanged = false;
@@ -1775,6 +2023,89 @@ export function findMissingDependencies(
     if (missing.length > 0) result.push({ task: t, missing });
   }
   return result;
+}
+
+/**
+ * 依存が輪になっているタスク集合を返す(輪ごとに 1 グループ)。互いの完了を待ち合って
+ * 永久に runnable にならないのに、`depSatisfied` は個々の依存しか見ないためエラーにも
+ * 警告にもならない。completed なタスクは依存が満たされたのと同じ扱いで輪を作らないため
+ * 対象外にする(存在しない依存 ID と同じ理由)。強連結成分(Tarjan 法)を、タスク件数に
+ * 比例した深さの再帰を避けるため明示スタックで反復実装する。
+ */
+export function findDependencyCycles(tasks: Task[]): Task[][] {
+  const active = tasks.filter((t) => t.status !== "completed");
+  const byId = new Map(active.map((t) => [t.id, t]));
+  const edges = new Map<string, string[]>();
+  for (const t of active) {
+    edges.set(
+      t.id,
+      t.dependencies.filter((d) => byId.has(d)),
+    );
+  }
+
+  // Tarjan 法(反復版)。callStack は再帰呼び出しの代わりに使う明示スタック。
+  // frame.iter は「今の頂点の何番目の隣接辺まで処理済みか」を保持し、子への再帰から
+  // 戻ってきたときに続きから処理を再開できるようにする。
+  let indexCounter = 0;
+  const index = new Map<string, number>();
+  const lowlink = new Map<string, number>();
+  const onStack = new Set<string>();
+  const sccStack: string[] = [];
+  const components: string[][] = [];
+
+  for (const start of active) {
+    if (index.has(start.id)) continue;
+    const callStack: { id: string; iter: number }[] = [{ id: start.id, iter: 0 }];
+    while (callStack.length > 0) {
+      const frame = callStack[callStack.length - 1];
+      const { id } = frame;
+      if (frame.iter === 0) {
+        index.set(id, indexCounter);
+        lowlink.set(id, indexCounter);
+        indexCounter++;
+        sccStack.push(id);
+        onStack.add(id);
+      }
+      const neighbors = edges.get(id) ?? [];
+      let recursed = false;
+      while (frame.iter < neighbors.length) {
+        const w = neighbors[frame.iter];
+        frame.iter++;
+        if (!index.has(w)) {
+          callStack.push({ id: w, iter: 0 });
+          recursed = true;
+          break;
+        } else if (onStack.has(w)) {
+          lowlink.set(id, Math.min(lowlink.get(id)!, index.get(w)!));
+        }
+      }
+      if (recursed) continue;
+      callStack.pop();
+      const parent = callStack[callStack.length - 1];
+      if (parent !== undefined) {
+        lowlink.set(parent.id, Math.min(lowlink.get(parent.id)!, lowlink.get(id)!));
+      }
+      if (lowlink.get(id) === index.get(id)) {
+        const component: string[] = [];
+        let w: string;
+        do {
+          w = sccStack.pop()!;
+          onStack.delete(w);
+          component.push(w);
+        } while (w !== id);
+        components.push(component);
+      }
+    }
+  }
+
+  const cycles: Task[][] = [];
+  for (const comp of components) {
+    const isCycle = comp.length >= 2 || (edges.get(comp[0]) ?? []).includes(comp[0]);
+    if (!isCycle) continue;
+    cycles.push(comp.map((id) => byId.get(id)!).sort((a, b) => a.id.localeCompare(b.id)));
+  }
+  cycles.sort((a, b) => a[0].id.localeCompare(b[0].id));
+  return cycles;
 }
 
 /** runnable なタスクの並び順(優先度昇順 → 作成日時昇順) */
@@ -5132,12 +5463,19 @@ export function overviewSectionLines(
   return { rest, lines };
 }
 
+/** 退避済みの agent/conflict/* ブランチ 1 本(表示専用) */
+interface ParkedBranch {
+  branch: string;
+  /** 到達可能なコミットがすべて main に含まれていると機械的に確認できた場合のみ true */
+  merged: boolean;
+}
+
 /** 人間の対応が要る、衝突まわりの残骸(表示専用) */
 interface PendingConflicts {
   /** 衝突解消待ちで残っている worktree */
   worktrees: { taskId: string; path: string }[];
-  /** 退避済みの agent/conflict/* ブランチ名 */
-  parkedBranches: string[];
+  /** 退避済みの agent/conflict/* ブランチ */
+  parkedBranches: ParkedBranch[];
 }
 
 /**
@@ -5149,7 +5487,8 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   const parkedBranches = listAgentBranches(root)
     .map((b) => b.branch)
     .filter((b) => b.startsWith("agent/conflict/"))
-    .sort();
+    .sort()
+    .map((branch) => ({ branch, merged: parkedBranchMergedIntoHead(root, branch) }));
 
   const worktrees: { taskId: string; path: string }[] = [];
   try {
@@ -5424,6 +5763,30 @@ export interface StatusData {
   invalidTaskFiles: string[];
   /** 存在しないタスク ID を依存に書いているタスク(現役にも archive にも無い依存) */
   missingDependencies: { taskId: string; title: string; missing: string[] }[];
+  /** 依存が輪になっていて互いの完了を待ち続け、永久に runnable にならないタスク群(輪ごとに 1 要素) */
+  dependencyCycles: { tasks: { id: string; title: string; waitingFor: string[] }[] }[];
+  /**
+   * `.agent/config.json` の schemaVersion とツールの対応版数の突き合わせ結果。
+   * config.json が無い・JSON として読めない場合は null(schemaVersion を 0 とみなすと
+   * 「設定が古い」と誤報するため、ここでは判定しない。読めないこと自体は doctor が扱う)。
+   * `tool-outdated`(ccloop 本体が古い)は `formatStatus` の表示には使わない
+   * (cli.ts のスキーマゲートが先に全コマンドを止めるため到達しない)。`--json` 利用者向けの情報。
+   */
+  configSchema: { version: number; current: number; compat: SchemaCompat } | null;
+}
+
+/**
+ * config の生データ(JSON.parse 済み)から schemaVersion の突き合わせ結果を作る。
+ * `raw` が null(ファイルが無い・読めない)なら判定しない
+ */
+export function evaluateConfigSchema(
+  raw: unknown,
+  current: number = CURRENT_SCHEMA_VERSION,
+): { version: number; current: number; compat: SchemaCompat } | null {
+  if (raw === null) return null;
+  const version = readSchemaVersion(raw);
+  const compat = compareSchemaVersion(version, current);
+  return { version, current, compat };
 }
 
 /** realpath を試み、失敗したら元のパスをそのまま返す(インストール先とリポジトリの lib/ の比較を安定させる) */
@@ -5473,6 +5836,15 @@ export function collectStatusData(now: Date): StatusData {
   } catch {
     // config が読めなければ既定値にフォールバック
   }
+  // schemaVersion の突き合わせは loadConfig とは別に生データを読んで行う。loadConfig は
+  // normalizeConfig 済みの値を返すため、そこから元の schemaVersion は取り出せない
+  let rawConfig: unknown = null;
+  try {
+    rawConfig = JSON.parse(fs.readFileSync(repoPaths().configPath, "utf8")) as unknown;
+  } catch {
+    // ファイルが無い・JSON として読めない場合は判定しない(doctor が扱う)
+  }
+  const configSchema = evaluateConfigSchema(rawConfig);
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
   const salvageFailures = loadSalvageFailures(repoPaths().root);
   const { entries: permissionDenialEntries, truncated: permissionDenialsTruncated } = loadPermissionDenials();
@@ -5522,6 +5894,16 @@ export function collectStatusData(now: Date): StatusData {
     title: task.title,
     missing,
   }));
+  const dependencyCycles = findDependencyCycles(tasks).map((cycle) => {
+    const idsInCycle = new Set(cycle.map((t) => t.id));
+    return {
+      tasks: cycle.map((t) => ({
+        id: t.id,
+        title: t.title,
+        waitingFor: t.dependencies.filter((d) => idsInCycle.has(d)),
+      })),
+    };
+  });
 
   return {
     tasks,
@@ -5545,6 +5927,8 @@ export function collectStatusData(now: Date): StatusData {
     loopLiveness: evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), now),
     invalidTaskFiles,
     missingDependencies,
+    dependencyCycles,
+    configSchema,
   };
 }
 
@@ -5641,19 +6025,48 @@ export function formatStatus(): string {
   );
   section(
     "要対応",
-    "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
-    pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
+    "依存が輪になっていて永久に始まらないタスク — 互いの完了を待ち合っているので、どれか 1 本の依存指定を消すと動き出す:",
+    data.dependencyCycles.map(
+      (c) =>
+        `輪になっているタスク: ${c.tasks.map((t) => t.id).join(" ")}` +
+        c.tasks
+          .map((t) => `\n      ${t.id}: ${t.title} — 待っている相手: ${t.waitingFor.join(" ")}`)
+          .join(""),
+    ),
   );
   section(
     "要対応",
-    "退避された衝突ブランチ — 内容を確認し、統合するか破棄するかを判断:",
-    pending.parkedBranches,
+    "衝突解消待ちの worktree — 次の試行がこの worktree で再開される。長引くなら手で解消:",
+    pending.worktrees.map((w) => `${w.taskId}: ${w.path}`),
+  );
+  const parkedMerged = pending.parkedBranches.filter((b) => b.merged);
+  const parkedUnmerged = pending.parkedBranches.filter((b) => !b.merged);
+  section(
+    "要対応",
+    "退避された衝突ブランチ(中身は main に取り込み済み) — 削除してよい:",
+    parkedMerged.map((b) => `${b.branch}\n      削除: git branch -D ${b.branch}`),
+  );
+  section(
+    "要対応",
+    "退避された衝突ブランチ(main に未取り込み) — 内容を確認し、統合するか破棄するかを判断:",
+    parkedUnmerged.map((b) => b.branch),
   );
   section(
     "要対応",
     "未コミット差分の退避に失敗して残した worktree — 中の差分を回収したら " +
       "`git worktree remove --force <path>` と `git branch -D agent/<タスクID>` で片付けてよい:",
     data.salvageFailures.map((f) => `${f.taskId}: ${f.worktree}\n      ${f.at} の退避が失敗: ${f.error}`),
+  );
+  const configSchema = data.configSchema;
+  const configSchemaOutdated = configSchema !== null && configSchema.compat === "config-outdated";
+  // tool-outdated(ccloop 本体が古い)はここでは扱わない。設定のほうが新しい場合は cli.ts の
+  // スキーマゲートが status も含めて全コマンドを exit(1) で止めるため、この行には到達しない
+  section(
+    "要対応",
+    "設定ファイルが古い — `ccloop init --upgrade` を実行する:",
+    configSchemaOutdated
+      ? [`${AGENT_DIR_NAME}/config.json の schemaVersion ${configSchema.version} → ${configSchema.current}`]
+      : [],
   );
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
@@ -5677,7 +6090,9 @@ export function formatStatus(): string {
       data.salvageFailures.length +
       data.pendingDecisions.count +
       data.invalidTaskFiles.length +
-      data.missingDependencies.length ===
+      data.missingDependencies.length +
+      data.dependencyCycles.length +
+      (configSchemaOutdated ? 1 : 0) ===
     0
   ) {
     push("\n要対応事項なし");

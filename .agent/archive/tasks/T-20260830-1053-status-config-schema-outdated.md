@@ -1,9 +1,10 @@
 ---
 title: "設定ファイルが古いことを ccloop status の「要対応」に出す"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-1007-status-respect-decision-checkbox]
 retries: 0
+note: "config-outdated のみ要対応に表示。tool-outdated は cli.ts のゲートが先に止めるため出さない (D-20260830-1121)"
 createdAt: 2026-08-30T10:53:39.546Z
 ---
 

@@ -33,6 +33,7 @@ import {
   type ExploreContext,
   exploreEndLogLine,
   fastCrashStreakAfterWait,
+  findDependencyCycles,
   findMissingDependencies,
   formatElapsed,
   installedSourceDriftLines,
@@ -585,6 +586,68 @@ describe("findMissingDependencies", () => {
   });
 });
 
+describe("findDependencyCycles", () => {
+  it("直線的な依存では輪を検出しない", () => {
+    const a = makeTask({ id: "T-001" });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-002"] });
+
+    expect(findDependencyCycles([a, b, c])).toEqual([]);
+  });
+
+  it("2 件が相互依存していれば 1 つの輪として両方を返す", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+
+    const cycles = findDependencyCycles([a, b]);
+
+    expect(cycles).toEqual([[a, b]]);
+  });
+
+  it("自己参照は 1 件でも輪として検出する", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-001"] });
+
+    expect(findDependencyCycles([a])).toEqual([[a]]);
+  });
+
+  it("複数の輪が独立していればそれぞれ別の輪として返る", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-004"] });
+    const d = makeTask({ id: "T-004", dependencies: ["T-003"] });
+
+    const cycles = findDependencyCycles([a, b, c, d]);
+
+    expect(cycles).toEqual([
+      [a, b],
+      [c, d],
+    ]);
+  });
+
+  it("3 件以上の輪(A→B→C→A)を 1 つの輪として検出する", () => {
+    const a = makeTask({ id: "T-001", dependencies: ["T-003"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+    const c = makeTask({ id: "T-003", dependencies: ["T-002"] });
+
+    const cycles = findDependencyCycles([a, b, c]);
+
+    expect(cycles).toEqual([[a, b, c]]);
+  });
+
+  it("輪の一部が completed なら輪として報告しない", () => {
+    const a = makeTask({ id: "T-001", status: "completed", dependencies: ["T-002"] });
+    const b = makeTask({ id: "T-002", dependencies: ["T-001"] });
+
+    expect(findDependencyCycles([a, b])).toEqual([]);
+  });
+
+  it("存在しない依存 ID は輪にならない", () => {
+    const t = makeTask({ id: "T-001", dependencies: ["T-999"] });
+
+    expect(findDependencyCycles([t])).toEqual([]);
+  });
+});
+
 describe("byPriorityThenCreatedAt", () => {
   it("priority 昇順で並ぶ", () => {
     const a = makeTask({ id: "T-001", priority: 5 });
@@ -648,7 +711,7 @@ describe("taskFromFile", () => {
     });
   });
 
-  it("廃止済みの updatedAt など未知の frontmatter フィールドは無視して読める", () => {
+  it("updatedAt など Task 型が知らない frontmatter フィールドは extra に退避して読める(失われない)", () => {
     const text = [
       "---",
       "title: タイトル",
@@ -671,9 +734,41 @@ describe("taskFromFile", () => {
       retries: 0,
       conflictRetries: 0,
       createdAt: "2026-08-01T00:00:00.000Z",
+      extra: { updatedAt: "2026-08-02T00:00:00.000Z" },
       body: "本文",
     });
     expect(task).not.toHaveProperty("updatedAt");
+  });
+
+  it("未知フィールドが無いファイルでは extra プロパティ自体が存在しない", () => {
+    const text = ["---", "title: タイトル", "status: ready", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-022.md"), text);
+
+    const task = taskFromFile(dir, "T-022.md");
+
+    expect(task).not.toHaveProperty("extra");
+  });
+
+  it("配列・数値を含む複数の未知フィールドも extra にまとめて退避される", () => {
+    const text = [
+      "---",
+      "title: タイトル",
+      "status: ready",
+      "updatedAt: 2026-08-02T00:00:00.000Z",
+      "reviewers: [alice, bob]",
+      "attempts: 4",
+      "---",
+      "本文",
+    ].join("\n");
+    fs.writeFileSync(path.join(dir, "T-023.md"), text);
+
+    const task = taskFromFile(dir, "T-023.md");
+
+    expect(task?.extra).toEqual({
+      updatedAt: "2026-08-02T00:00:00.000Z",
+      reviewers: ["alice", "bob"],
+      attempts: 4,
+    });
   });
 
   it("status 欠落なら null", () => {
@@ -839,6 +934,67 @@ describe("taskFrontmatter 往復", () => {
     const restored = taskFromFile(dir, `${original.id}.md`);
 
     expect(restored).toEqual(original);
+  });
+
+  it("extra を持つ Task も往復一致し、書き出したテキストに未知フィールドの行が残る", () => {
+    const original = makeTask({
+      id: "T-014",
+      extra: { updatedAt: "2026-08-15T00:00:00.000Z" },
+    });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+    expect(text).toContain("updatedAt: 2026-08-15T00:00:00.000Z");
+    fs.writeFileSync(path.join(dir, `${original.id}.md`), text);
+    const restored = taskFromFile(dir, `${original.id}.md`);
+
+    expect(restored).toEqual(original);
+  });
+
+  // cmdAbandon / cmdRetry を直接呼ぶ既存テストの枠組みがこのファイルに無いため(loadTask/saveTask
+  // が repoPaths() の対象リポジトリ固定で、CLI 関数自体も process.exit を伴う)、両コマンドが行う
+  // frontmatter 変更(status/retries/conflictRetries/abandonedAt の書き換えのみ、他フィールドは
+  // 保持)を taskFromFile → 変更 → taskFrontmatter → ファイル書き出し → taskFromFile の往復で再現し、
+  // 未知フィールド(updatedAt)が消えないことを確認する。
+  it("ccloop abandon / retry 相当の変更を経ても updatedAt など未知フィールドが失われない", () => {
+    const text = [
+      "---",
+      "title: タイトル",
+      "status: failed",
+      "priority: 3",
+      "retries: 2",
+      "createdAt: 2026-08-01T00:00:00.000Z",
+      "updatedAt: 2026-08-02T00:00:00.000Z",
+      "---",
+      "本文",
+    ].join("\n");
+    const file = path.join(dir, "T-015.md");
+    fs.writeFileSync(file, text);
+
+    // --- ccloop abandon 相当: abandonedAt を設定して書き戻す ---
+    const loaded = taskFromFile(dir, "T-015.md");
+    expect(loaded?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+    const abandoned: Task = { ...loaded!, abandonedAt: "2026-08-03T00:00:00.000Z" };
+    fs.writeFileSync(file, serializeFrontmatter(taskFrontmatter(abandoned), abandoned.body));
+
+    const afterAbandon = taskFromFile(dir, "T-015.md");
+    expect(afterAbandon?.abandonedAt).toBe("2026-08-03T00:00:00.000Z");
+    expect(afterAbandon?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+
+    // --- ccloop retry 相当: status/retries/conflictRetries/abandonedAt をリセットして書き戻す ---
+    const retried: Task = {
+      ...afterAbandon!,
+      status: "ready",
+      retries: 0,
+      conflictRetries: 0,
+      abandonedAt: undefined,
+    };
+    fs.writeFileSync(file, serializeFrontmatter(taskFrontmatter(retried), retried.body));
+
+    const afterRetry = taskFromFile(dir, "T-015.md");
+    expect(afterRetry?.status).toBe("ready");
+    expect(afterRetry).not.toHaveProperty("abandonedAt");
+    expect(afterRetry?.extra).toEqual({ updatedAt: "2026-08-02T00:00:00.000Z" });
+    expect(fs.readFileSync(file, "utf8")).toContain("updatedAt: 2026-08-02T00:00:00.000Z");
   });
 });
 
@@ -5087,7 +5243,9 @@ describe("recoverStartupIn", () => {
     expect(branchExists("agent/T-001")).toBe(true);
 
     const t = readTask("T-001");
-    expect(t.retries).toBe(1);
+    // 衝突はタスク本来の失敗ではなく、専用枠の conflictRetries を消費する(retries は変わらない)
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
     expect(t.body).toContain("マージが衝突した");
     expect(t.body).toContain("conflict.txt");
   });
@@ -5158,7 +5316,9 @@ describe("recoverStartupIn", () => {
     expect(branchExists(parkedBranchNameFor("T-001", NOW))).toBe(true);
 
     const t = readTask("T-001");
-    expect(t.retries).toBe(1);
+    // 衝突はタスク本来の失敗ではなく、専用枠の conflictRetries を消費する(retries は変わらない)
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
     expect(t.body).toContain(parkedBranchNameFor("T-001", NOW));
   });
 
@@ -5487,6 +5647,240 @@ describe("recoverStartupIn", () => {
     expect(t.status).toBe("ready");
     expect(t.retries).toBe(0);
     expect(t.body).not.toContain("## 試行履歴");
+  });
+
+  it("R: pendingRecoveryNotes のマーカーは、ブランチも worktree も無ければ次回起動時に記録を再生する", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(1);
+    expect(t.body).toContain("## 試行履歴");
+    expect(t.body).toContain("セッションが中断された(ブランチの成果は main へ回収済み)");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("S: leftovers 付きのマーカーは試行履歴に未コミット差分の記録も残す", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+            leftovers: { patchFile: "/tmp/T-001-leftover.patch", paths: ["foo.txt"] },
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    const t = readTask("T-001");
+    expect(t.body).toContain("未コミット差分");
+    expect(t.body).toContain("/tmp/T-001-leftover.patch");
+    expect(t.body).toContain("`foo.txt`");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("T: 孤児ブランチ回収が見送られている間はマーカーがあってもブランチが残っていれば再生しない", () => {
+    // main のマージが進行中の状況を作り、孤児ブランチ回収(2〜3)自体を丸ごと見送らせる。
+    // これにより「新段階がブランチ存在をそれ自身で確認しているか」だけを検証できる
+    // (handled 経由の見送りと区別するため。O と同じ手口)
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+    git(["branch", "side"]);
+    git(["checkout", "side"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side\n");
+    git(["commit", "-am", "side で書き換える"]);
+    git(["checkout", "main"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "main 側\n");
+    git(["commit", "-am", "main 側で書き換える"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "result.txt"), "成果\n"),
+      "成果を追加する",
+    );
+    removeWorktree(dir, wt);
+
+    try {
+      git(["merge", "side"]);
+    } catch {
+      // 人間が手で始めたマージが衝突したまま残っている状況
+    }
+    expect(mergeInProgress(dir)).toBe(true);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    expect(branchExists("agent/T-001")).toBe(true);
+    const t = readTask("T-001");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown[] };
+    expect(state.pendingRecoveryNotes).toHaveLength(1);
+  });
+
+  it("U: マーカー対象のタスクが completed なら記録は書かずマーカーだけ消す", () => {
+    writeTaskFile(dir, "T-001", serializeFrontmatter({ title: "タスク", status: "completed", retries: 0 }, "本文"));
+    git(["add", "-A"]);
+    git(["commit", "-m", "completed にする"]);
+
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(0);
+    const t = readTask("T-001");
+    expect(t.status).toBe("completed");
+    expect(t.retries).toBe(0);
+    expect(t.body).not.toContain("## 試行履歴");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("V: 通常の孤児ブランチ回収が最後まで走った後は pendingRecoveryNotes が残らない", () => {
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "result.txt"), "成果\n"),
+      "成果を追加する",
+    );
+    removeWorktree(dir, wt);
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.recoveredMerges).toBe(1);
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("W: pendingRecoveryNotes と phase finishing の runningSessions が同じタスクに残っていても、記録も retries も二重に進まない", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [
+          { kind: "task", taskId: "T-001", phase: "finishing", startedAt: "2026-08-16T08:00:00.000Z" },
+        ],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断された(ブランチの成果は main へ回収済み)",
+            at: "2026-08-16T08:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(counts.interruptedFinishes).toBe(0);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.retries).toBe(1);
+    expect(t.body).toContain("### 試行 1(");
+    expect(t.body).not.toContain("### 試行 2(");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
+  });
+
+  it("X: kind: merge-conflict のマーカーを再生すると conflictRetries だけが増える(retries は変わらない)", () => {
+    fs.writeFileSync(
+      statePathOf(dir),
+      JSON.stringify({
+        runningSessions: [],
+        sessionCount: 1,
+        pendingRecoveryNotes: [
+          {
+            taskId: "T-001",
+            branch: "agent/T-001",
+            reason: "セッションが中断され、main へのマージが衝突した(conflict.txt)",
+            at: "2026-08-16T08:00:00.000Z",
+            kind: "merge-conflict",
+          },
+        ],
+      }),
+    );
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.resumedRecoveryNotes).toBe(1);
+    expect(startupRecoveryTotal(counts)).toBe(1);
+    const t = readTask("T-001");
+    expect(t.status).toBe("ready");
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
+    expect(t.body).toContain("マージが衝突した");
+    expect(t.body).toContain("マージ衝突");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { pendingRecoveryNotes?: unknown };
+    expect(state.pendingRecoveryNotes).toBeUndefined();
   });
 });
 

@@ -1,7 +1,7 @@
 ---
-updatedAt: 2026-08-30T10:57:26.096Z
-completed: 64
-total: 77
+updatedAt: 2026-08-30T11:47:10.000Z
+completed: 72
+total: 79
 ---
 
 # OVERVIEW(GOAL に対する現在地)
@@ -11,72 +11,59 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 **フェーズ 4 の確認トピックを人間に投げて枠を回し続けること**と、
 **確認不要で拾える修理を掘り当てること**の両輪で決まる。
 
-前回挙げていた「次にループを起動すると設定の版番号が古くて止まる」問題は解消済み
-(人間が `ccloop init --upgrade` を実施し、`.agent/config.json` は `schemaVersion: 2`)。
+## 前回いちばんの懸念だった「衝突による成果の取り残し」は峠を越えた
 
-## 今いちばんの懸念: 衝突による成果の取り残しが構造化している
+構造(`lib/supervisor.ts` が 5800 行超の単一ホットスポットで、並列セッションが全員そこを編集する)は
+変わっていないが、取り残しを生んでいた穴は塞がった。
 
-**マージ衝突で `failed` に落ちたタスクが通算 4 件、うち 3 件は完成した成果が退避ブランチに
-取り残され、救出タスクを別途起こして人手で当て直している。** 今日また 1 件増えた
-(`T-20260830-0829-finish-crash-leaves-no-trace`。救出は
-`T-20260830-1053-rescue-finish-interrupt-recovery-work`(p1))。
+- 後始末の中断で成果が痕跡なく消える経路(`-0829` / `-0934`)は両方とも実装済み。
+  起動時復旧は `state.json` の `pendingRecoveryNotes` マーカーで削除と記録の窓を塞いでいる。
+- 退避ブランチが「取り込み済みか未取り込みか」を `ccloop status` が出し分けるようになった。
+- 応急処置として張っていた直列化の鎖(`D-20260830-1053-serialize-supervisor-hotspot-tasks`)は、
+  鎖を構成していたタスクがすべて完了したため**現在は 1 本も残っていない**。
+- 恒久策(スケジューラ側で同じファイルを取り合うタスクを同時に選ばない)は
+  `HR-20260830-1053-topic-conflict-prone-parallelism`(BLOCK)で確認中。
 
-原因は個々のセッションの不手際ではなく構成にある。**`lib/supervisor.ts` は 5617 行あり、
-直近 24 時間で 84 コミットが入る単一のホットスポット**で、表示も後始末も起動時復旧もそこに同居する。
-並列 4 セッションが走ればほぼ全員が同じファイルを編集する。
+## 探索の収穫が薄くなってきた(いま最も重要な事実)
 
-打った手は 2 つ。
+今回の探索では、実物観察(`npm test` 1176 件全通過 / lint・typecheck 警告ゼロ / CLI の異常系
+一通り / 生成物・設定・CHANGELOG の突き合わせ)を回して**修理ネタも設計トピックもゼロ**という
+回があった。掘り尽くしに近づいている。
 
-- **応急処置(実施済み)**: ぶつかることが分かっているタスク同士に `dependencies` を張って直列化した
-  (`D-20260830-1053-serialize-supervisor-hotspot-tasks`)。毎回の探索で張り直す必要がある人力運用。
-- **仕組み化(確認中)**: スケジューラ側で同じファイルを取り合うタスクを同時に選ばないようにするか、
-  `HR-20260830-1053-topic-conflict-prone-parallelism`(BLOCK)で人間に確認中。
-  速さと確実さのどちらを取るかの判断なので勝手に決めない。
+これを踏まえて `HR-20260830-1143-topic-idle-explore-backoff` を提出した(空振りが続いたら
+次の探索までの間隔を自動で伸ばしてよいか)。成果ゼロの探索に費用が積み上がる状態を、
+仕組みで抑えるかどうかの判断である。
 
-## 直列化した 2 本の鎖
+## いま動いているもの
 
-- 後始末・起動時復旧の系統(すべて `recoverOrphanBranch` / `finishTaskSession` 周辺を触る):
-  `-1053-rescue-finish-interrupt-recovery-work`(p1)
-  → `-0934-startup-recovery-crash-leaves-no-trace`(p3)
-  → `-1053-startup-recovery-conflict-uses-retries`(p3)
-- `ccloop status` の表示の系統:
-  `-1007-status-respect-decision-checkbox`(p3)
-  → `-1053-status-config-schema-outdated`(p3)
-  → `-1053-status-parked-branch-merged-state`(p3)
+ready 6 件。うち 4 件はセッション実行中で、走行中タスクのファイルは編集しない方針のため
+今回 priority・dependencies は変更していない(鎖が解けており張り直す必要も無かった)。
 
-鎖の途中が `failed` になると後続が待たされるが、その状態は `ccloop status` に出る。
-不要になったら `dependencies` を空に戻せばよい(可逆)。
-
-## 鎖の外にある着手待ち
-
-- `-1002-failed-task-abandon-flow`(p2)— `failed` を人間が断念しても要対応から消せない。
-- `-0825-dependency-cycle-detection`(p4)— 依存の輪の検出。同意済み(優先度低)。
-  **直列化で鎖を増やしたぶん、この機能の価値は上がっている。**
-- `-0808-human-task-edit-lost-on-merge`(p4)— 依存先は完了済みで待たされていない。
-- `-0825-archived-tasks-read-cap`(p5)— 回答で「優先度は低い」と明示された。
-
-前回の一覧に載っていた `-0810-decisions-index-missing-entries` と
-`-0903-merge-abort-retry-racy-git` は完了済み(archive にある)。
+- 実行中: `-1132-ccloop-in-worktree-targets-main-agent-dir`(p2)/
+  `-1053-startup-recovery-conflict-uses-retries`(p3)/ `-0825-dependency-cycle-detection`(p4)/
+  `-0825-archived-tasks-read-cap`(p5)
+- 今回登録(いずれも走行中タスクとファイルが重ならない):
+  - `-1136-prompt-denial-record-scope`(p3)— 共通ルールの「拒否は記録される」が実態と食い違う。
+    記録範囲そのものは `HR-...-1057` の回答待ちなので、記述だけ実態に合わせる(表示は変えない)。
+  - `-1143-docs-idle-exit-behavior`(p4)— やることが尽きるとループが自動終了する挙動が
+    どこにも書かれていない。
 
 ## 人間の手が要る残務
 
-- 退避ブランチ `agent/conflict/T-20260830-0829-finish-crash-leaves-no-trace-20260830T101839Z` は
-  **まだ削除してはいけない**(唯一の成果の置き場。救出タスクが取り込んでから削除)。
-  前回挙げていた取り込み済みの退避ブランチ(T-0537 / T-0621 / T-0808)は削除済みで、
-  いま残っている退避ブランチはこの 1 本だけ。
-- `failed` の 3 件(`-0621` / `-0808-conflict-session-timeout-mislabeled` / `-0829`)は
-  いずれも成果が取り込み済みか取り込み予定であり、再試行は不要。要対応欄から消す手段が
-  無いことが `-1002-failed-task-abandon-flow` の題材。
+- `failed` の `-0829-finish-crash-leaves-no-trace` は成果が main に取り込み済みで再試行不要。
+  `ccloop abandon` で要対応欄から消せる(コマンドは実装済み)。
+- 退避ブランチ `agent/conflict/T-20260830-0829-...-20260830T101839Z` は取り込み済み。
+  `ccloop status` がその旨を出すようになったので、削除して構わない。
+- 未承認の決定が 12 件。`.agent/decisions/index.md` のチェックで書庫へ移る。
 
 ## フェーズ
 
 - 現在フェーズ: **4(思いつく改善すべて)**。フェーズ 1〜3 の遡及確認は `HR-20260830-0236` で回答済み。
 - 確認の線引きは `D-20260830-0303-phase4-consent-granularity` に記録済み。
-- 回答待ち(2 件。枠は 4 件までなので 2 件ぶん空いている):
-  - `HR-20260830-1053-topic-conflict-prone-parallelism` — 同じファイルを取り合う並列実行を減らすか
-  - `HR-20260830-1057-topic-denied-operation-audit` — 禁止した操作を試みた事実を残すか
-- 今回承認されてタスク化したもの: 退避ブランチの取り込み済み判定を status に出す /
-  設定ファイルが古いことを status の要対応に出す。
+- 回答待ち(3 件。枠は 4 件までなので残り 1 件):
+  - `-1053-topic-conflict-prone-parallelism` — 同じファイルを取り合う並列実行を減らすか
+  - `-1057-topic-denied-operation-audit` — 禁止した操作を試みた事実を残すか
+  - `-1143-topic-idle-explore-backoff` — 空振りが続いたら作業探しの間隔を伸ばすか
 - 見送りになったトピック(再提案しないこと): ループの異常停止を status に残す /
   利用上限の待機をリポジトリ間で共有する / タスクに「最後に動いた時刻」を記録して status に出す /
   管理から外れた作業場所の検出 / 実行中タスクの記録を仕組みで守る /
@@ -85,17 +72,26 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 
 ## 確認トピックの在庫
 
-**空**(今回掘り当てた 2 件はその場で提出した)。枠は 2 件空いている。
-新しい設計判断を掘り当てるところが毎回いちばん価値のある仕事になっている。
+**空**(今回掘り当てた 1 件はその場で提出した)。枠は 1 件空いている。
 
 ## 突き合わせ済みで食い違いが無いことを確認した範囲
 
 同じ調査を繰り返さないための記録。
 
-- `lib/prompt/PROMPT.md` と実装、`README.md` / `docs/` / `lib/help.ts` と実装、初回導入の経路、
-  `lib/settings.template.json` と `.agent/claude-settings.json` の合成、`.agent/config.json` の各キーと
-  既定値、`CHANGELOG.md` の未リリース節と `git log`、`lib/templates/` と `docs/compatibility.md`:
-  いずれも突き合わせ済みで食い違い無し(唯一の例外が下記の permission 記録)。
+- `README.md` / `docs/` / `lib/help.ts` と実装、初回導入の経路、`lib/settings.template.json` と
+  `.agent/claude-settings.json` の合成、`.agent/config.json` の各キーと既定値、
+  `CHANGELOG.md` の未リリース節と `git log`、`lib/templates/` と `docs/compatibility.md`:
+  いずれも突き合わせ済みで食い違い無し。**唯一の例外が `lib/prompt/PROMPT.md` の permission 記録の
+  記述**(`-1136` で修理する)と、**ループ自動終了の説明の欠落**(`-1143` で補う)。
+- CLI の異常系(`--interval` の 0 / 負値 / 非数値、存在しない `--repo`、未知サブコマンド、
+  存在しないタスク ID への `retry`)はいずれも適切なメッセージを返す。
+- **worktree の使い回しは意図された挙動**。`createWorktree` はパスが既存なら再利用する。退避に
+  失敗した worktree がブランチごと残り次の試行で再利用されることは
+  `D-20260830-0752-salvage-failure-keeps-worktree` に記録済み。クラッシュ由来の残骸と衝突解消の
+  継続をコードは区別しないが、「管理から外れた作業場所の検出」は見送り済みトピックなので蒸し返さない。
+- **やることが尽きたときの挙動**: `planLoopStep`(`lib/scheduler.ts`)が `idle-exit` を返して
+  ループ自体が終了する。空振り探索は既定 1 時間のクールダウンを課すが、その記憶はプロセス内
+  メモリのみで再起動すると消え、間隔も伸びない(→ `HR-...-1143` の論点)。
 - 掘り終えた系統: 利用者から見た CLI の体験 / ループの運転そのものの弱点 / 初回導入の体験 /
   並列実行と状態ディレクトリ / 長時間の連続稼働 / 複数リポジトリの併用 / 費用・所要時間 /
   記録ファイルの読み書きの頑健性 / 失敗時の診断体験 / テスト自体の質 /
@@ -103,35 +99,29 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
   セッションに渡す設定の組み立て / `ccloop status`・`watch` の表示ロジック /
   `.agent/` 雛形と実リポジトリの往復 / git 操作そのものの異常系 /
   エスカレーション・リトライ方針の実効性 / 作業場所とタスクの対応が崩れたときの回復 /
-  `.agent/` の記録が人手で編集されたときの扱い / 分類の分岐が互いに排他だと仮定している箇所 /
-  `ccloop watch` の表示分岐と起動時復旧の細部 / 多段処理の中断耐性。
-- 失敗回数の計上(今回): `recordFailure`(`lib/supervisor.ts:1652`)の分岐、`conflictRetries` の
-  永続化(タスクファイルの frontmatter。ループ再起動でリセットされない)、
-  `classifyTaskSessionResult` の衝突分類、`finishTaskSession` 経由の通常経路はいずれも正しい。
-  **唯一の抜けは起動時回収の衝突検知が `kind: "recovery"` をハードコードしている点**で、
-  `-1053-startup-recovery-conflict-uses-retries` に切り出した。
+  `.agent/` の記録が人手で編集されたときの扱い / 多段処理の中断耐性 / 失敗回数の計上 /
+  スケジューラの待機と終了の判断。
 - 未検証のまま残った枝葉(実害は薄いと判断): submodule を含むリポジトリでの worktree 作成、
-  shallow clone での `merge-base`、`.gitattributes` / `core.autocrlf` の正規化が退避パッチの
-  復元に与える影響、`index.lock` 残存時の挙動。
+  shallow clone での `merge-base`、`.gitattributes` / `core.autocrlf` が退避パッチの復元に
+  与える影響、`index.lock` 残存時の挙動、dirty な worktree を再利用したときの実挙動のテスト。
 
 ## 次にやると完了に近づくこと
 
-1. 救出(`-1053-rescue-finish-interrupt-recovery-work`)。退避ブランチが消えると成果が失われる。
-2. `HR-20260830-1053-topic-conflict-prone-parallelism` への回答。衝突の常態化を
+1. 回答待ち 3 件のうち、特に `-1053-topic-conflict-prone-parallelism`。並列実行の衝突を
    人力運用で抑え続けるか仕組みにするかが決まる。
-3. 残りは鎖の順に消化する。
+2. ready 6 件の消化(今回登録の 2 件はどちらも小さい)。
+3. `ccloop abandon` と退避ブランチの削除、決定 12 件の承認(人間の手)。
 
 次の探索セッションへの申し送り:
 
-- **確認トピックの在庫は空。枠は 2 件空いている。**
-- **当たり続けている切り口は「リポジトリの実物を見る」。** 今回の構造的発見も
-  `wc -l lib/*.ts` と `git log --oneline -- lib/supervisor.ts | wc -l` を叩いただけで出た。
-  毎回の手順に「生成物・設定ファイル・ブランチ一覧・ファイルサイズとコミット頻度の実物を見る」を入れること。
-- **直列化した鎖は毎回見直すこと。** 完了した輪は `dependencies` から外し、新しく
-  `lib/supervisor.ts` を触るタスクを作ったら鎖の末尾に繋ぐ。張り忘れると衝突が再発する。
-- `HR-20260830-1057-topic-denied-operation-audit` が未回答のまま次の探索まで残った場合は、
-  共通ルール(`lib/prompt/PROMPT.md`)の記述を実態に合わせる小さな修正だけ先に行う(表示は変えない)。
-- 明示的に未着手のまま残っている系統は「プロンプト注入の内容がセッションの挙動に与える影響
-  (長さ・順序・重複)」だけ。機械的に検証しづらく収穫の見込みは高くない。
+- **確認トピックの在庫は空。枠は 1 件。** ネタが枯れてきているので、無理にひねり出すより
+  「収穫ゼロ」を正直に記録するほうがよい(その事実自体が `-1143` の根拠になった)。
+- **当たり続けている切り口は「リポジトリの実物を見る」。** ただし今回はそれでもゼロだった。
+  次は未検証の枝葉(上記)か、まだ掘っていない「プロンプト注入の内容がセッションの挙動に与える
+  影響(長さ・順序・重複)」しか残っていない。後者は機械的検証がしづらい。
+- **直列化の鎖は現在ゼロ。** `lib/supervisor.ts` を触るタスクを 2 件以上同時に ready にするなら、
+  `dependencies` で直列化してから終えること(張り忘れると衝突が再発する)。
+- 走行中のタスク(ブランチ `agent/T-*` が存在するもの)のファイルは編集しない。今回も 4 件が
+  走行中だったため priority・dependencies には触れていない。
 - 調査で `Bash(git worktree*)` とブランチ操作が権限で使えないため、作業場所まわりは実機再現が
   できない。コード読解で当たりを付け、再現は着手するタスクセッション側に委ねる形になる。

@@ -1,9 +1,10 @@
 ---
 title: "タスクの依存が輪になって永久に始まらない状態を検出して status に出す"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "依存の輪(自己参照含む)を SCC で検出し ccloop status の要対応に構成タスク ID 付きで表示。typecheck/lint/test 通過"
 createdAt: 2026-08-30T08:25:02.024Z
 ---
 

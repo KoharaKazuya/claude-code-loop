@@ -1,9 +1,10 @@
 ---
 title: "退避された衝突ブランチを「取り込み済み・未取り込み」で出し分ける"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-1053-status-config-schema-outdated]
 retries: 0
+note: "rev-list HEAD..branch による判定で 2 群に出し分け。判定不能は未取り込み側へ倒す"
 createdAt: 2026-08-30T10:53:39.546Z
 ---
 

@@ -1,9 +1,10 @@
 ---
 title: "タスクファイルの保存で未知の frontmatter フィールドが黙って消える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "Task.extra で未知 frontmatter を素通しするようにした(updatedAt は既知フィールドにしない)"
 createdAt: 2026-08-30T11:32:00.000Z
 ---
 
