@@ -1,8 +1,9 @@
 ---
 title: "探索セッションの時間切れが「異常終了」としか表示されない"
-status: ready
+status: completed
 priority: 4
 retries: 0
+note: "探索セッション終了ログを exploreEndLogLine に切り出し、時間切れを異常終了と区別する文言にした"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
