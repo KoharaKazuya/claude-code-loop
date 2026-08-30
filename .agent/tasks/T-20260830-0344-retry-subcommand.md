@@ -1,10 +1,12 @@
 ---
 title: "失敗タスクをやり直す ccloop retry サブコマンドを追加する"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "ccloop retry を実装。typecheck / lint / test(852 件)通過、reviewer は APPROVE"
 createdAt: 2026-08-30T03:44:35.036Z
+updatedAt: 2026-08-30T04:22:00.000Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。
@@ -47,3 +49,17 @@ HR で提案した内容をそのまま実装する。
   それぞれについて期待どおりに振る舞うことを確認する回帰テストがある。
 - `lib/help.ts` と README.md が新しいコマンドを反映している。
 - `npm run` 経由の test / typecheck / lint が通る。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T04:22:00.000Z, セッション記録)
+- 確認済みの事実: `ac489d0` で実装をコミット。`lib/supervisor.ts` に `cmdRetry`、`lib/cli.ts` の
+  `REPO_COMMANDS` と switch、`lib/help.ts` の `TOP_LEVEL_HELP` / `SUBCOMMAND_HELP["retry"]`、
+  README.md の再実行手順、CHANGELOG.md「未リリース」を更新。回帰テストは `lib/cli.test.ts`
+  (failed / blocked / completed / 存在しない ID / 実行中 / 引数不正 / snoozeUntil 解除)と
+  `lib/supervisor.test.ts`(`lastAttemptHistoryEntry` / `suggestSimilarTaskIds`)に追加。
+  `npm run typecheck` / `npm run lint` / `npm test`(852 件)いずれも通過。reviewer は APPROVE。
+- 未検証の推測: なし。
+- 次の試行への提案: 完了済み。reviewer が挙げた残りのテスト補強(20 行切り詰めの境界、archive
+  案内の統合テスト、「もしかして:」出力書式の統合テスト)は別タスク
+  `T-20260830-0422-retry-test-coverage` に切り出した。

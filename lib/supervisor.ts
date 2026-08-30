@@ -3635,6 +3635,167 @@ export function cmdAdd(argv: string[]): void {
   console.log(`追加: .agent/tasks/${task.id}.md "${task.title}" (priority=${task.priority})`);
 }
 
+// ---------- retry ----------
+
+/** `.agent/tasks/<id>.md` のパス */
+function taskFilePath(id: string): string {
+  return path.join(repoPaths().tasksDir, `${id}.md`);
+}
+
+/** `.agent/archive/tasks/<id>.md` のパス(completed タスクの退避先) */
+function archivedTaskFilePath(id: string): string {
+  return path.join(repoPaths().archiveDir, "tasks", `${id}.md`);
+}
+
+/** 先頭の `<prefix>-<YYYYMMDD>-<HHMM>-` を除いた slug 部分(新形式以外・パターン外はそのまま返す) */
+function slugPartOf(id: string): string {
+  const m = /^[A-Za-z]+-\d{8}-\d{4}-(.+)$/.exec(id);
+  return m ? m[1]! : id;
+}
+
+/** slug 部分をハイフンで区切ったトークン一覧(小文字化、空要素なし) */
+function slugTokensOf(id: string): string[] {
+  return slugPartOf(id).toLowerCase().split("-").filter(Boolean);
+}
+
+/**
+ * `ccloop retry` で ID を取り違えたときの「もしかして」候補(最大 3 件)。
+ * 素朴な近さ判定: 小文字化した ID どうしの部分文字列一致、または slug 部分のハイフン区切り
+ * トークンを 1 つ以上共有していれば候補とし、共有トークン数の多い順・ID 昇順で並べる。
+ */
+export function suggestSimilarTaskIds(query: string, candidateIds: string[]): string[] {
+  const queryLower = query.toLowerCase();
+  const queryTokens = new Set(slugTokensOf(query));
+  const scored: { id: string; shared: number }[] = [];
+  for (const id of new Set(candidateIds)) {
+    const idLower = id.toLowerCase();
+    const shared = slugTokensOf(id).filter((t) => queryTokens.has(t)).length;
+    const substringMatch = idLower.includes(queryLower) || queryLower.includes(idLower);
+    if (substringMatch || shared > 0) scored.push({ id, shared });
+  }
+  scored.sort((a, b) => b.shared - a.shared || a.id.localeCompare(b.id));
+  return scored.slice(0, 3).map((s) => s.id);
+}
+
+/** すべてのタスク ID(.agent/tasks + .agent/archive/tasks)。retry の「もしかして」候補の母集団 */
+function allTaskIds(): string[] {
+  return [...listMdFiles(repoPaths().tasksDir), ...listMdFiles(path.join(repoPaths().archiveDir, "tasks"))].map(
+    (f) => f.replace(/\.md$/, ""),
+  );
+}
+
+/**
+ * body 内「## 試行履歴」セクションのうち最後の `### ` サブセクション(見出し行とその本文、
+ * 次の `### ` または `## ` の直前まで)を取り出す。セクション自体・サブセクションが
+ * 無ければ null。
+ */
+export function lastAttemptHistoryEntry(body: string): string | null {
+  const lines = body.split("\n");
+  const headingIdx = lines.findIndex((l) => l === ATTEMPT_HISTORY_HEADING);
+  if (headingIdx === -1) return null;
+
+  let sectionEnd = lines.length;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    if (lines[i]!.startsWith("## ")) {
+      sectionEnd = i;
+      break;
+    }
+  }
+  const sectionLines = lines.slice(headingIdx + 1, sectionEnd);
+
+  let lastStart = -1;
+  for (let i = 0; i < sectionLines.length; i++) {
+    if (sectionLines[i]!.startsWith("### ")) lastStart = i;
+  }
+  if (lastStart === -1) return null;
+  return sectionLines.slice(lastStart).join("\n").trim();
+}
+
+/** text を maxLines 行に切り詰める。切り詰めた場合のみ末尾に「(以下略)」を付ける */
+function truncateLines(text: string, maxLines: number): string {
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return `${lines.slice(0, maxLines).join("\n")}\n(以下略)`;
+}
+
+/**
+ * retry でタスクを ready へ戻す直前に、直前の失敗理由を stdout へ表示する。
+ * note と試行履歴の最後のエントリのどちらも無ければその旨を 1 行出す。
+ */
+function printPreviousFailureReason(task: Task): void {
+  let printed = false;
+  if (task.note !== undefined) {
+    console.log(`直前の記録: ${task.note}`);
+    printed = true;
+  }
+  const lastEntry = lastAttemptHistoryEntry(task.body);
+  if (lastEntry !== null) {
+    console.log(truncateLines(lastEntry, 20));
+    printed = true;
+  }
+  if (!printed) console.log("直前の失敗理由の記録はありません。");
+}
+
+/**
+ * `ccloop retry <タスクID>`。failed / blocked のタスクを status: ready / retries: 0 へ戻し、
+ * 次の周回で再選択されるようにする。実行中のタスクや、failed / blocked 以外の status は対象外
+ * (安全のため何も変更せず終了する)。
+ */
+export function cmdRetry(argv: string[]): void {
+  if (argv.length !== 1 || argv[0]!.startsWith("-")) {
+    console.error(usageOf("retry"));
+    process.exit(1);
+  }
+  const id = argv[0]!;
+
+  if (!fs.existsSync(taskFilePath(id))) {
+    if (fs.existsSync(archivedTaskFilePath(id))) {
+      console.error(`タスク ${id} は完了済みとして .agent/archive/tasks/ へ退避されています。`);
+      console.error("やり直す場合はファイルを .agent/tasks/ へ戻してから再実行してください。");
+      process.exit(1);
+    }
+    console.error(`タスクが見つかりません: ${id}`);
+    const suggestions = suggestSimilarTaskIds(id, allTaskIds());
+    if (suggestions.length > 0) {
+      console.error("もしかして:");
+      for (const s of suggestions) console.error(`  ${s}`);
+    }
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const runningTaskIds = new Set(
+    state.runningSessions.map((s) => s.taskId).filter((tid): tid is string => tid !== undefined),
+  );
+  if (runningTaskIds.has(id)) {
+    console.error(`タスク ${id} は実行中です。セッションの終了を待ってから再実行してください。`);
+    process.exit(1);
+  }
+
+  const task = loadTask(id);
+  if (task === null) {
+    // ファイルは存在するが frontmatter の status が不正で読めない(通常起こらない想定)
+    console.error(`タスクが見つかりません: ${id}`);
+    process.exit(1);
+  }
+  if (task.status !== "failed" && task.status !== "blocked") {
+    console.error(
+      `タスク ${id} の status は ${task.status} です(failed / blocked のみやり直せます)。何も変更していません。`,
+    );
+    process.exit(1);
+  }
+
+  printPreviousFailureReason(task);
+
+  task.status = "ready";
+  task.retries = 0;
+  const hadSnooze = task.snoozeUntil !== undefined;
+  if (hadSnooze) task.snoozeUntil = undefined;
+  saveTask(task);
+  if (hadSnooze) console.log("待機指定(snoozeUntil)を解除しました。");
+  console.log(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0)。`);
+}
+
 // ---------- 表示共通(色・ステータス表現) ----------
 
 type StyleFormat = Parameters<typeof styleText>[0];

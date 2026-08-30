@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkNodeVersion, readConfigRaw, readVersion, splitGlobalOptions } from "./cli.ts";
 import { SUBCOMMAND_HELP, TOP_LEVEL_HELP, usageOf } from "./help.ts";
 import { createPaths, type Paths } from "./paths.ts";
+import { statePathOf } from "./supervisor.ts";
 
 describe("splitGlobalOptions", () => {
   it("--repo <path> を取り除きサブコマンド以降を残す", () => {
@@ -216,13 +217,13 @@ describe("--help / -h(子プロセスで検証)", () => {
   });
 
   it("トップレベルのヘルプは全サブコマンドと --repo を含む", () => {
-    for (const cmd of ["run", "status", "watch", "list", "add", "init", "doctor", "version"]) {
+    for (const cmd of ["run", "status", "watch", "list", "add", "retry", "init", "doctor", "version"]) {
       expect(TOP_LEVEL_HELP).toContain(cmd);
     }
     expect(TOP_LEVEL_HELP).toContain("--repo");
   });
 
-  const SUBCOMMANDS = ["run", "status", "watch", "list", "add", "init", "doctor", "version"] as const;
+  const SUBCOMMANDS = ["run", "status", "watch", "list", "add", "retry", "init", "doctor", "version"] as const;
 
   it.each(SUBCOMMANDS)("ccloop %s --help はサブコマンドのヘルプを表示して exit 0(リポジトリが無くても動く)", (cmd) => {
     const result = run([cmd, "--help"]);
@@ -242,6 +243,11 @@ describe("--help / -h(子プロセスで検証)", () => {
     for (const opt of ["--desc", "--priority", "--deps", "--model", "--slug"]) {
       expect(result.stdout).toContain(opt);
     }
+  });
+
+  it("retry --help は使い方に <タスクID> を含む", () => {
+    const result = run(["retry", "--help"]);
+    expect(result.stdout).toContain("retry <タスクID>");
   });
 
   it("init --help はオプション --yes/--upgrade を含む", () => {
@@ -396,5 +402,267 @@ describe("status --json / list --json(子プロセスで検証)", () => {
     const text = run(["list"]).stdout;
     expect(text).toContain("サンプルタスク");
     expect(() => JSON.parse(text)).toThrow();
+  });
+});
+
+describe("ccloop retry(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+  let tasksDir: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-retry-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    tasksDir = path.join(repo, ".agent", "tasks");
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, ...args], {
+      encoding: "utf8",
+    });
+    return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+  }
+
+  /** .agent/tasks/<id>.md を frontmatter + 本文で直接書く(cmdAdd を経由せず任意の status を作るため) */
+  function writeTask(id: string, fields: Record<string, string | number>, body = "本文"): string {
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(tasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  /** .agent/archive/tasks/<id>.md を直接書く(rotate を経由せず completed 退避済みの状態を作るため) */
+  function writeArchivedTask(id: string, fields: Record<string, string | number>, body = "本文"): string {
+    const archiveTasksDir = path.join(repo, ".agent", "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(archiveTasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  /** 「## 試行履歴」に `### 試行 1` サブセクション(見出し + 空行 + n 行)を持つ本文 */
+  function historyBody(n: number): string {
+    const items = Array.from({ length: n }, (_, i) => `- 行${i + 1}`);
+    return [
+      "本文",
+      "",
+      "## 試行履歴",
+      "",
+      "### 試行 1(2026-01-01T00:00:00.000Z, ccloop 記録: タイムアウト)",
+      "",
+      ...items,
+    ].join("\n");
+  }
+
+  it("failed タスクを retry すると status: ready / retries: 0 になり exit 0", () => {
+    const id = "T-20260101-0000-fail-task";
+    writeTask(id, {
+      title: "失敗タスク",
+      status: "failed",
+      priority: 3,
+      retries: 2,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      note: "直前の失敗",
+    });
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0)。`);
+    const text = fs.readFileSync(path.join(tasksDir, `${id}.md`), "utf8");
+    expect(text).toContain("status: ready");
+    expect(text).toContain("retries: 0");
+  });
+
+  it("blocked タスクも retry でき、直前の note を表示してから戻す", () => {
+    const id = "T-20260101-0000-blocked-task";
+    writeTask(id, {
+      title: "ブロックタスク",
+      status: "blocked",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      note: "依存タスク待ち",
+    });
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("直前の記録: 依存タスク待ち");
+  });
+
+  it("snoozeUntil が設定されていれば retry で解除する", () => {
+    const id = "T-20260101-0000-snoozed-task";
+    writeTask(id, {
+      title: "待機タスク",
+      status: "failed",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      snoozeUntil: "2999-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("待機指定(snoozeUntil)を解除しました。");
+    const text = fs.readFileSync(path.join(tasksDir, `${id}.md`), "utf8");
+    expect(text).not.toContain("snoozeUntil");
+  });
+
+  it("試行履歴のサブセクションが20行を超える場合は先頭20行に切り詰め「(以下略)」を付ける", () => {
+    const id = "T-20260101-0000-long-history-task";
+    writeTask(
+      id,
+      {
+        title: "履歴の長いタスク",
+        status: "failed",
+        priority: 3,
+        retries: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      historyBody(25),
+    );
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("### 試行 1(2026-01-01T00:00:00.000Z, ccloop 記録: タイムアウト)");
+    expect(result.stdout).toContain("- 行1");
+    expect(result.stdout).toContain("(以下略)");
+    // 見出し行(1) + 空行(1) + 本文 18 行 = 20 行までしか表示しない
+    expect(result.stdout).toContain("- 行18");
+    expect(result.stdout).not.toContain("- 行19");
+    expect(result.stdout).not.toContain("- 行25");
+  });
+
+  it("試行履歴のサブセクションが20行以内ならそのまま表示し「(以下略)」は付けない", () => {
+    const id = "T-20260101-0000-short-history-task";
+    writeTask(
+      id,
+      {
+        title: "履歴の短いタスク",
+        status: "failed",
+        priority: 3,
+        retries: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      historyBody(5),
+    );
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- 行5");
+    expect(result.stdout).not.toContain("(以下略)");
+  });
+
+  it("completed など failed/blocked でないタスクは exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0001-done-task";
+    const file = writeTask(id, {
+      title: "完了タスク",
+      status: "completed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const before = fs.readFileSync(file, "utf8");
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("failed / blocked のみやり直せます");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("存在しない ID は exit 1 で stderr に「見つかりません」が含まれる", () => {
+    const result = run(["retry", "T-no-such-id"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("見つかりません");
+  });
+
+  it("archive にのみ存在する ID を指定すると exit 1 で .agent/archive/tasks/ への退避を案内する", () => {
+    const id = "T-20260101-0000-archived-task";
+    writeArchivedTask(id, {
+      title: "完了済みタスク",
+      status: "completed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`タスク ${id} は完了済みとして .agent/archive/tasks/ へ退避されています。`);
+    expect(result.stderr).toContain(".agent/tasks/ へ戻してから再実行してください。");
+  });
+
+  it("存在しない ID に似たタスクがあれば stderr に「もしかして:」と候補 ID を示す", () => {
+    const similarId = "T-20260101-0000-fix-retry-bug";
+    writeTask(similarId, {
+      title: "似た ID のタスク",
+      status: "ready",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["retry", "T-20260101-0000-fix-retry-typo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("見つかりません");
+    expect(result.stderr).toContain("もしかして:");
+    // インデント付き(先頭 2 スペース)で候補 ID 単独の行になっていることを確認する
+    expect(result.stderr.split("\n")).toContain(`  ${similarId}`);
+  });
+
+  it("実行中のタスク(state.json の runningSessions に登録済み)は exit 1 でファイル無変更", () => {
+    const id = "T-20260101-0002-running-task";
+    const file = writeTask(id, {
+      title: "実行中タスク",
+      status: "failed",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const before = fs.readFileSync(file, "utf8");
+    // XDG_STATE_HOME は lib/test-setup.ts が一時ディレクトリへ差し替え済みで、
+    // spawnSync は env を明示指定していないため process.env(この差し替え後の値)をそのまま
+    // 子プロセスへ継承する(既存の他テストと同じ前提)。よって親プロセスの statePathOf(repo) と
+    // 子プロセスが実際に読む state.json は同じパスになる。
+    fs.writeFileSync(
+      statePathOf(repo),
+      JSON.stringify({
+        runningSessions: [{ kind: "task", taskId: id, startedAt: "2026-01-01T00:00:00.000Z" }],
+      }),
+    );
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("実行中です");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("引数なし・2 個以上・-- で始まる引数は usageOf(\"retry\") を stderr へ出して exit 1", () => {
+    for (const args of [[], ["a", "b"], ["--bogus"]]) {
+      const result = run(["retry", ...args]);
+      expect(result.status).toBe(1);
+      expect(result.stderr.startsWith("使い方: ccloop")).toBe(true);
+    }
   });
 });

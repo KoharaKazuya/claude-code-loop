@@ -31,6 +31,7 @@ import {
   isInstalledSourceDrifted,
   isSnoozed,
   isSupervisorSourceStale,
+  lastAttemptHistoryEntry,
   loadDenyRules,
   loadPendingDecisions,
   loadPermissionDenials,
@@ -74,6 +75,7 @@ import {
   statePathOf,
   type SessionResult,
   type StagedChange,
+  suggestSimilarTaskIds,
   summarizeAgentCommit,
   summarizePermissionDenials,
   supervisorSourceHash,
@@ -738,6 +740,89 @@ describe("appendAttemptRecord", () => {
 
   it("機械的検出であり失敗原因の分析ではない旨を明記する", () => {
     expect(appendAttemptRecord("", rec)).toContain("この記録は機械的検出のみで、失敗原因の分析ではない");
+  });
+});
+
+describe("lastAttemptHistoryEntry", () => {
+  it("見出しが無ければ null", () => {
+    expect(lastAttemptHistoryEntry("本文だけ")).toBeNull();
+  });
+
+  it("見出しはあるがサブセクションが無ければ null", () => {
+    expect(lastAttemptHistoryEntry("本文\n\n## 試行履歴\n")).toBeNull();
+  });
+
+  it("サブセクションが 1 つなら見出し行と本文をそのまま返す", () => {
+    const body = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "タイムアウト(2400000ms)",
+    });
+    const entry = lastAttemptHistoryEntry(body);
+    expect(entry).toContain("### 試行 1(2026-08-14T00:00:00.000Z, ccloop 記録: タイムアウト)");
+    expect(entry).toContain("タイムアウト(2400000ms)");
+  });
+
+  it("サブセクションが複数あれば最後の 1 つだけを返す(次の見出しの直前まで)", () => {
+    const rec = {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout" as const,
+      reason: "1 回目",
+    };
+    const body1 = appendAttemptRecord("本文", rec);
+    const body2 = appendAttemptRecord(body1, { ...rec, attempt: 2, kind: "crash", reason: "2 回目" });
+    const entry = lastAttemptHistoryEntry(body2);
+    expect(entry).toContain("### 試行 2(");
+    expect(entry).toContain("2 回目");
+    expect(entry).not.toContain("### 試行 1(");
+    expect(entry).not.toContain("1 回目");
+  });
+
+  it("試行履歴セクションの後に別の ## 見出しがあればそこで切る", () => {
+    const body = `${appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "タイムアウト",
+    })}\n\n## 別のセクション\n\n別セクションの本文`;
+    const entry = lastAttemptHistoryEntry(body);
+    expect(entry).not.toContain("別セクション");
+  });
+});
+
+describe("suggestSimilarTaskIds", () => {
+  it("部分文字列一致する ID を候補にする", () => {
+    const result = suggestSimilarTaskIds("retry-subcommand", [
+      "T-20260830-0344-retry-subcommand",
+      "T-20260101-0000-unrelated-task",
+    ]);
+    expect(result).toEqual(["T-20260830-0344-retry-subcommand"]);
+  });
+
+  it("slug 部分のトークンを共有する ID を候補にする", () => {
+    const result = suggestSimilarTaskIds("T-20260830-0344-retry-foo", [
+      "T-20260101-0000-retry-bar",
+      "T-20260101-0000-completely-different",
+    ]);
+    expect(result).toEqual(["T-20260101-0000-retry-bar"]);
+  });
+
+  it("一致も共有トークンも無ければ空配列", () => {
+    const result = suggestSimilarTaskIds("no-such-task", ["T-20260101-0000-completely-different"]);
+    expect(result).toEqual([]);
+  });
+
+  it("共有トークン数の多い順・ID 昇順で並び、最大 3 件に絞る", () => {
+    const result = suggestSimilarTaskIds("retry-subcommand-docs", [
+      "T-1-retry-subcommand-docs", // 3 トークン共有
+      "T-2-retry-subcommand-docs", // 3 トークン共有(同率、ID 昇順で先の方が先着)
+      "T-3-retry-only", // 1 トークン共有
+      "T-4-docs-only", // 1 トークン共有
+      "T-5-subcommand-only", // 1 トークン共有
+    ]);
+    expect(result).toEqual(["T-1-retry-subcommand-docs", "T-2-retry-subcommand-docs", "T-3-retry-only"]);
   });
 });
 
