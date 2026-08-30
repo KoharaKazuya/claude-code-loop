@@ -1,9 +1,10 @@
 ---
 title: "ccloop status の確認待ち・待機中の行に一言を添える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "open な HR の行に本文冒頭の一言を、スヌーズ中タスクの行に note を添えた"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 

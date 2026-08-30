@@ -3747,6 +3747,52 @@ interface HrEntry {
   raw: string;
   /** frontmatter 以降の本文(triage の判定材料) */
   body: string;
+  /** status 表示用の一言(hrSummary の結果。無ければ空文字) */
+  summary: string;
+}
+
+/**
+ * Human Review 本文から status 表示用の一言(なければ空文字)を取り出す。
+ * `## 確認事項` 見出しがあればその直後、無ければ本文全体の冒頭から、見出し行(# で始まる行)と
+ * 空行を読み飛ばして最初に現れた段落を採用する。Markdown のソフトラップ(1 文が複数行に折り返されて
+ * いる書き方)で途中切れしないよう、空行に当たるまでの連続行を 1 行に連結してから、飾り(先頭のリスト/
+ * 引用記号、強調記号、バッククォート)を落として maxLen 文字に切り詰める。
+ */
+export function hrSummary(body: string, maxLen = 80): string {
+  const lines = body.split("\n");
+  const headingIndex = lines.findIndex((l) => l.trim() === "## 確認事項");
+  const searchLines = headingIndex === -1 ? lines : lines.slice(headingIndex + 1);
+  const start = searchLines.findIndex((l) => {
+    const trimmed = l.trim();
+    return trimmed !== "" && !trimmed.startsWith("#");
+  });
+  if (start === -1) return "";
+  const paragraph: string[] = [];
+  for (const l of searchLines.slice(start)) {
+    const trimmed = l.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) break;
+    paragraph.push(trimmed);
+  }
+  // 折り返しの連結。日本語は行末・行頭に空白が入らない書き方なので、境界が両側とも非 ASCII の
+  // ときだけ空白なしで繋ぎ、英数字が絡む場合は単語が潰れないよう空白を挟む
+  let cleaned = paragraph.reduce((acc, line) => {
+    if (acc === "") return line;
+    const boundary = `${acc.slice(-1)}${line.slice(0, 1)}`;
+    return /^[^\p{ASCII}]{2}$/u.test(boundary) ? acc + line : `${acc} ${line}`;
+  }, "");
+  // 先頭のリスト/引用記号(- / * / > とその組み合わせ)を繰り返し剥がす
+  let prev: string;
+  do {
+    prev = cleaned;
+    cleaned = cleaned.replace(/^[-*>]\s+/, "");
+  } while (cleaned !== prev);
+  // 強調記号・バッククォートを除去し、空白を畳む
+  cleaned = cleaned
+    .replace(/\*\*|__|\*|_|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned === "") return "";
+  return truncateForDisplay(cleaned, maxLen);
 }
 
 /** .agent/human-review/ の各ファイルをエントリとして読む */
@@ -3765,6 +3811,7 @@ function parseHumanReview(): HrEntry[] {
       importance: str(data.importance) || "?",
       raw,
       body,
+      summary: hrSummary(body),
     };
   });
 }
@@ -4438,11 +4485,18 @@ export function formatStatus(): string {
   const { openBlock, openReview, answered } = data.humanReview;
   const failed = by("failed");
   const blocked = by("blocked");
-  /** open 行の表示用ラベル。回答本文はあるがチェック忘れの場合に注意喚起を付ける */
-  const hrLine = (h: HrEntry): string =>
-    hasFreeTextAnswer(h.body)
-      ? `${h.id}: ${h.title}\n      回答本文あり — [ ] を [x] にすると取り込まれます`
-      : `${h.id}: ${h.title}`;
+  /**
+   * open 行の表示用ラベル。何を聞かれているかが一目で分かるよう summary を添え、回答本文はあるが
+   * チェック忘れの場合はさらに注意喚起を付ける
+   */
+  const hrLine = (h: HrEntry): string => {
+    const extra: string[] = [];
+    // 本文側が「一言でいうと: …」で始まる書き方に揃っているため、こちらで見出し語を足すと
+    // 二重になる。抜き出した行をそのまま「→」で示すだけにする
+    if (h.summary !== "") extra.push(`→ ${h.summary}`);
+    if (hasFreeTextAnswer(h.body)) extra.push("回答本文あり — [ ] を [x] にすると取り込まれます");
+    return [`${h.id}: ${h.title}`, ...extra.map((l) => `      ${l}`)].join("\n");
+  };
 
   const pending = data.pendingConflicts;
 
@@ -4536,7 +4590,11 @@ export function formatStatus(): string {
     push("  なし");
   } else {
     for (const t of snoozed) {
-      push(`  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`);
+      push(
+        `  ${t.id}  ${t.title}  ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}${
+          t.note ? `\n      note: ${t.note}` : ""
+        }`,
+      );
     }
     push("  → 残っている間、run モードのループは自動終了(idle-exit)しない");
   }
