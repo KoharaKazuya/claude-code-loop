@@ -31,6 +31,8 @@ try {
   process.stdout.write(wtPath + "\n");
   process.exit(0);
 } catch (err) {
-  process.stderr.write(String((err as Error)?.stack ?? err) + "\n");
+  // config.json が壊れている場合などは Error のメッセージ(人間向けの複数行案内)だけを出す。
+  // stack を出すと案内文の後ろにスタックトレースが続いてしまい読みにくいため
+  process.stderr.write(String((err as Error)?.message ?? err) + "\n");
   process.exit(1);
 }
