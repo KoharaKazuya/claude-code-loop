@@ -4124,7 +4124,7 @@ export function pendingDecisionsSectionLines(pd: PendingDecisions): string[] {
  * `formatStatus`(人間向けテキスト)と `statusDataToJson`(`--json`)の両方がここから作る
  * ことで、データ取得と整形表示を分離する。値は内部の型(Task / State 等)をそのまま持つ。
  */
-interface StatusData {
+export interface StatusData {
   tasks: Task[];
   /** archive へ退避済みの completed タスク件数(「完了 X/N」の累積表示に使う) */
   archivedCompletedCount: number;
@@ -4151,7 +4151,7 @@ interface StatusData {
  * ファイルへの書き込みは行わない)。config.json が読めない場合は既定値へフォールバックする
  * (status は状況を見るためのものなので、他コマンドのように止めない)。
  */
-function collectStatusData(now: Date): StatusData {
+export function collectStatusData(now: Date): StatusData {
   const tasks = loadTasks();
   const state = loadState();
   const hr = parseHumanReview();
