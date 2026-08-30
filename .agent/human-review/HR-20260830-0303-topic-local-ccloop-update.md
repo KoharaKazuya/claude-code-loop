@@ -1,7 +1,8 @@
 ---
 title: "手元の ccloop を最新の中身に入れ替える手順を用意するか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0342-local-ccloop-update-docs]
 createdAt: 2026-08-30T03:03:01.138Z
 ---
 
@@ -50,5 +51,4 @@ createdAt: 2026-08-30T03:03:01.138Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+1
