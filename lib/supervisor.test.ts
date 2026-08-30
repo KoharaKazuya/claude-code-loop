@@ -146,6 +146,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     status: "ready",
     priority: 3,
     dependencies: [],
+    conflicts: [],
     retries: 0,
     conflictRetries: 0,
     createdAt: "2026-08-01T00:00:00.000Z",
@@ -395,6 +396,83 @@ describe("planTaskSelection", () => {
 
     expect(snoozed).toEqual([]);
     expect(runnable).toEqual([dep]);
+  });
+});
+
+describe("planTaskSelection の conflicts", () => {
+  const NOW = new Date("2026-08-14T00:00:00.000Z");
+
+  it("実行中タスクと競合する ready タスクは runnable から外れ、conflictHeld に相手 ID 付きで入る", () => {
+    const a = makeTask({ id: "T-001", conflicts: ["T-002"] });
+    const b = makeTask({ id: "T-002" });
+
+    const { runnable, conflictHeld } = planTaskSelection([a, b], NOW, new Set(["T-001"]));
+
+    expect(runnable.map((t) => t.id)).toEqual([]);
+    expect(conflictHeld).toEqual([{ task: b, blockedBy: ["T-001"] }]);
+  });
+
+  it("競合は対称に効く(B の conflicts に A が書いてあり、A 側に記載が無くても A 実行中なら B は選ばれない)", () => {
+    const a = makeTask({ id: "T-001" });
+    const b = makeTask({ id: "T-002", conflicts: ["T-001"] });
+
+    const { runnable, conflictHeld } = planTaskSelection([a, b], NOW, new Set(["T-001"]));
+
+    expect(runnable.map((t) => t.id)).toEqual([]);
+    expect(conflictHeld).toEqual([{ task: b, blockedBy: ["T-001"] }]);
+  });
+
+  it("同一周回で互いに競合する 2 件は、優先度の高い方だけが runnable に残り、他方は conflictHeld に入る", () => {
+    const high = makeTask({ id: "T-001", priority: 1, conflicts: ["T-002"] });
+    const low = makeTask({ id: "T-002", priority: 5 });
+
+    const { runnable, conflictHeld } = planTaskSelection([low, high], NOW);
+
+    expect(runnable.map((t) => t.id)).toEqual(["T-001"]);
+    expect(conflictHeld).toEqual([{ task: low, blockedBy: ["T-001"] }]);
+  });
+
+  it("実行中が 0 件なら必ず 1 件は runnable に残る(飢餓しない)", () => {
+    const a = makeTask({ id: "T-001", priority: 1, conflicts: ["T-002", "T-003"] });
+    const b = makeTask({ id: "T-002", priority: 2, conflicts: ["T-001", "T-003"] });
+    const c = makeTask({ id: "T-003", priority: 3, conflicts: ["T-001", "T-002"] });
+
+    const { runnable } = planTaskSelection([a, b, c], NOW);
+
+    expect(runnable.length).toBeGreaterThanOrEqual(1);
+    expect(runnable[0]!.id).toBe("T-001");
+  });
+
+  it("競合が輪(A↔B, B↔C, C↔A)でもデッドロックしない", () => {
+    const a = makeTask({ id: "T-001", priority: 1, conflicts: ["T-002"] });
+    const b = makeTask({ id: "T-002", priority: 2, conflicts: ["T-003"] });
+    const c = makeTask({ id: "T-003", priority: 3, conflicts: ["T-001"] });
+    const tasks = [a, b, c];
+
+    // 実行中 0 件なら 1 件(優先度最高)が選ばれる
+    const first = planTaskSelection(tasks, NOW, new Set());
+    expect(first.runnable.map((t) => t.id)).toEqual(["T-001"]);
+
+    // その 1 件を runningIds に入れると、残りは輪でつながっているため conflictHeld に回る
+    const whileRunning = planTaskSelection(tasks, NOW, new Set(["T-001"]));
+    expect(whileRunning.runnable).toEqual([]);
+    expect(whileRunning.conflictHeld.map((c) => c.task.id).sort()).toEqual(["T-002", "T-003"]);
+
+    // runningIds を空に戻せばまた選べる(待ち続けて止まったままにはならない)
+    const afterFinish = planTaskSelection(tasks, NOW, new Set());
+    expect(afterFinish.runnable.map((t) => t.id)).toEqual(["T-001"]);
+  });
+
+  it("存在しない ID を conflicts に書いても無視され、そのタスクは通常どおり選ばれる", () => {
+    const t = makeTask({ id: "T-001", conflicts: ["T-999"] });
+    const other = makeTask({ id: "T-002" });
+
+    // T-999 はどのタスクとも一致しない ID。実行中の実タスク(T-002)とは無関係なので、
+    // t は競合の影響を受けず通常どおり選ばれる
+    const { runnable, conflictHeld } = planTaskSelection([t, other], NOW, new Set(["T-002"]));
+
+    expect(runnable).toEqual([t]);
+    expect(conflictHeld).toEqual([]);
   });
 });
 
@@ -702,6 +780,7 @@ describe("taskFromFile", () => {
       status: "ready",
       priority: 2,
       dependencies: ["T-001", "T-002"],
+      conflicts: [],
       retries: 1,
       conflictRetries: 0,
       note: "進捗メモ",
@@ -731,6 +810,7 @@ describe("taskFromFile", () => {
       status: "ready",
       priority: 3,
       dependencies: [],
+      conflicts: [],
       retries: 0,
       conflictRetries: 0,
       createdAt: "2026-08-01T00:00:00.000Z",
@@ -797,6 +877,7 @@ describe("taskFromFile", () => {
       status: "ready",
       priority: 3,
       dependencies: [],
+      conflicts: [],
       retries: 0,
       conflictRetries: 0,
       createdAt: "",
@@ -820,6 +901,7 @@ describe("taskFromFile", () => {
       status: "ready",
       priority: 3,
       dependencies: [],
+      conflicts: [],
       retries: 0,
       conflictRetries: 0,
       createdAt: "",
@@ -837,6 +919,7 @@ describe("taskFromFile", () => {
       status: "ready",
       priority: 3,
       dependencies: [],
+      conflicts: [],
       retries: 0,
       conflictRetries: 0,
       createdAt: "",
@@ -916,6 +999,37 @@ describe("taskFrontmatter 往復", () => {
     const text = serializeFrontmatter(taskFrontmatter(original), original.body);
 
     expect(text).not.toContain("conflictRetries");
+  });
+
+  it("conflicts が空でなければ frontmatter に書き出され、往復一致する", () => {
+    const original = makeTask({
+      id: "T-016",
+      conflicts: ["T-001", "T-002"],
+    });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+    expect(text).toContain("conflicts: [T-001, T-002]");
+    fs.writeFileSync(path.join(dir, `${original.id}.md`), text);
+    const restored = taskFromFile(dir, `${original.id}.md`);
+
+    expect(restored).toEqual(original);
+  });
+
+  it("conflicts が空のときは frontmatter に書き出さない(既存タスクファイルに無駄な行を増やさない)", () => {
+    const original = makeTask({ id: "T-017", conflicts: [] });
+
+    const text = serializeFrontmatter(taskFrontmatter(original), original.body);
+
+    expect(text).not.toContain("conflicts");
+  });
+
+  it("conflicts 未指定の frontmatter は空配列として読める(後方互換)", () => {
+    const text = ["---", "title: タイトル", "status: ready", "---", "本文"].join("\n");
+    fs.writeFileSync(path.join(dir, "T-018.md"), text);
+
+    const task = taskFromFile(dir, "T-018.md");
+
+    expect(task?.conflicts).toEqual([]);
   });
 
   it("試行履歴入りの body も往復一致する", () => {
@@ -6018,6 +6132,14 @@ describe("assertDepsExist", () => {
     expect(() => assertDepsExist(["T-20260830-0344-retry-foo"], ["T-20260101-0000-retry-bar"])).toThrow(
       /もしかして: T-20260101-0000-retry-bar/,
     );
+  });
+
+  it("flag 省略時は --deps のメッセージのまま", () => {
+    expect(() => assertDepsExist(["T-x"], [])).toThrow(/^--deps に存在しないタスク ID があります/);
+  });
+
+  it("flag に --conflicts を渡すとメッセージが --conflicts になる", () => {
+    expect(() => assertDepsExist(["T-x"], [], "--conflicts")).toThrow(/^--conflicts に存在しないタスク ID があります/);
   });
 });
 

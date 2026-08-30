@@ -1,9 +1,10 @@
 ---
 title: "競合するタスクを同時に実行しない(conflicts メタデータとタスク選択)"
-status: ready
+status: completed
 priority: 2
 dependencies: [T-20260830-1334-changelog-doctor-agentroot-fix]
 retries: 0
+note: "conflicts フィールドとタスク選択・status 表示・ccloop add --conflicts を実装。npm test / lint / typecheck 通過"
 createdAt: 2026-08-30T13:34:03.651Z
 ---
 

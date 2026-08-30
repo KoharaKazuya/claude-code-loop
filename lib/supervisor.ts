@@ -160,6 +160,9 @@ export interface Task {
   status: TaskStatus;
   priority: number;
   dependencies: string[];
+  /** 同時に実行しないタスクの ID。dependencies が順序の制約であるのに対し、これは同時実行の排除。
+   * 関係は対称に扱うため、どちらか一方に書けば足りる */
+  conflicts: string[];
   retries: number;
   /** マージ衝突による失敗の再試行回数。retries とは別枠(マージ衝突はタスクの中身の失敗ではないため) */
   conflictRetries: number;
@@ -324,6 +327,7 @@ const KNOWN_TASK_FIELDS: ReadonlySet<string> = new Set([
   "status",
   "priority",
   "dependencies",
+  "conflicts",
   "retries",
   "conflictRetries",
   "model",
@@ -346,6 +350,7 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
       status,
       priority: typeof data.priority === "number" ? data.priority : 3,
       dependencies: Array.isArray(data.dependencies) ? data.dependencies : [],
+      conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
       retries: typeof data.retries === "number" ? data.retries : 0,
       conflictRetries: typeof data.conflictRetries === "number" ? data.conflictRetries : 0,
       createdAt: str(data.createdAt),
@@ -535,6 +540,9 @@ export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | unde
     status: t.status,
     priority: t.priority,
     dependencies: t.dependencies,
+    // conflictRetries と同様、空配列はキー自体を書き出さない(既存の全タスクファイルに
+    // conflicts: [] が増えるのを避けるため)
+    conflicts: t.conflicts.length > 0 ? t.conflicts : undefined,
     retries: t.retries,
     conflictRetries: t.conflictRetries !== 0 ? t.conflictRetries : undefined,
     model: t.model,
@@ -2238,6 +2246,16 @@ export function isSnoozed(t: Task, now: Date): boolean {
  * runningIds は今まさにセッションが走っているタスクの ID。実行中はタスクファイルの status が
  * ready のまま(working は書かれない)なので、二重起動を防ぐにはここで除外する必要がある。
  * 実行中タスクを依存に持つタスクは、依存が completed でない以上そのまま runnable にならない。
+ *
+ * `conflicts` による同時実行の排除は貪欲・優先度順に行う: 実行中(runningIds)のタスクを
+ * 「既に枠を占有している」ものとして扱い、優先度順に見ていって、実行中または既に選ばれたタスクと
+ * 競合するものだけを runnable から外す(conflictHeld へ回す)。
+ * - 実行中が 0 件なら占有集合は空なので、優先度が最も高い候補は必ず runnable に残る
+ *   (飢餓しない)。
+ * - 競合は「今回は選ばない」だけで待ち続ける関係ではないため、A↔B↔C のように輪になっていても
+ *   デッドロックしない(相手が終われば runningIds から消え、次の周回で選べるようになる)。
+ * - この結果、runnable は「実行中とも、互いにも競合しない」列になる。scheduler.ts の
+ *   planLoopStep が runnable を同一周回でまとめて起動しても競合が起きない。
  */
 export function planTaskSelection(
   tasks: Task[],
@@ -2246,13 +2264,15 @@ export function planTaskSelection(
 ): {
   /** 依存タスクが failed/blocked のため blocked へ落とすべき ready タスクと、その原因の依存 ID */
   toBlock: { task: Task; deadDep: string }[];
-  /** 実行可能なタスクを優先度順に並べたもの。toBlock 対象・スヌーズ中・実行中のタスクは除外済み */
+  /** 実行可能なタスクを優先度順に並べたもの。toBlock 対象・スヌーズ中・実行中・競合中のタスクは除外済み */
   runnable: Task[];
   /** 次に実行可能なタスク(なければ null)= runnable の先頭 */
   next: Task | null;
   /** ready・依存充足・未実行だが、スヌーズ中のため runnable から外れているタスク
    * (時間が来れば runnable に戻るため、run モードの自動終了判定で使う) */
   snoozed: Task[];
+  /** 実行中(または同じ周回で先に選ばれた)タスクと競合するため、今回は選ばれなかったタスクと、その相手 */
+  conflictHeld: { task: Task; blockedBy: string[] }[];
 } {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const effectiveStatus = new Map<string, TaskStatus>(tasks.map((t) => [t.id, t.status]));
@@ -2277,10 +2297,39 @@ export function planTaskSelection(
     !runningIds.has(t.id) &&
     t.dependencies.every((d) => depSatisfied(byId, d));
 
-  const runnable = tasks.filter((t) => selectable(t) && !isSnoozed(t, now));
-  runnable.sort(byPriorityThenCreatedAt);
+  // conflicts は対称に扱うため、両向きに辺を張った隣接表を作る。存在しない ID はどのタスクとも
+  // 一致しないだけなので、検出も警告もせず黙って無視される。
+  const adjacency = new Map<string, Set<string>>();
+  const addEdge = (a: string, b: string): void => {
+    if (a === b) return;
+    if (!adjacency.has(a)) adjacency.set(a, new Set());
+    adjacency.get(a)!.add(b);
+  };
+  for (const t of tasks) {
+    for (const other of t.conflicts) {
+      addEdge(t.id, other);
+      addEdge(other, t.id);
+    }
+  }
+
+  const sorted = tasks.filter((t) => selectable(t) && !isSnoozed(t, now));
+  sorted.sort(byPriorityThenCreatedAt);
   const snoozed = tasks.filter((t) => selectable(t) && isSnoozed(t, now));
-  return { toBlock, runnable, next: runnable[0] ?? null, snoozed };
+
+  const claimed = new Set(runningIds); // 実行中のタスクは既に枠を占有している
+  const kept: Task[] = [];
+  const conflictHeld: { task: Task; blockedBy: string[] }[] = [];
+  for (const t of sorted) {
+    const blockedBy = [...(adjacency.get(t.id) ?? [])].filter((id) => claimed.has(id)).sort();
+    if (blockedBy.length > 0) {
+      conflictHeld.push({ task: t, blockedBy });
+    } else {
+      kept.push(t);
+      claimed.add(t.id);
+    }
+  }
+
+  return { toBlock, runnable: kept, next: kept[0] ?? null, snoozed, conflictHeld };
 }
 
 /**
@@ -4633,7 +4682,7 @@ export function newTaskId(slug: string, createdAt: string): string {
   return disambiguateId(buildId("T", slug, createdAt), (id) => taken.has(id));
 }
 
-const ADD_FLAG_NAMES = ["desc", "priority", "deps", "model", "slug"];
+const ADD_FLAG_NAMES = ["desc", "priority", "deps", "conflicts", "model", "slug"];
 
 /**
  * argv からフラグとその直後の値を除いた位置引数のみを抽出する。
@@ -4692,10 +4741,10 @@ export function resolvePriority(raw: string | undefined): number {
 }
 
 /**
- * `--deps` の値をカンマ区切りのタスク ID 配列に変換する。`raw` が未指定なら空配列を返す。
- * "T-a, T-b" のようにカンマの後に空白を入れるのは自然な書き方なので各要素を trim し、
+ * `--deps` / `--conflicts` の値をカンマ区切りのタスク ID 配列に変換する。`raw` が未指定なら
+ * 空配列を返す。"T-a, T-b" のようにカンマの後に空白を入れるのは自然な書き方なので各要素を trim し、
  * 空要素(連続カンマや末尾カンマ由来)は捨てる。trim しないと " T-b" のような先頭空白付き ID が
- * 登録され、依存関係が黙って無効になる。
+ * 登録され、依存・競合関係が黙って無効になる。
  */
 export function parseDeps(raw: string | undefined): string[] {
   if (raw === undefined) return [];
@@ -4706,17 +4755,24 @@ export function parseDeps(raw: string | undefined): string[] {
 }
 
 /**
- * `deps` の各 ID が `knownIds` に実在するか検証する。存在しない ID を書いたタスクは
- * 依存が満たされず永久に選ばれないが、`add` した本人には成功メッセージしか出ないため、
- * その場でエラーにして気付けるようにする。completed タスクへの依存は正当なので、
- * 突き合わせ先には `.agent/archive/tasks` の ID も含める(呼び出し側が `allTaskIds()` を渡す)。
+ * `deps`(`--deps` または `--conflicts` の値)の各 ID が `knownIds` に実在するか検証する。
+ * 存在しない ID を書いたタスクは依存/競合が意図どおり効かないが、`add` した本人には成功メッセージ
+ * しか出ないため、その場でエラーにして気付けるようにする。completed タスクへの依存・競合は
+ * 正当なので、突き合わせ先には `.agent/archive/tasks` の ID も含める(呼び出し側が
+ * `allTaskIds()` を渡す)。
+ *
+ * これは CLI 入力時の人間の打ち間違い防止であり、実行時(planTaskSelection)が存在しない
+ * conflicts の ID を黙って無視するのとは役割が違う(実行時は「add 時点では存在したが、その後
+ * 削除・改名された ID」のようなケースまで拒否する必要はない)。
+ *
+ * `flag` はエラーメッセージに使うフラグ名。呼び出し元(`--deps` / `--conflicts`)に合わせて渡す。
  */
-export function assertDepsExist(deps: string[], knownIds: string[]): void {
+export function assertDepsExist(deps: string[], knownIds: string[], flag: string = "--deps"): void {
   if (deps.length === 0) return;
   const knownSet = new Set(knownIds);
   const missing = deps.filter((id) => !knownSet.has(id));
   if (missing.length === 0) return;
-  const lines = [`--deps に存在しないタスク ID があります: ${missing.join(", ")}`];
+  const lines = [`${flag} に存在しないタスク ID があります: ${missing.join(", ")}`];
   for (const id of missing) {
     const suggestions = suggestSimilarTaskIds(id, knownIds);
     if (suggestions.length > 0) lines.push(`  ${id} → もしかして: ${suggestions.join(", ")}`);
@@ -4740,11 +4796,16 @@ export function cmdAdd(argv: string[]): void {
   let slug: string;
   let priority: number;
   let dependencies: string[];
+  let conflicts: string[];
   try {
     slug = resolveTaskSlug(title, opt("slug"));
     priority = resolvePriority(opt("priority"));
     dependencies = parseDeps(opt("deps"));
     if (dependencies.length > 0) assertDepsExist(dependencies, allTaskIds());
+    conflicts = parseDeps(opt("conflicts"));
+    // CLI 入力時の存在検証は人間の打ち間違い防止であり、実行時(planTaskSelection)が
+    // 存在しない ID を黙って無視するのとは役割が違う
+    if (conflicts.length > 0) assertDepsExist(conflicts, allTaskIds(), "--conflicts");
   } catch (err) {
     console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -4755,6 +4816,7 @@ export function cmdAdd(argv: string[]): void {
     status: "ready",
     priority,
     dependencies,
+    conflicts,
     retries: 0,
     conflictRetries: 0,
     createdAt: now,
@@ -5292,6 +5354,7 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
           status: "ready",
           priority: d.priority,
           dependencies: [],
+          conflicts: [],
           retries: 0,
           conflictRetries: 0,
           createdAt,
@@ -5356,6 +5419,19 @@ function snoozedTasksByUntil(tasks: Task[], runningIds: ReadonlySet<string>): Ta
   return [...planTaskSelection(tasks, new Date(), runningIds).snoozed].sort(
     (a, b) => Date.parse(a.snoozeUntil ?? "") - Date.parse(b.snoozeUntil ?? ""),
   );
+}
+
+/**
+ * 競合により今回は選ばれなかった(実行中または優先度の高い別タスクと同時に実行しない)タスクを、
+ * 優先度昇順 → 作成日時昇順で返す。判定基準を表示用に複製しないため、nextRunnableTasks と同じ
+ * planTaskSelection をそのまま呼ぶ。
+ */
+function conflictHeldTasks(
+  tasks: Task[],
+  runningIds: ReadonlySet<string>,
+  limit: number,
+): { task: Task; blockedBy: string[] }[] {
+  return planTaskSelection(tasks, new Date(), runningIds).conflictHeld.slice(0, limit);
 }
 
 /** ミリ秒を人間向けの経過時間表記(45秒 / 12分 / 1時間5分)にする */
@@ -5854,6 +5930,8 @@ export interface StatusData {
   pendingDecisions: PendingDecisions;
   nextRunnableTasks: Task[];
   snoozedTasks: Task[];
+  /** 実行中または優先度の高い別タスクと競合するため、今回は選ばれなかったタスク */
+  conflictHeldTasks: { id: string; priority: number; title: string; blockedBy: string[] }[];
   metrics: SessionMetrics[];
   /** 読み込み上限で metrics.jsonl の古い記録を読み飛ばしているか(累計 cost が直近ぶんの集計になる) */
   metricsTruncated: boolean;
@@ -5966,6 +6044,12 @@ export function collectStatusData(now: Date): StatusData {
   );
   const next = nextRunnableTasks(tasks, runningTaskIds, 3);
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
+  const conflictHeld = conflictHeldTasks(tasks, runningTaskIds, 3).map(({ task, blockedBy }) => ({
+    id: task.id,
+    priority: task.priority,
+    title: task.title,
+    blockedBy,
+  }));
   const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
   const { entries: metrics, truncated: metricsTruncated } = loadMetrics();
   // インストール先のハッシュは 2 つの判定(起動時からの陳腐化・リポジトリとの乖離)で共用する。
@@ -6025,6 +6109,7 @@ export function collectStatusData(now: Date): StatusData {
     pendingDecisions,
     nextRunnableTasks: next,
     snoozedTasks: snoozed,
+    conflictHeldTasks: conflictHeld,
     metrics,
     metricsTruncated,
     inputsChanged,
@@ -6241,14 +6326,19 @@ export function formatStatus(): string {
   push("\n次に実行予定のタスク");
   const next = data.nextRunnableTasks;
   const snoozed = data.snoozedTasks;
+  const conflictHeld = data.conflictHeldTasks;
   if (next.length === 0) {
-    push(
-      snoozed.length > 0
-        ? `  なし(スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil})`
-        : "  なし(依存待ちの可能性)",
-    );
+    // 待ち理由は同時に成立しうるので、成立しているものをすべて並べる(片方だけ出すと
+    // 「もう片方は無い」と読めてしまう)。どれも無ければ依存待ちを疑う
+    const waiting: string[] = [];
+    if (conflictHeld.length > 0) waiting.push(`競合待ち ${conflictHeld.length} 件`);
+    if (snoozed.length > 0) waiting.push(`スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil}`);
+    push(waiting.length > 0 ? `  なし(${waiting.join("、")})` : "  なし(依存待ちの可能性)");
   } else {
     for (const t of next) push(`  ${t.id}  p${t.priority}  ${t.title}`);
+  }
+  for (const c of conflictHeld) {
+    push(`  競合待ち  ${c.id}  p${c.priority}  ${c.title}(${c.blockedBy.join(", ")} と同時に実行しない)`);
   }
 
   push(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
