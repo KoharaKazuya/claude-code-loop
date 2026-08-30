@@ -2,7 +2,9 @@
 title: "config.json のほとんどの項目が検証されず、壊れていると素の TypeError で落ちる"
 status: ready
 priority: 4
-retries: 0
+dependencies: []
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md)(元: -)"
 createdAt: 2026-08-30T05:37:00.000Z
 ---
 
@@ -56,3 +58,9 @@ $ node -e 'require("child_process").spawn(undefined, ["--version"])'
    「## 未リリース」に 1 行足す。
 
 ## 試行履歴
+
+### 試行 1(2026-08-30T06:05:53.495Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
