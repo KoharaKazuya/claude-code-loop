@@ -137,12 +137,29 @@ const EXPECTED_MENTIONS: Record<string, readonly string[]> = {
   "Bash(git push*)": ["git push"],
   "Bash(git checkout*)": ["checkout"],
   "Bash(git switch*)": ["switch"],
-  "Bash(git merge*)": ["merge"],
+  "Bash(git merge)": ["git merge"],
+  "Bash(git merge *)": ["git merge"],
   "Bash(git rebase*)": ["rebase"],
   "Bash(git reset*)": ["reset"],
   "Bash(git clean*)": ["clean"],
-  "Bash(git stash*)": ["stash"],
-  "Bash(git worktree*)": ["worktree"],
+  "Bash(git stash)": ["git stash"],
+  "Bash(git stash -*)": ["-u"],
+  "Bash(git stash push*)": ["push"],
+  "Bash(git stash save*)": ["save"],
+  "Bash(git stash pop*)": ["pop"],
+  "Bash(git stash apply*)": ["apply"],
+  "Bash(git stash drop*)": ["drop"],
+  "Bash(git stash clear*)": ["clear"],
+  "Bash(git stash branch*)": ["branch"],
+  "Bash(git stash create*)": ["create"],
+  "Bash(git stash store*)": ["store"],
+  "Bash(git worktree add*)": ["git worktree", "add"],
+  "Bash(git worktree remove*)": ["remove"],
+  "Bash(git worktree move*)": ["move"],
+  "Bash(git worktree prune*)": ["prune"],
+  "Bash(git worktree lock*)": ["lock"],
+  "Bash(git worktree unlock*)": ["unlock"],
+  "Bash(git worktree repair*)": ["repair"],
   "Bash(git branch -D *)": ["git branch -d/-D/-m/-M"],
   "Bash(git branch -d *)": ["git branch -d/-D/-m/-M"],
   "Bash(git branch -m *)": ["git branch -d/-D/-m/-M"],
@@ -150,10 +167,19 @@ const EXPECTED_MENTIONS: Record<string, readonly string[]> = {
   "Bash(sudo *)": ["sudo"],
 };
 
-// テンプレートに書けない deny(lib/settings.ts が state ディレクトリの絶対パスに対して
-// 実行時に追加する自己改変禁止の Edit deny)を PROMPT.md 側で inline code で言及した場合は
-// ここに足す。現状その言及は散文で書かれており inline code ではないため空。
-const TEMPLATE_FREE_MENTIONS: readonly string[] = [];
+// テンプレートの deny エントリに対応しない inline code トークンの明示的な許容リスト。用途は 2 つ:
+//   1. テンプレートに書けない deny(lib/settings.ts が state ディレクトリの絶対パスに対して実行時に
+//      追加する自己改変禁止の Edit deny)を PROMPT.md 側で inline code で言及した場合。現状その言及は
+//      散文で書かれており inline code ではないため該当なし。
+//   2. 「禁止されない読み取り専用コマンド」として deny ブロック内に併記しているもの。deny を接頭辞から
+//      狭めた結果どれが通るようになったかは deny の説明の一部なので、同じブロックに書いている。
+const TEMPLATE_FREE_MENTIONS: readonly string[] = [
+  "git merge-base",
+  "git merge-tree",
+  "git stash list",
+  "git stash show",
+  "git worktree list",
+];
 
 const templateDeny: string[] = (JSON.parse(TEMPLATE_TEXT) as Settings).permissions?.deny ?? [];
 
@@ -181,6 +207,93 @@ describe("deny リストと PROMPT.md の一致", () => {
 
   it("PROMPT.md の deny ブロックにテンプレート由来でない言及が混ざっていない(逆方向の検知)", () => {
     expect(findUnexpectedMentions(mentions, EXPECTED_MENTIONS, TEMPLATE_FREE_MENTIONS)).toEqual([]);
+  });
+});
+
+/**
+ * Claude Code の Bash permission パターン照合の**保守的な近似**。
+ *
+ * 本家の規則(claude-code 2.1.220 の実装を確認したもの)は次の 3 型に分かれる:
+ *   - `*` を含まない  → 完全一致(大文字小文字は無視)
+ *   - `<prefix>:*`    → 語境界つきの前方一致
+ *   - それ以外の `*`  → `*` を `.*` に開いた全体 anchor つき正規表現(語境界を強制しない)
+ * この 3 型は上記バージョンのバイナリに含まれる実装を読んで確認したものだが、実機の Claude Code に
+ * 設定を読ませての動作確認まではしていない。加えて、本家の wildcard 型には「末尾が半角スペース + `*`
+ * なら、その部分を丸ごと省略可能として扱う」特例があるように読めた(こちらは確度が落ちる)。
+ * ここではその特例を**あえて再現しない**。特例に依存しない分だけ判定が厳しくなる
+ * (= deny の範囲を狭く見積もる)ため、このテストが「禁止されている」と言えるものは本家でも
+ * 確実に禁止される。引数なしの `git merge` / `git stash` はこの特例に頼らず、専用の完全一致
+ * エントリで禁止していることの確認も兼ねる。
+ */
+function matchesDenyPattern(pattern: string, command: string): boolean {
+  const normalize = (s: string) => s.trim().replace(/[ \t]+/g, " ");
+  const p = normalize(pattern);
+  const c = normalize(command);
+  if (!p.includes("*")) return p.toLowerCase() === c.toLowerCase();
+
+  // wildcard 型で大文字小文字を無視するかは未確認。無視する側(= deny を広く見積もる側)に倒すと
+  // 抜け穴を見逃すため、`MUST_STAY_DENIED` の判定は小文字のコマンドだけで足りる前提にしている。
+  const source = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${source}$`, "i").test(c);
+}
+
+/** deny 一覧のいずれかのパターンに command が一致するか */
+function isDenied(command: string, deny: readonly string[]): boolean {
+  return deny.some((entry) => {
+    const m = /^Bash\((.+)\)$/.exec(entry);
+    return m !== null && matchesDenyPattern(m[1], command);
+  });
+}
+
+// 読み取り専用のため通したいコマンド。ccloop 自身が lib/worktree.ts と lib/supervisor.ts で
+// `git worktree list --porcelain` と `git merge-base` を使っており、その周辺を調べるセッションが
+// 手元で同じコマンドを打てないと実機再現ができない、というのがこれらを外した理由である。
+const MUST_BE_ALLOWED = [
+  "git merge-base HEAD main",
+  "git merge-base --is-ancestor a b",
+  "git merge-tree main topic",
+  "git worktree list",
+  "git worktree list --porcelain",
+  "git stash list",
+  "git stash show -p stash@{0}",
+];
+
+// 変更を伴うため引き続き禁止し続けたいコマンド。deny を狭めた結果ここが通ってしまう
+// (緩めすぎ)ことを防ぐのがこのリストの役割。
+const MUST_STAY_DENIED = [
+  "git merge main",
+  "git merge --abort",
+  "git merge",
+  "git worktree add ../wt topic",
+  "git worktree remove ../wt",
+  "git worktree prune",
+  "git worktree move ../a ../b",
+  "git worktree lock ../wt",
+  "git worktree unlock ../wt",
+  "git worktree repair",
+  "git stash",
+  "git stash -u",
+  'git stash push -u -m "tag"',
+  "git stash pop",
+  "git stash apply stash@{0}",
+  "git stash drop stash@{0}",
+  "git stash clear",
+  "git stash branch topic",
+  "git push origin main",
+  "git checkout main",
+  "git switch -c topic",
+  "git rebase main",
+  "git reset --hard HEAD",
+  "git clean -fd",
+];
+
+describe("deny パターンの粒度(読み取り専用の巻き添えを防ぎ、変更系は禁止し続ける)", () => {
+  it.each(MUST_BE_ALLOWED)("読み取り専用の `%s` は deny に一致しない", (command) => {
+    expect(isDenied(command, templateDeny)).toBe(false);
+  });
+
+  it.each(MUST_STAY_DENIED)("変更を伴う `%s` は deny に一致する", (command) => {
+    expect(isDenied(command, templateDeny)).toBe(true);
   });
 });
 
@@ -219,6 +332,17 @@ describe("ドリフト検知の自己テスト(検査自体が機能している
 
     expect(findUnexpectedMentions(mentions, table, [])).toEqual(["unexpected-token"]);
     expect(findUnexpectedMentions(mentions, table, ["unexpected-token"])).toEqual([]);
+  });
+
+  it("matchesDenyPattern: 空白を挟まない `git merge*` は `git merge-base` まで巻き込む(狭める前の状態の再現)", () => {
+    expect(matchesDenyPattern("git merge*", "git merge-base HEAD main")).toBe(true);
+    expect(matchesDenyPattern("git merge *", "git merge-base HEAD main")).toBe(false);
+    expect(matchesDenyPattern("git merge *", "git merge main")).toBe(true);
+  });
+
+  it("matchesDenyPattern: `*` を含まないパターンは完全一致(前方一致にしない)", () => {
+    expect(matchesDenyPattern("git merge", "git merge")).toBe(true);
+    expect(matchesDenyPattern("git merge", "git merge main")).toBe(false);
   });
 
   it("extractSection: 見出しが無ければ null を返す", () => {
