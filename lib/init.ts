@@ -45,11 +45,50 @@ export interface GitignorePlan {
   lines: string[];
 }
 
+/** 配置先のパスに、期待と違う種別の実体がある */
+export interface PathConflict {
+  /** リポジトリルートからの相対パス */
+  rel: string;
+  expected: "file" | "directory";
+  actual: "file" | "directory" | "other";
+}
+
 export interface InitPlan {
   creates: PlannedFile[];
   /** 既存のため触らないファイル(リポジトリ相対) */
   skips: string[];
   gitignore: GitignorePlan;
+  /** 配置先の種別が食い違っていて安全に配置できないパス(rel の昇順・重複なし) */
+  conflicts: PathConflict[];
+}
+
+type EntryKind = "missing" | "file" | "directory" | "other";
+
+/**
+ * p の実体の種別。symlink は追う。壊れた symlink は "other"。
+ * 祖先の要素がディレクトリでない(例: 衝突しているファイルの下を覗く)場合、lstatSync は
+ * throwIfNoEntry: false でも ENOTDIR を投げる(ENOENT しか握りつぶさない Node の仕様)ため、
+ * ここで明示的に捕まえて "missing" 扱いにする(呼び出し側は祖先の衝突を別途検出済み)。
+ */
+function entryKind(p: string): EntryKind {
+  let l: fs.Stats | undefined;
+  try {
+    l = fs.lstatSync(p, { throwIfNoEntry: false });
+  } catch {
+    return "missing";
+  }
+  if (l === undefined) return "missing";
+  const s = fs.statSync(p, { throwIfNoEntry: false });
+  if (s === undefined) return "other"; // 壊れた symlink
+  return s.isDirectory() ? "directory" : s.isFile() ? "file" : "other";
+}
+
+/** rel（スラッシュ区切り）の祖先ディレクトリを、ルートに近い順で列挙する(rel 自身は含まない) */
+function ancestorDirs(rel: string): string[] {
+  const parts = rel.split("/");
+  const dirs: string[] = [];
+  for (let i = 1; i < parts.length; i++) dirs.push(parts.slice(0, i).join("/"));
+  return dirs;
 }
 
 /** dir 配下の全ファイルを、dir からの相対パスで列挙する(再帰・ソート済み) */
@@ -102,14 +141,42 @@ function planGitignore(root: string, home: string): GitignorePlan {
 /** 何を作り、何をスキップするかを決める(ファイルシステムは読むだけで書かない) */
 export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
   const templateDir = templatesAgentDir(home);
+  const templateRels = walkFiles(templateDir);
+  const repoRels = templateRels.map((rel) => `${AGENT_DIR_NAME}/${rel}`);
+  const gitignore = planGitignore(paths.root, home);
+
+  // 「ディレクトリを期待するパス」(雛形ファイルの祖先ディレクトリ。リポジトリルート自体は含まない)
+  const dirExpected = new Set<string>();
+  for (const repoRel of repoRels) for (const d of ancestorDirs(repoRel)) dirExpected.add(d);
+
+  // 「ファイルを期待するパス」(配置先ファイル自身、および .gitignore を触る計画なら .gitignore も)
+  const fileExpected = [...repoRels];
+  if (gitignore.action !== "none") fileExpected.push(".gitignore");
+
+  const conflicts: PathConflict[] = [];
+  for (const d of dirExpected) {
+    const kind = entryKind(path.join(paths.root, d));
+    if (kind !== "missing" && kind !== "directory") conflicts.push({ rel: d, expected: "directory", actual: kind });
+  }
+  for (const f of fileExpected) {
+    const kind = entryKind(path.join(paths.root, f));
+    if (kind === "directory" || kind === "other") conflicts.push({ rel: f, expected: "file", actual: kind });
+  }
+  conflicts.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+
   const creates: PlannedFile[] = [];
   const skips: string[] = [];
-  for (const rel of walkFiles(templateDir)) {
-    const repoRel = `${AGENT_DIR_NAME}/${rel}`;
-    if (fs.existsSync(path.join(paths.root, repoRel))) skips.push(repoRel);
-    else creates.push({ rel: repoRel, source: path.join(templateDir, rel) });
+  for (let i = 0; i < templateRels.length; i++) {
+    const rel = templateRels[i];
+    const repoRel = repoRels[i];
+    if (rel === undefined || repoRel === undefined) continue;
+    const kind = entryKind(path.join(paths.root, repoRel));
+    if (kind === "file") skips.push(repoRel);
+    else if (kind === "missing") creates.push({ rel: repoRel, source: path.join(templateDir, rel) });
+    // それ以外(directory/other)は上で conflicts に積んでいるため、skips にも creates にも入れない
   }
-  return { creates, skips, gitignore: planGitignore(paths.root, home) };
+
+  return { creates, skips, gitignore, conflicts };
 }
 
 /** 実際に書き込むものが何も無いか */
@@ -131,8 +198,27 @@ export function formatInitPlan(plan: InitPlan): string[] {
   return lines;
 }
 
+function kindLabel(kind: "file" | "directory" | "other"): string {
+  return kind === "directory" ? "ディレクトリ" : kind === "file" ? "ファイル" : "ディレクトリでもファイルでもない実体";
+}
+
+/** 衝突を人間向けに説明する行(先頭の見出しは含まない) */
+export function formatInitConflicts(plan: InitPlan): string[] {
+  return plan.conflicts.map((c) => `  ${c.rel}: ${kindLabel(c.expected)}であるべきだが${kindLabel(c.actual)}がある`);
+}
+
+/** 衝突があるときの案内(見出し + 各行 + 対処) */
+export function initConflictMessage(plan: InitPlan): string {
+  return [
+    `${AGENT_DIR_NAME}/ の雛形を配置できない(パスの種別が食い違っている):`,
+    ...formatInitConflicts(plan),
+    "衝突しているパスを退避または削除してから再実行すること(ccloop は既存のパスを消さない)",
+  ].join("\n");
+}
+
 /** plan の通りに書き込む。既存ファイルには一切触れない */
 export function applyInit(paths: Paths, plan: InitPlan): void {
+  if (plan.conflicts.length > 0) throw new Error(initConflictMessage(plan));
   for (const f of plan.creates) {
     const dest = path.join(paths.root, f.rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -181,9 +267,13 @@ export async function confirm(question: string): Promise<boolean> {
 
 // ---------- サブコマンド ----------
 
-/** `.agent/` が使える状態か(GOAL.md と config.json が揃っているか) */
-export function isAgentDirReady(paths: Paths): boolean {
-  return fs.existsSync(paths.goalPath) && fs.existsSync(paths.configPath);
+/**
+ * `.agent/` が使える状態か(雛形一式が揃っているか)。
+ * gitignore の不足は含めない(`.gitignore` の 1 行不足で `run` を止めたくないため)。
+ */
+export function isAgentDirReady(paths: Paths, home: string = ccloopHome()): boolean {
+  const plan = planInit(paths, home);
+  return plan.conflicts.length === 0 && plan.creates.length === 0;
 }
 
 function printPlan(plan: InitPlan): void {
@@ -208,6 +298,10 @@ export async function cmdInit(paths: Paths, argv: string[], home: string = ccloo
 
 async function runInit(paths: Paths, yes: boolean, home: string): Promise<number> {
   const plan = planInit(paths, home);
+  if (plan.conflicts.length > 0) {
+    console.error(initConflictMessage(plan));
+    return 1;
+  }
   printPlan(plan);
   if (isInitPlanEmpty(plan)) return 0;
   if (!yes) {
@@ -273,9 +367,13 @@ async function runUpgrade(paths: Paths, yes: boolean): Promise<number> {
  * 戻り値は「処理を続けてよいか」。false のとき呼び出し側は終了コード 1 で終わる。
  */
 export async function ensureAgentDir(paths: Paths, home: string = ccloopHome()): Promise<boolean> {
-  if (isAgentDirReady(paths)) return true;
+  if (isAgentDirReady(paths, home)) return true;
   console.error(`${AGENT_DIR_NAME}/ が未配置(または不完全)のため、ccloop を実行できない`);
   const plan = planInit(paths, home);
+  if (plan.conflicts.length > 0) {
+    console.error(initConflictMessage(plan));
+    return false;
+  }
   printPlan(plan);
   if (!isInteractive()) {
     console.error("確認できない環境(非 TTY)のため配置しない。`ccloop init --yes` を実行すること");

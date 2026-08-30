@@ -150,8 +150,16 @@ describe("main: 壊れた config.json の扱い(子プロセスで検証)", () =
   beforeEach(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-main-"));
     execFileSync("git", ["init", "-b", "main"], { cwd: repo });
-    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    // isAgentDirReady は雛形一式が揃っているかで判定するため、config.json 以外は雛形どおりに揃える
+    // (揃っていないと「未配置(または不完全)」の案内が先に出て、壊れた config.json の検証にならない)
+    fs.mkdirSync(path.join(repo, ".agent", "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".agent", "decisions"), { recursive: true });
+    fs.mkdirSync(path.join(repo, ".agent", "human-review"), { recursive: true });
     fs.writeFileSync(path.join(repo, ".agent", "GOAL.md"), "# GOAL\n");
+    fs.writeFileSync(path.join(repo, ".agent", "OVERVIEW.md"), "# OVERVIEW\n");
+    fs.writeFileSync(path.join(repo, ".agent", "tasks", ".gitkeep"), "");
+    fs.writeFileSync(path.join(repo, ".agent", "decisions", ".gitkeep"), "");
+    fs.writeFileSync(path.join(repo, ".agent", "human-review", ".gitkeep"), "");
     fs.writeFileSync(path.join(repo, ".agent", "config.json"), "{ broken json");
   });
 

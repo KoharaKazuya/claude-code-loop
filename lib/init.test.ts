@@ -8,6 +8,7 @@ import {
   checkSchemaVersion,
   cmdInit,
   configReadErrorMessage,
+  formatInitConflicts,
   formatInitPlan,
   isAgentDirReady,
   isInitPlanEmpty,
@@ -135,6 +136,55 @@ describe("planInit / applyInit", () => {
     expect(lines).toContain("作成: .agent/config.json");
     expect(lines).toContain("スキップ(既存のため触らない): .agent/GOAL.md");
     expect(lines).toContain(".gitignore");
+  });
+
+  it("配置先ディレクトリと同名のファイルがあれば conflicts に積む(ディレクトリ期待にファイルがある)", () => {
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent", "tasks"), "");
+
+    const plan = planInit(paths, HOME);
+
+    expect(plan.conflicts).toContainEqual({ rel: ".agent/tasks", expected: "directory", actual: "file" });
+  });
+
+  it("conflicts がある計画を applyInit に渡すと何も書かずに throw する", () => {
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent", "tasks"), "");
+
+    const plan = planInit(paths, HOME);
+
+    expect(() => applyInit(paths, plan)).toThrow();
+    expect(fs.existsSync(paths.goalPath)).toBe(false);
+    expect(fs.existsSync(paths.configPath)).toBe(false);
+    expect(fs.existsSync(path.join(repo, ".agent", "decisions", ".gitkeep"))).toBe(false);
+    expect(fs.existsSync(path.join(repo, ".agent", "human-review", ".gitkeep"))).toBe(false);
+    expect(fs.existsSync(path.join(repo, ".gitignore"))).toBe(false);
+  });
+
+  it("配置先ファイルと同名のディレクトリがあれば conflicts に積み、skips にも creates にも入らない(ファイル期待にディレクトリがある)", () => {
+    fs.mkdirSync(path.join(repo, ".agent", "GOAL.md"), { recursive: true });
+
+    const plan = planInit(paths, HOME);
+
+    expect(plan.conflicts).toContainEqual({ rel: ".agent/GOAL.md", expected: "file", actual: "directory" });
+    expect(plan.skips).not.toContain(".agent/GOAL.md");
+    expect(plan.creates.map((c) => c.rel)).not.toContain(".agent/GOAL.md");
+  });
+
+  it("conflicts の表示行は「<rel>: <期待>であるべきだが<実際>がある」の形になる", () => {
+    fs.mkdirSync(path.join(repo, ".agent"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent", "tasks"), "");
+
+    const lines = formatInitConflicts(planInit(paths, HOME));
+
+    expect(lines).toContain("  .agent/tasks: ディレクトリであるべきだがファイルがある");
+  });
+
+  it("雛形の一部(.gitkeep 等)が欠けた .agent/ には isAgentDirReady が false を返す", () => {
+    applyInit(paths, planInit(paths, HOME));
+    fs.rmSync(path.join(repo, ".agent", "tasks", ".gitkeep"));
+
+    expect(isAgentDirReady(paths, HOME)).toBe(false);
   });
 });
 
