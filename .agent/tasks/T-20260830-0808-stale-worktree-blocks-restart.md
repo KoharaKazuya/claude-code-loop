@@ -1,9 +1,10 @@
 ---
 title: "作業場所を人が消すと、同じタスクが起動のたびに失敗し続けてやり直し回数を使い切る"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "createWorktree() が add 前に prune するようにした。再現テストと、locked な記録が prune されないことのテストを追加"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
