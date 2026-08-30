@@ -20,6 +20,7 @@ import {
   crashResultFromError,
   denialMatchesRule,
   depSatisfied,
+  describeMergeOutcome,
   diffInputs,
   dirtyPathsOutsideAgent,
   ensureWritableDir,
@@ -2498,7 +2499,9 @@ describe("commitAgentDir", () => {
 describe("mainChangedByTaskOutcome", () => {
   it("main の内容が変わるマージは true", () => {
     expect(mainChangedByTaskOutcome({ result: "merged" }, null)).toBe(true);
-    expect(mainChangedByTaskOutcome({ result: "renumbered" }, null)).toBe(true);
+    expect(
+      mainChangedByTaskOutcome({ result: "renumbered", resolved: { ownTaskFile: "x", decisionsIndex: null } }, null),
+    ).toBe(true);
   });
 
   it("main が変わらないマージ結果(マージ無し・失敗・マージ未実施)は false", () => {
@@ -2521,6 +2524,40 @@ describe("mainChangedByTaskOutcome", () => {
     expect(mainChangedByTaskOutcome(null, "ready")).toBe(false);
     expect(mainChangedByTaskOutcome(null, "working")).toBe(false);
     expect(mainChangedByTaskOutcome(null, "blocked")).toBe(false);
+  });
+});
+
+describe("describeMergeOutcome", () => {
+  it("renumbered で own-task-file のみを解決した場合、タスクファイル採用のみを報告する", () => {
+    expect(
+      describeMergeOutcome({
+        result: "renumbered",
+        resolved: { ownTaskFile: ".agent/tasks/T-042.md", decisionsIndex: null },
+      }),
+    ).toBe("main へマージした(機械的に解決: タスクファイルはブランチ側を採用)");
+  });
+
+  it("renumbered で decisions/index.md のみを解決した場合、決定インデックス統合のみを報告する", () => {
+    expect(
+      describeMergeOutcome({
+        result: "renumbered",
+        resolved: { ownTaskFile: null, decisionsIndex: ".agent/decisions/index.md" },
+      }),
+    ).toBe("main へマージした(機械的に解決: 決定インデックスは両ブランチの項目を統合)");
+  });
+
+  it("renumbered で両方を解決した場合、タスクファイル採用と決定インデックス統合の両方を報告する", () => {
+    expect(
+      describeMergeOutcome({
+        result: "renumbered",
+        resolved: {
+          ownTaskFile: ".agent/tasks/T-030.md",
+          decisionsIndex: ".agent/decisions/index.md",
+        },
+      }),
+    ).toBe(
+      "main へマージした(機械的に解決: タスクファイルはブランチ側を採用 / 決定インデックスは両ブランチの項目を統合)",
+    );
   });
 });
 

@@ -406,6 +406,7 @@ describe("mergeAgentBranch", () => {
 
     expect(outcome.result).toBe("renumbered");
     if (outcome.result !== "renumbered") throw new Error("unreachable");
+    expect(outcome.resolved).toEqual({ ownTaskFile: ".agent/tasks/T-042.md", decisionsIndex: null });
     expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-042.md"), "utf8")).toBe(
       "branch(セッション)が書いた最終状態\n",
     );
@@ -440,6 +441,8 @@ describe("mergeAgentBranch", () => {
     const outcome = mergeAgentBranch(dir, "agent/T-020", "T-020", "index.md のみの衝突", TRAILER);
 
     expect(outcome.result).toBe("renumbered");
+    if (outcome.result !== "renumbered") throw new Error("unreachable");
+    expect(outcome.resolved).toEqual({ ownTaskFile: null, decisionsIndex: indexPath });
     const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
     const lines = text.split("\n").filter((l) => l.startsWith("- ["));
     expect(lines).toEqual([
@@ -472,7 +475,10 @@ describe("mergeAgentBranch", () => {
 
     const outcome = mergeAgentBranch(dir, "agent/T-050", "T-050", "index.md の真の add/add", TRAILER);
 
-    expect(outcome).toEqual({ result: "renumbered" });
+    expect(outcome).toEqual({
+      result: "renumbered",
+      resolved: { ownTaskFile: null, decisionsIndex: indexPath },
+    });
     const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
     const lines = text.split("\n").filter((l) => l.startsWith("- ["));
     expect(lines).toEqual([
@@ -509,6 +515,8 @@ describe("mergeAgentBranch", () => {
     const outcome = mergeAgentBranch(dir, "agent/T-030", "T-030", "own-task-file と index.md の同時衝突", TRAILER);
 
     expect(outcome.result).toBe("renumbered");
+    if (outcome.result !== "renumbered") throw new Error("unreachable");
+    expect(outcome.resolved).toEqual({ ownTaskFile: ".agent/tasks/T-030.md", decisionsIndex: indexPath });
     expect(fs.readFileSync(path.join(dir, ".agent/tasks/T-030.md"), "utf8")).toBe(
       "branch(セッション)が書いた最終状態\n",
     );
