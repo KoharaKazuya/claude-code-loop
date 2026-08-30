@@ -1,9 +1,10 @@
 ---
 title: "片付けの衝突で残ったタスクが進捗表示に二重計上される"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "進捗集計でアクティブ側と重複する ID を archive 側から除外。typecheck / lint / test 通過"
 createdAt: 2026-08-30T05:31:41.879Z
 ---
 
