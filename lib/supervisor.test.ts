@@ -38,6 +38,7 @@ import {
   isInstalledSourceDrifted,
   isSnoozed,
   isSupervisorSourceStale,
+  lastAttemptFailureKind,
   lastAttemptHistoryEntry,
   loadDenyRules,
   loadPendingDecisions,
@@ -1020,6 +1021,154 @@ describe("retryContextSection", () => {
     const [section] = retryContextSection(config, task);
 
     expect(section).toContain("直前の失敗: 記録なし");
+  });
+
+  it("直前の失敗が timeout のときは分割を促す文言を含む", () => {
+    const config = makeConfig();
+    const body = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "タイムアウト(2400000ms)",
+    });
+    const task = makeTask({ retries: 1, body });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).toContain("1 セッションに収まる大きさ");
+    expect(section).toContain("時間切れ(タイムアウト)");
+  });
+
+  it("直前の失敗が max-turns のときも分割を促す文言を含む", () => {
+    const config = makeConfig();
+    const body = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "max-turns",
+      reason: "ターン数の上限(100)に達した",
+    });
+    const task = makeTask({ retries: 1, body });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).toContain("1 セッションに収まる大きさ");
+    expect(section).toContain("ターン数の上限による打ち切り");
+  });
+
+  it("直前の失敗が crash のときは分割を促す文言を含まない(既存の行は含む)", () => {
+    const config = makeConfig();
+    const body = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "crash",
+      reason: "claude が異常終了",
+    });
+    const task = makeTask({ retries: 1, body });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).not.toContain("1 セッションに収まる大きさ");
+    expect(section).toContain("再試行コンテキスト");
+    expect(section).toContain("git log");
+  });
+
+  it("試行履歴が複数あるときは最後の試行の種別で判定する(timeout → crash なら含まない)", () => {
+    const config = makeConfig();
+    const body1 = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "1 回目",
+    });
+    const body2 = appendAttemptRecord(body1, {
+      attempt: 2,
+      at: "2026-08-15T00:00:00.000Z",
+      kind: "crash",
+      reason: "2 回目",
+    });
+    const task = makeTask({ retries: 2, body: body2 });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).not.toContain("1 セッションに収まる大きさ");
+  });
+
+  it("試行記録の後に未コミット差分の見出しが追記されていても、直前の試行の種別で判定する", () => {
+    const config = makeConfig();
+    const body1 = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "タイムアウト",
+    });
+    const body2 = appendUncommittedDiffRecord(body1, {
+      at: "2026-08-14T00:10:00.000Z",
+      patchFile: "/tmp/dummy.patch",
+      paths: ["lib/supervisor.ts"],
+    });
+    const task = makeTask({ retries: 1, body: body2 });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).toContain("1 セッションに収まる大きさ");
+  });
+
+  it("試行履歴が無いときは分割を促す文言を含まない", () => {
+    const config = makeConfig();
+    const task = makeTask({ retries: 1, body: "本文だけで試行履歴なし" });
+
+    const [section] = retryContextSection(config, task);
+
+    expect(section).not.toContain("1 セッションに収まる大きさ");
+  });
+});
+
+describe("lastAttemptFailureKind", () => {
+  it("試行履歴が無ければ null", () => {
+    expect(lastAttemptFailureKind("本文だけ")).toBeNull();
+  });
+
+  it("見出しの形式が壊れていれば null", () => {
+    expect(lastAttemptFailureKind("本文\n\n## 試行履歴\n\n### 試行 1(形式が違う)")).toBeNull();
+  });
+
+  it("ラベルが未知のものであれば null", () => {
+    expect(
+      lastAttemptFailureKind("## 試行履歴\n\n### 試行 1(2026-08-14T00:00:00.000Z, ccloop 記録: 未知のラベル)"),
+    ).toBeNull();
+  });
+
+  it("最後の試行のラベルから FailureKind を逆引きする", () => {
+    const body1 = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "timeout",
+      reason: "1 回目",
+    });
+    const body2 = appendAttemptRecord(body1, {
+      attempt: 2,
+      at: "2026-08-15T00:00:00.000Z",
+      kind: "max-turns",
+      reason: "2 回目",
+    });
+
+    expect(lastAttemptFailureKind(body2)).toBe("max-turns");
+  });
+
+  it("### 未コミット差分(...) の見出しは対象にしない", () => {
+    const body1 = appendAttemptRecord("本文", {
+      attempt: 1,
+      at: "2026-08-14T00:00:00.000Z",
+      kind: "merge-conflict",
+      reason: "衝突",
+    });
+    const body2 = appendUncommittedDiffRecord(body1, {
+      at: "2026-08-14T00:10:00.000Z",
+      patchFile: "/tmp/dummy.patch",
+      paths: ["lib/supervisor.ts"],
+    });
+
+    expect(lastAttemptFailureKind(body2)).toBe("merge-conflict");
   });
 });
 
