@@ -1,9 +1,9 @@
 ---
 title: "後始末の途中でループが強制終了されると、main に入った成果が「未着手」のまま痕跡なく消える"
-status: failed
+status: ready
 priority: 3
 dependencies: []
-retries: 3
+retries: 0
 note: "成果は T-20260830-1053-rescue-finish-interrupt-recovery-work が main へ取り込み済み。実装・テスト・判断記録・変更履歴に取り残しは無い"
 createdAt: 2026-08-30T08:29:36.812Z
 ---
