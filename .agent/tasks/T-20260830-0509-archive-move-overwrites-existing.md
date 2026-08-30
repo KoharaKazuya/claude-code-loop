@@ -1,8 +1,9 @@
 ---
 title: "書庫への移動が同名ファイルを無警告で上書きして記録を失う"
-status: ready
+status: completed
 priority: 3
 retries: 0
+note: "衝突時はスキップして毎回警告する方式で修理。typecheck/lint/test すべて通過"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
