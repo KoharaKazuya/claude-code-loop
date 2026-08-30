@@ -3,7 +3,8 @@ title: "決定の一覧に載らない記録があり、人間の承認を素通
 status: ready
 priority: 3
 dependencies: []
-retries: 0
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md)(元: -)"
 createdAt: 2026-08-30T08:10:03.708Z
 ---
 
@@ -68,3 +69,11 @@ index.md への追記を明示していない可能性がある。人間の承�
 
 - 承認・アーカイブの仕組みそのものは `D-20260830-0209-decisions-index-approval-archive` の判断による。
 - index.md の衝突の機械的解決は `D-20260830-0221-decisions-index-mechanical-merge` の判断による。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T09:53:02.573Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/decisions/index.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
