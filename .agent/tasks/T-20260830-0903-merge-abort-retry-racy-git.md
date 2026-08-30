@@ -1,10 +1,12 @@
 ---
 title: "マージ直後の巻き戻しが同一秒内の連続 git 操作で失敗し、自己修復も効かず supervisor が停止する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "abort の待機付き再試行・自己修復の再試行・wedged ログの文脈追加・回帰テストを実装。全 1118 件のテストが通過"
 createdAt: 2026-08-30T09:05:38.279Z
+updatedAt: 2026-08-30T10:06:00.265Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。
@@ -46,3 +48,18 @@ JS レベルの並行実行は `drainCompletedSessions` の FIFO 直列処理に
 上記 1〜5 が実装され、npm のテスト(該当するもの)が通ること。修正は利用者が踏んだ不具合の
 修正なので、修正セッションは `CHANGELOG.md` の「## 未リリース」節へ 1 行追加すること
 (このタスク登録時には CHANGELOG を触らない)。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T10:06:00.265Z, セッション記録)
+- 確認済みの事実: 方針 1〜5 をすべて実装し、コミット c9ad4b3(本体)と 38dc17e(レビュー指摘の反映)。
+  `npm run typecheck` / `npm run lint` / `npm test`(34 ファイル 1118 件)がいずれも通過。
+  新規テストは `lib/merge.abort-retry.test.ts`(abort 1 回失敗 → 再試行成功)と
+  `lib/supervisor.selfheal.test.ts`(abort 失敗継続 / 人間のマージ途中 / 復旧成功の 3 ケース)。
+  `CHANGELOG.md` の「## 未リリース」に 1 行追加済み。
+- 確認済みの事実: reviewer の指摘で、`selfHealGitOperationInProgress` の `delayMs` が内側の
+  `abortMerge` に届かず再試行が二重に掛かっていた(テストが `delayMs: 1` を指定しても実測 4.5 秒)。
+  38dc17e で待機を非同期 sleep の 1 層に集約し、同テストは 3 ファイル合計 3.1 秒まで短縮。
+- 未検証の推測: 本物の racy-git(同一秒内の実 FS 挙動)は決定論的に再現できないため、
+  テストは `execFileSync` の部分モックと `post-index-change` フックによる模擬。本番での解消は
+  「秒境界を跨げば stat 情報が再び信用される」という git の性質からの推論であり、実測ではない。
