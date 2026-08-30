@@ -79,3 +79,11 @@ createdAt: 2026-08-30T08:08:20.118Z
 
 - 確認済みの事実: 退避ブランチのコミット済み成果(`classifyTaskSessionResult` の切り出しと単体テスト、判断記録、CHANGELOG)を main 系列へ取り込んだ。取り込み時に main 側の `recordFailure` 新シグネチャへ配線し直した
 - このタスク自体は `failed` のままでよい(成果は救出済みなので再試行不要)
+
+### 人間の判断(2026-08-30, 対話セッション経由)
+
+- failed のまま終了とする(このタスク自体は再挑戦しない)、と人間が判断した。
+- コミット済みの成果は退避ブランチ
+  `agent/conflict/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z` にあり、
+  実行中の `T-20260830-0934-rescue-failure-kind-priority-work` が main への取り込みを担当する。
+- 退避ブランチはレスキュー完了・main 反映の確認が取れるまで削除しない。

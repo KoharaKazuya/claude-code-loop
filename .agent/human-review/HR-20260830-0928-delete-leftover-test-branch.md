@@ -1,6 +1,6 @@
 ---
 title: "テストの残骸ブランチ T-001 を削除してほしい"
-status: open
+status: closed
 importance: REVIEW
 tasks: [T-20260830-0828-tests-create-real-branches]
 createdAt: 2026-08-30T09:28:20.127Z
@@ -46,4 +46,7 @@ git branch -D T-001
 ## 回答
 
 - [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+- [x] 回答を下に書いた
+
+削除してよい、と人間が承認(2026-08-30、対話セッション経由)。`git log main..T-001` が空である
+ことを再確認のうえ `git branch -D T-001` を実行し、削除済み(was a9f32aa)。
