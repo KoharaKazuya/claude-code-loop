@@ -33,9 +33,14 @@ createdAt: 2026-08-30T09:32:00.000Z
   一箇所で全経路を塞げるが、`lib/paths.test.ts` など本体に対して正当に `resolveRepoRoot()` を
   呼ぶテストがあり、opt-out の設計が必要になる。事後検出で同じ効果が得られるため見送った。
 - **増えたブランチを一律に失敗扱いにする。** このリポジトリは自分自身で自律運用されており、
-  テスト実行中にも別セッションが `agent/<taskId>` ブランチを作る。誤検知で無関係なテストランが
-  落ちる。対応するタスクファイルが実在する `agent/<taskId>` を除外する基準にした
+  テスト実行中にも別セッションが `agent/<taskId>` や `agent/conflict/<taskId>-<時刻>` を作る。
+  誤検知で無関係なテストランが落ちる。対応するタスクファイルが実在するものを除外する基準にした
   (Supervisor の孤児ブランチ判定と同じ基準)。設計意図は docs/architecture.md に記載済み。
+- **teardown から throw して失敗させる。** 最初はこの形で実装したが、レビューで誤りが判明した。
+  vitest 4 は globalSetup の teardown の例外を `error during close` と出力するだけで
+  `process.exitCode` を変えず、**終了コード 0 で成功扱いになる**。使い捨ての vitest プロジェクトで
+  実測して確認した(throw → exit 0、`process.exitCode = 1` → exit 1)。防ごうとしていた
+  「緑のまま本体が汚れる」状態をそのまま再現してしまうため、`process.exitCode` を立てる形に改めた。
 
 ## CHANGELOG に載せない判断
 
