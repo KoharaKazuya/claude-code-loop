@@ -439,6 +439,33 @@ describe("ccloop retry(子プロセスで検証)", () => {
     return file;
   }
 
+  /** .agent/archive/tasks/<id>.md を直接書く(rotate を経由せず completed 退避済みの状態を作るため) */
+  function writeArchivedTask(id: string, fields: Record<string, string | number>, body = "本文"): string {
+    const archiveTasksDir = path.join(repo, ".agent", "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(archiveTasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  /** 「## 試行履歴」に `### 試行 1` サブセクション(見出し + 空行 + n 行)を持つ本文 */
+  function historyBody(n: number): string {
+    const items = Array.from({ length: n }, (_, i) => `- 行${i + 1}`);
+    return [
+      "本文",
+      "",
+      "## 試行履歴",
+      "",
+      "### 試行 1(2026-01-01T00:00:00.000Z, ccloop 記録: タイムアウト)",
+      "",
+      ...items,
+    ].join("\n");
+  }
+
   it("failed タスクを retry すると status: ready / retries: 0 になり exit 0", () => {
     const id = "T-20260101-0000-fail-task";
     writeTask(id, {
@@ -495,6 +522,53 @@ describe("ccloop retry(子プロセスで検証)", () => {
     expect(text).not.toContain("snoozeUntil");
   });
 
+  it("試行履歴のサブセクションが20行を超える場合は先頭20行に切り詰め「(以下略)」を付ける", () => {
+    const id = "T-20260101-0000-long-history-task";
+    writeTask(
+      id,
+      {
+        title: "履歴の長いタスク",
+        status: "failed",
+        priority: 3,
+        retries: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      historyBody(25),
+    );
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("### 試行 1(2026-01-01T00:00:00.000Z, ccloop 記録: タイムアウト)");
+    expect(result.stdout).toContain("- 行1");
+    expect(result.stdout).toContain("(以下略)");
+    // 見出し行(1) + 空行(1) + 本文 18 行 = 20 行までしか表示しない
+    expect(result.stdout).toContain("- 行18");
+    expect(result.stdout).not.toContain("- 行19");
+    expect(result.stdout).not.toContain("- 行25");
+  });
+
+  it("試行履歴のサブセクションが20行以内ならそのまま表示し「(以下略)」は付けない", () => {
+    const id = "T-20260101-0000-short-history-task";
+    writeTask(
+      id,
+      {
+        title: "履歴の短いタスク",
+        status: "failed",
+        priority: 3,
+        retries: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      historyBody(5),
+    );
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- 行5");
+    expect(result.stdout).not.toContain("(以下略)");
+  });
+
   it("completed など failed/blocked でないタスクは exit 1 でファイル無変更", () => {
     const id = "T-20260101-0001-done-task";
     const file = writeTask(id, {
@@ -518,6 +592,42 @@ describe("ccloop retry(子プロセスで検証)", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("見つかりません");
+  });
+
+  it("archive にのみ存在する ID を指定すると exit 1 で .agent/archive/tasks/ への退避を案内する", () => {
+    const id = "T-20260101-0000-archived-task";
+    writeArchivedTask(id, {
+      title: "完了済みタスク",
+      status: "completed",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["retry", id]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`タスク ${id} は完了済みとして .agent/archive/tasks/ へ退避されています。`);
+    expect(result.stderr).toContain(".agent/tasks/ へ戻してから再実行してください。");
+  });
+
+  it("存在しない ID に似たタスクがあれば stderr に「もしかして:」と候補 ID を示す", () => {
+    const similarId = "T-20260101-0000-fix-retry-bug";
+    writeTask(similarId, {
+      title: "似た ID のタスク",
+      status: "ready",
+      priority: 3,
+      retries: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = run(["retry", "T-20260101-0000-fix-retry-typo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("見つかりません");
+    expect(result.stderr).toContain("もしかして:");
+    // インデント付き(先頭 2 スペース)で候補 ID 単独の行になっていることを確認する
+    expect(result.stderr.split("\n")).toContain(`  ${similarId}`);
   });
 
   it("実行中のタスク(state.json の runningSessions に登録済み)は exit 1 でファイル無変更", () => {

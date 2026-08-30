@@ -1,10 +1,12 @@
 ---
 title: "ccloop retry の分岐 3 件に回帰テストを足す"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "同一セッション内で対応済み。テスト 4 件を追加し 856 件通過"
 createdAt: 2026-08-30T04:22:00.000Z
+updatedAt: 2026-08-30T04:23:00.000Z
 ---
 
 所属フェーズ: 4(思いつく改善すべて)。
