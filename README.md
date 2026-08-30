@@ -144,11 +144,12 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 
 | キー | 内容 |
 | --- | --- |
-| `schemaVersion` | このファイルのスキーマバージョン(現在 1) |
+| `schemaVersion` | このファイルのスキーマバージョン(現在 2) |
 | `claudeCommand` | セッションを起動するコマンド名(既定 `claude`)。ラッパースクリプト経由で起動したい場合に変える |
 | `model` / `escalation` | セッションに使うモデル、リトライ超過時のエスカレーション先 |
 | `permissionMode` | `claude -p` の permission mode |
 | `maxRetries` / `taskTimeoutMs` / `maxTurns` | タスクセッションのリトライ上限・タイムアウト・ターン上限 |
+| `maxConflictRetries` | main へのマージ衝突によるリトライ上限(既定 5)。`maxRetries` とは別枠で数え、マージ衝突がタスク本来のやり直し回数を消費しない |
 | `rateLimit.backoffMs` | レート制限検出時のバックオフ |
 | `idlePollMs` | 次に起動できるものが無いときの待機間隔(既定 60000)。短くすると状況変化への反応が早くなる代わりに空回りが増える |
 | `explore` | 探索セッションの有効/無効・最小間隔(`minIntervalMs` は、実行可能タスクがある間の定期見直し間隔と、直前の探索が空振りだった場合のクールダウンを兼ねる) |

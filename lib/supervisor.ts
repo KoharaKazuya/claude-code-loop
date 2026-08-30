@@ -137,6 +137,8 @@ export interface Task {
   priority: number;
   dependencies: string[];
   retries: number;
+  /** マージ衝突による失敗の再試行回数。retries とは別枠(マージ衝突はタスクの中身の失敗ではないため) */
+  conflictRetries: number;
   createdAt: string;
   /** 1 行の進捗・結果・ブロック理由(詳細は本文へ) */
   note?: string;
@@ -275,6 +277,7 @@ export function taskFromFile(dir: string, fileName: string): Task | null {
       priority: typeof data.priority === "number" ? data.priority : 3,
       dependencies: Array.isArray(data.dependencies) ? data.dependencies : [],
       retries: typeof data.retries === "number" ? data.retries : 0,
+      conflictRetries: typeof data.conflictRetries === "number" ? data.conflictRetries : 0,
       createdAt: str(data.createdAt),
       body,
     };
@@ -358,6 +361,7 @@ export function taskFrontmatter(t: Task): Record<string, FrontmatterValue | unde
     priority: t.priority,
     dependencies: t.dependencies,
     retries: t.retries,
+    conflictRetries: t.conflictRetries !== 0 ? t.conflictRetries : undefined,
     model: t.model,
     note: t.note,
     snoozeUntil: t.snoozeUntil,
@@ -1248,7 +1252,13 @@ function recordStartupRecoveryNote(
     return;
   }
   if (t.status === "completed" || t.status === "failed") return;
-  recordFailure(t, { maxRetries: config.maxRetries, reason: opts.reason, kind: "recovery", at: opts.at });
+  recordFailure(t, {
+    maxRetries: config.maxRetries,
+    maxConflictRetries: config.maxConflictRetries,
+    reason: opts.reason,
+    kind: "recovery",
+    at: opts.at,
+  });
   if (opts.extraLines !== undefined && opts.extraLines.length > 0) {
     t.body = `${t.body}\n${opts.extraLines.join("\n")}`;
   }
@@ -1423,6 +1433,7 @@ export function recoverStartupIn(root: string, config: Config, now: Date = new D
     counts.legacyWorking += 1;
     recordFailure(t, {
       maxRetries: config.maxRetries,
+      maxConflictRetries: config.maxConflictRetries,
       reason: "セッション中断から復旧",
       kind: "recovery",
       at: now.toISOString(),
@@ -1606,29 +1617,47 @@ export function appendUncommittedDiffRecord(
 
 /**
  * タスク失敗 1 回分の状態遷移を行う(破壊的更新、保存はしない)。
- * retries を増やし、上限判定で ready/failed の遷移と note を決め、
- * body の「## 試行履歴」へ機械的な記録(appendAttemptRecord)を追記する。
+ * kind === "merge-conflict" のときは conflictRetries を、それ以外は retries を増やし、
+ * それぞれ独立の上限(maxConflictRetries / maxRetries)で ready/failed の遷移と note を決める。
+ * マージ衝突はタスクの中身の失敗ではないため、本来のやり直し回数(retries)を消費させない
+ * ための別枠。
+ * body の「## 試行履歴」へ機械的な記録(appendAttemptRecord)を追記する。エントリ番号
+ * (attempt)は retries + conflictRetries の合計を使い、両枠を跨いでも通し番号が巻き戻らない
+ * ようにする。
  * recoverWorkingTasks(kind: "recovery")と finishTaskSession の fail
  * (kind: timeout/crash/no-status-update/merge-conflict)の両方から呼ばれ、
  * 前 note の保存(元: ...)を共通化する。
  */
 export function recordFailure(
   t: Task,
-  opts: { maxRetries: number; reason: string; kind: FailureKind; at: string },
+  opts: { maxRetries: number; maxConflictRetries: number; reason: string; kind: FailureKind; at: string },
 ): void {
-  const { maxRetries, reason, kind, at } = opts;
-  t.retries += 1;
-
+  const { maxRetries, maxConflictRetries, reason, kind, at } = opts;
   const prevNote = t.note === undefined ? "-" : truncateNote(t.note);
-  if (t.retries >= maxRetries) {
-    t.status = "failed";
-    t.note = `失敗回数が上限(${maxRetries})に達した。最後の失敗: ${reason}(元: ${prevNote})`;
+
+  if (kind === "merge-conflict") {
+    t.conflictRetries += 1;
+    if (t.conflictRetries >= maxConflictRetries) {
+      t.status = "failed";
+      t.note = `マージ衝突が上限(${maxConflictRetries})に達した。最後の失敗: ${reason}(元: ${prevNote})`;
+    } else {
+      t.status = "ready";
+      t.note =
+        `マージ衝突が続くため ready に戻す(${t.conflictRetries}/${maxConflictRetries})。` +
+        `理由: ${reason}(元: ${prevNote})`;
+    }
   } else {
-    t.status = "ready";
-    t.note = `失敗のため ready に戻す(${t.retries}/${maxRetries})。理由: ${reason}(元: ${prevNote})`;
+    t.retries += 1;
+    if (t.retries >= maxRetries) {
+      t.status = "failed";
+      t.note = `失敗回数が上限(${maxRetries})に達した。最後の失敗: ${reason}(元: ${prevNote})`;
+    } else {
+      t.status = "ready";
+      t.note = `失敗のため ready に戻す(${t.retries}/${maxRetries})。理由: ${reason}(元: ${prevNote})`;
+    }
   }
 
-  t.body = appendAttemptRecord(t.body, { attempt: t.retries, at, kind, reason });
+  t.body = appendAttemptRecord(t.body, { attempt: t.retries + t.conflictRetries, at, kind, reason });
 }
 
 /** 依存タスクが充足しているか(completed または依存先が存在しない) */
@@ -2551,15 +2580,20 @@ function goalSection(): string[] {
 
 /**
  * 再試行時に注入する「Supervisor による機械的情報」のセクション。
- * 初回試行(retries === 0)では注入しない(過去の試行がなく伝える情報がないため)。
+ * 初回試行(retries === 0 かつ conflictRetries === 0)では注入しない
+ * (過去の試行がなく伝える情報がないため)。マージ衝突での試行も過去試行の一種なので、
+ * 合計(retries + conflictRetries)で初回判定する。
  */
 export function retryContextSection(config: Config, task: Task): string[] {
-  if (task.retries === 0) return [];
+  const totalAttempts = task.retries + task.conflictRetries;
+  if (totalAttempts === 0) return [];
+  const conflictSuffix =
+    task.conflictRetries > 0 ? `、マージ衝突 ${task.conflictRetries} 回(上限 ${config.maxConflictRetries})` : "";
 
   const lines = [
     "## 再試行コンテキスト(Supervisor による機械的情報)",
     "",
-    `- これは ${task.retries + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries})`,
+    `- これは ${totalAttempts + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries}${conflictSuffix})`,
     `- 直前の失敗: ${task.note ?? "記録なし"}`,
     "- 上記タスク本文の「## 試行履歴」を読み、前回と同じ戦略の単純リトライは避けること",
     "- ただし試行履歴のうち「未検証の推測」は前回セッションの観察であり誤りうる。git log / git status / " +
@@ -2639,6 +2673,8 @@ function conflictResolutionSection(task: Task): string {
     "- この作業ツリーには前回の git 操作(main とのマージなど)が中断されたまま残っている。多くは衝突マーカーを伴うが、必ずしもそうとは限らないため、まず `git status` で実際の中断状態を確認すること",
     "- 衝突があれば解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` で中断された操作を完了させること",
     "- 解消の判断に迷う箇所は main 側を優先する。優先した理由と捨てた変更は `.agent/decisions/` に記録する",
+    "- ただし変更履歴(CHANGELOG.md)のような追記専用のファイルは例外で、両側の項目をどちらも残す。同じ箇所への独立した追記であって内容の対立ではないため、片方を捨てる理由が無い。並べる順は main 側を先、ブランチ側を後にする",
+    `- このタスク自身のタスクファイル(\`.agent/tasks/${task.id}.md\`)が衝突している場合は、main 側の内容をそのまま土台にし、自分が変えたい frontmatter(status / note)だけを上書きする。末尾の「## 試行履歴」へ自分の記録を書き足すと、ccloop が main 側の同じ位置へ書く機械記録と次のマージでまた衝突する。残したい試行知見はコミットメッセージか \`.agent/decisions/\` に書くこと`,
     "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、どちらかの ID を付け替えて両方残すこと。これは新規追加同士の衝突であり、どちらの ID もこの時点ではまだ他から参照されていないため付け替えてよい(一度付けた slug を変更しないルールは、参照が発生した後の ID に対するもの)。付け替える場合は重複時の規約と同様に末尾へ `-2` を付ける",
     "- 衝突解消が終わってから、必要なら本来のタスクの続きに取りかかること",
   ].join("\n");
@@ -2808,7 +2844,11 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
   ].join("\n\n");
 }
 
-/** タスクに使うモデルを決める。失敗が閾値に達したらエスカレーション先 > タスク指定 > 既定 */
+/**
+ * タスクに使うモデルを決める。失敗が閾値に達したらエスカレーション先 > タスク指定 > 既定。
+ * 判定は retries のみで conflictRetries は含めない: マージ衝突はタスクの難しさを示す
+ * シグナルではないため、モデルを重くする理由にならない。
+ */
 export function pickModel(config: Config, task: Task): string {
   const esc = config.escalation;
   if (esc.model !== "" && task.retries >= esc.afterRetries) return esc.model;
@@ -2884,8 +2924,9 @@ function startTaskSession(
   saveState(state);
 
   const escalated = model !== (t.model ?? config.model);
+  const conflictRetrySuffix = t.conflictRetries > 0 ? `, 衝突再試行 ${t.conflictRetries} 回目` : "";
   log(
-    `${styleText("cyan", "▶")} ${t.id} "${t.title}" を開始 (model=${model}${escalated ? " エスカレーション" : ""}${t.retries > 0 ? `, 再試行 ${t.retries} 回目` : ""}${resuming ? ", 衝突解消の継続" : ""}, branch=${branch})`,
+    `${styleText("cyan", "▶")} ${t.id} "${t.title}" を開始 (model=${model}${escalated ? " エスカレーション" : ""}${t.retries > 0 ? `, 再試行 ${t.retries} 回目` : ""}${conflictRetrySuffix}${resuming ? ", 衝突解消の継続" : ""}, branch=${branch})`,
   );
 
   // cwd はリポジトリ本体のまま。CLI が --worktree の worktree へ移動する(worktree 自体は
@@ -3304,7 +3345,13 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
         log(`警告: ${taskId} のタスクファイルが見つからないため結果を記録できない`);
         return;
       }
-      recordFailure(t, { maxRetries: config.maxRetries, reason, kind, at });
+      recordFailure(t, {
+        maxRetries: config.maxRetries,
+        maxConflictRetries: config.maxConflictRetries,
+        reason,
+        kind,
+        at,
+      });
       // 失敗が確定した(再試行が尽きた)場合は、探索が後追いタスクや Human Review を起こすべき
       // 情報なので main の変化として扱う。リトライ待ちに戻るだけの場合は立てない
       if (mainChangedByTaskOutcome(null, t.status)) mainChangedSinceExplore = true;
@@ -4009,6 +4056,7 @@ export function cmdAdd(argv: string[]): void {
     priority,
     dependencies,
     retries: 0,
+    conflictRetries: 0,
     createdAt: now,
     body: opt("desc") ?? fallbackBody,
   };
@@ -4123,9 +4171,9 @@ function printPreviousFailureReason(task: Task): void {
 }
 
 /**
- * `ccloop retry <タスクID>`。failed / blocked のタスクを status: ready / retries: 0 へ戻し、
- * 次の周回で再選択されるようにする。実行中のタスクや、failed / blocked 以外の status は対象外
- * (安全のため何も変更せず終了する)。
+ * `ccloop retry <タスクID>`。failed / blocked のタスクを status: ready / retries: 0 /
+ * conflictRetries: 0 へ戻し、次の周回で再選択されるようにする。実行中のタスクや、
+ * failed / blocked 以外の status は対象外(安全のため何も変更せず終了する)。
  */
 export function cmdRetry(argv: string[]): void {
   if (argv.length !== 1 || argv[0]!.startsWith("-")) {
@@ -4175,11 +4223,12 @@ export function cmdRetry(argv: string[]): void {
 
   task.status = "ready";
   task.retries = 0;
+  task.conflictRetries = 0;
   const hadSnooze = task.snoozeUntil !== undefined;
   if (hadSnooze) task.snoozeUntil = undefined;
   saveTask(task);
   if (hadSnooze) console.log("待機指定(snoozeUntil)を解除しました。");
-  console.log(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0)。`);
+  console.log(`タスク ${id} を再実行対象に戻しました(status: ready / retries: 0 / conflictRetries: 0)。`);
 }
 
 // ---------- 表示共通(色・ステータス表現) ----------
@@ -4222,6 +4271,9 @@ function printTaskLine(t: Task, byId: Map<string, Task>, full: boolean, idWidth:
   let line = `  ${idCol}p${t.priority}  ${t.title}`;
   if (t.retries > 0) {
     line += ` ${styleText("yellow", `retries=${t.retries}`)}`;
+  }
+  if (t.conflictRetries > 0) {
+    line += ` ${styleText("yellow", `衝突=${t.conflictRetries}`)}`;
   }
   if (t.snoozeUntil !== undefined && isSnoozed(t, new Date())) {
     line += ` ${styleText("dim", `[snoozed until ${t.snoozeUntil}]`)}`;
@@ -4467,6 +4519,7 @@ async function runHumanReviewTriage(config: Config): Promise<boolean> {
           priority: d.priority,
           dependencies: [],
           retries: 0,
+          conflictRetries: 0,
           createdAt,
           body: d.body,
         });

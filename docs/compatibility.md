@@ -2,7 +2,7 @@
 
 ## `.agent/config.json` の `schemaVersion`
 
-`.agent/config.json` はスキーマバージョンを持つ(現在 1)。ccloop 本体のバージョンと利用側リポジトリの
+`.agent/config.json` はスキーマバージョンを持つ(現在 2)。ccloop 本体のバージョンと利用側リポジトリの
 `.agent/` のスキーマは別々に進む(feature を上げても利用側が `init --upgrade` するまで `.agent/` は
 古いスキーマのまま)ため、両者の食い違いを検出する必要がある。
 
@@ -13,6 +13,12 @@
   の feature 参照バージョンを上げてコンテナを再ビルドする)。メジャーバージョン内では `.agent/` の
   スキーマに互換性のない変更を入れない方針とすることで、メジャータグ(例: `ccloop:0`)で固定している
   利用側は `.agent/` を書き換えずに追従できる。
+
+`lib/config.ts` の `validateConfig` は大半のキーを必須として検査し、欠けていれば例外を投げて止める
+(誤った設定のまま気付かず走り続けるのを避けるため)。ただし新しいスキーマ版数で追加したキーの
+うち、追加した時点で `init --upgrade` していない既存の `.agent/config.json`(1 つ古い版数のまま)
+が読めなくなると困るものは、`triage` / `parallel` と同様に検査対象から外し、欠損・型違いは
+`normalizeConfig` が既定値で寛容に埋める。`maxConflictRetries` はこの理由で必須にしていない。
 
 ## feature のタグ運用
 

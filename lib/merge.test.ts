@@ -600,6 +600,163 @@ describe("mergeAgentBranch", () => {
     expect(fs.existsSync(path.join(dir, ".git", "MERGE_HEAD"))).toBe(true);
     expect(git(["ls-files", "-u"])).toBe(staleUnmerged);
   });
+
+  // このリポジトリ実物の .gitattributes と同じ内容(コメントを含む)。CHANGELOG.md の
+  // union マージ属性が実運用と同じ形で効くことを確かめるため、要旨だけの再現にせず
+  // そのまま複製する。
+  const GITATTRIBUTES_CONTENT = [
+    "# 変更履歴は「## 未リリース」節へ各ブランチが独立に 1 行足す運用のため、同じ箇所への",
+    "# 追記同士が必ず衝突する。両側の項目をどちらも残すのが常に正しい解消(捨てる理由が無い)",
+    "# なので、union マージで自動的にそうする。",
+    "#",
+    "# 注意: union は「内容が対立していない追記」を無条件に両方残す方式で、衝突を報告しない。",
+    "# リリースで「## 未リリース」が版番号の見出しへ繰り上がった直後にブランチ側の追記が",
+    "# union されると、行が意図しない節に入りうる。その場合は静かに間違うため、リリース直後は",
+    "# 変更履歴の並びを目視で確認する。",
+    "/CHANGELOG.md merge=union",
+    "",
+  ].join("\n");
+
+  const CHANGELOG_BASE = ["# 変更履歴", "", "## 未リリース", "", "### 追加", "", "- 既存の機能\n"].join("\n");
+
+  const TASK_FILE_BASE = [
+    "---",
+    'title: "サンプルタスク"',
+    "status: in_progress",
+    "priority: 2",
+    "dependencies: []",
+    "retries: 0",
+    "---",
+    "",
+    "タスク本文。",
+    "",
+    "## 試行履歴",
+    "",
+    "### 試行 1(初回)",
+    "- 実装を開始した。\n",
+  ].join("\n");
+
+  it("CHANGELOG.md の union マージとタスクファイルの試行履歴追記が同時に衝突しても手作業行きの conflict にならない(T-20260830-0621 の再現)", () => {
+    const taskId = "T-20260830-0999-sample";
+    const taskPath = `.agent/tasks/${taskId}.md`;
+
+    writeFile(".gitattributes", GITATTRIBUTES_CONTENT);
+    writeFile("CHANGELOG.md", CHANGELOG_BASE);
+    writeFile(taskPath, TASK_FILE_BASE);
+    commitAll("init: 基点ファイル一式を追加する");
+    git(["branch", `agent/${taskId}`]);
+
+    // main 側: 衝突で失敗した試行を Supervisor が記録した状況を再現する
+    // (CHANGELOG.md の未リリース節先頭にも 1 行、タスクファイルの試行履歴末尾にも 1 エントリ)
+    writeFile(
+      "CHANGELOG.md",
+      ["# 変更履歴", "", "## 未リリース", "", "### 追加", "", "- main 側で追加した機能", "- 既存の機能\n"].join("\n"),
+    );
+    writeFile(
+      taskPath,
+      [
+        TASK_FILE_BASE,
+        "### 試行 2(main が記録した衝突失敗)",
+        "- 前回の試行はマージ衝突で失敗した。\n",
+      ].join("\n"),
+    );
+    commitAll("docs(agent): main 側の失敗記録");
+
+    // branch 側: 独立に実装を完了し、同じ箇所へ追記する
+    git(["checkout", `agent/${taskId}`]);
+    writeFile(
+      "CHANGELOG.md",
+      ["# 変更履歴", "", "## 未リリース", "", "### 追加", "", "- branch 側で追加した機能", "- 既存の機能\n"].join(
+        "\n",
+      ),
+    );
+    writeFile(
+      taskPath,
+      [
+        TASK_FILE_BASE,
+        "### 試行 2 の続き(branch セッションが記録)",
+        "- 衝突を解消し実装を完了した。\n",
+      ].join("\n"),
+    );
+    commitAll("docs(agent): branch 側の実装完了記録");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, `agent/${taskId}`, taskId, "union と試行履歴の同時衝突", TRAILER);
+
+    // 真因の再発防止そのもの: 手作業行きの conflict になってはならない
+    if (outcome.result === "conflict") {
+      throw new Error(`手作業行きの conflict に戻ってしまった: ${JSON.stringify(outcome)}`);
+    }
+    expect(outcome.result).toBe("renumbered");
+    if (outcome.result !== "renumbered") throw new Error("unreachable");
+    expect(outcome.resolved).toEqual({ ownTaskFile: taskPath, decisionsIndex: null });
+
+    // CHANGELOG.md は union マージにより両側の追記行がどちらも残る
+    const changelog = fs.readFileSync(path.join(dir, "CHANGELOG.md"), "utf8");
+    expect(changelog).toContain("- main 側で追加した機能");
+    expect(changelog).toContain("- branch 側で追加した機能");
+    expect(changelog).toContain("- 既存の機能");
+
+    // タスクファイルは own-task-file 解決によりブランチ側の内容を丸ごと採用する
+    const taskFile = fs.readFileSync(path.join(dir, taskPath), "utf8");
+    expect(taskFile).toContain("### 試行 2 の続き(branch セッションが記録)");
+    expect(taskFile).not.toContain("### 試行 2(main が記録した衝突失敗)");
+
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+  });
+
+  it("対照: .gitattributes(union 属性)が無ければ同じ状況は手作業行きの conflict になる(union 属性が効いていることの証明)", () => {
+    const taskId = "T-20260830-0998-sample-no-union";
+    const taskPath = `.agent/tasks/${taskId}.md`;
+
+    // .gitattributes を用意しない点だけが上のテストと異なる
+    writeFile("CHANGELOG.md", CHANGELOG_BASE);
+    writeFile(taskPath, TASK_FILE_BASE);
+    commitAll("init: 基点ファイル一式を追加する(.gitattributes 無し)");
+    git(["branch", `agent/${taskId}`]);
+
+    writeFile(
+      "CHANGELOG.md",
+      ["# 変更履歴", "", "## 未リリース", "", "### 追加", "", "- main 側で追加した機能", "- 既存の機能\n"].join("\n"),
+    );
+    writeFile(
+      taskPath,
+      [
+        TASK_FILE_BASE,
+        "### 試行 2(main が記録した衝突失敗)",
+        "- 前回の試行はマージ衝突で失敗した。\n",
+      ].join("\n"),
+    );
+    commitAll("docs(agent): main 側の失敗記録");
+
+    git(["checkout", `agent/${taskId}`]);
+    writeFile(
+      "CHANGELOG.md",
+      ["# 変更履歴", "", "## 未リリース", "", "### 追加", "", "- branch 側で追加した機能", "- 既存の機能\n"].join(
+        "\n",
+      ),
+    );
+    writeFile(
+      taskPath,
+      [
+        TASK_FILE_BASE,
+        "### 試行 2 の続き(branch セッションが記録)",
+        "- 衝突を解消し実装を完了した。\n",
+      ].join("\n"),
+    );
+    commitAll("docs(agent): branch 側の実装完了記録");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, `agent/${taskId}`, taskId, "union なしの同時衝突", TRAILER);
+
+    expect(outcome.result).toBe("conflict");
+    if (outcome.result !== "conflict") throw new Error("unreachable");
+    expect(outcome.conflictKind).toBe("substantive");
+    expect([...outcome.paths].sort()).toEqual([taskPath, "CHANGELOG.md"].sort());
+    expect(fs.existsSync(path.join(dir, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
+  });
 });
 
 describe("resolveMechanically(abort 失敗の再現)", () => {

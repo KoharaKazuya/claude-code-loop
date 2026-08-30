@@ -43,6 +43,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     escalation: { model: "claude-fable-5", afterRetries: 2 },
     permissionMode: "auto",
     maxRetries: 3,
+    maxConflictRetries: 5,
     taskTimeoutMs: 2400000,
     maxTurns: 0,
     rateLimit: { backoffMs: 300000 },
@@ -62,6 +63,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     priority: 3,
     dependencies: [],
     retries: 0,
+    conflictRetries: 0,
     createdAt: "2026-08-01T00:00:00.000Z",
     body: "本文",
     ...overrides,
@@ -199,7 +201,7 @@ describe("finishTaskSession", () => {
     expect(readStateRunningTaskIds()).toEqual([]);
   });
 
-  it("(b) マージ衝突: worktree に衝突を再現して残し、retries を加算して試行履歴へ記録する", () => {
+  it("(b) マージ衝突: worktree に衝突を再現して残し、conflictRetries を加算して試行履歴へ記録する(retries は加算しない)", () => {
     fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
     commit(dir, "基底を追加する");
 
@@ -231,7 +233,8 @@ describe("finishTaskSession", () => {
     expect(fs.readFileSync(path.join(wt, "conflict.txt"), "utf8")).toContain("<<<<<<<");
 
     const t = readTask("T-001");
-    expect(t.retries).toBe(1);
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(1);
     expect(t.status).toBe("ready");
     expect(t.body).toContain("## 試行履歴");
   });
@@ -312,7 +315,7 @@ describe("finishTaskSession", () => {
     }
   });
 
-  it("(d) リトライ上限到達: status が failed になり、worktree を片付けブランチを退避名へリネームする", () => {
+  it("(d) 衝突リトライ上限到達: status が failed になり、worktree を片付けブランチを退避名へリネームする", () => {
     fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
     commit(dir, "基底を追加する");
 
@@ -322,17 +325,18 @@ describe("finishTaskSession", () => {
 
     const cfg = config();
     // fail() は main 側のタスクファイルを読み直すため、ctx.task ではなく main 側の
-    // retries を上限直前まで進めておく
+    // conflictRetries を上限直前まで進めておく(この結果はマージ衝突なので retries ではなく
+    // conflictRetries/maxConflictRetries を消費する)
     fs.writeFileSync(path.join(dir, "conflict.txt"), "main 側\n");
     writeTaskFile(
       dir,
       "T-001",
-      serializeFrontmatter({ title: "タスク", status: "ready", retries: cfg.maxRetries - 1 }, "本文"),
+      serializeFrontmatter({ title: "タスク", status: "ready", conflictRetries: cfg.maxConflictRetries - 1 }, "本文"),
     );
-    commit(dir, "main 側で書き換える(retries も上限直前まで進める)");
+    commit(dir, "main 側で書き換える(conflictRetries も上限直前まで進める)");
 
     const ctx: TaskSessionContext = {
-      task: makeTask({ retries: cfg.maxRetries - 1 }),
+      task: makeTask({ conflictRetries: cfg.maxConflictRetries - 1 }),
       model: "opus",
       branch: branchNameFor("T-001"),
       worktree: wt,
@@ -350,7 +354,8 @@ describe("finishTaskSession", () => {
 
     const t = readTask("T-001");
     expect(t.status).toBe("failed");
-    expect(t.retries).toBe(cfg.maxRetries);
+    expect(t.retries).toBe(0);
+    expect(t.conflictRetries).toBe(cfg.maxConflictRetries);
     expect(t.body).toContain("## 試行履歴");
     expect(t.body).toContain("agent/conflict/T-001");
   });

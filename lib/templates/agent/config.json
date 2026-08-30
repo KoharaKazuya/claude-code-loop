@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "claudeCommand": "claude",
   "model": "opus",
   "escalation": {
@@ -8,6 +8,7 @@
   },
   "permissionMode": "auto",
   "maxRetries": 3,
+  "maxConflictRetries": 5,
   "taskTimeoutMs": 2400000,
   "maxTurns": 150,
   "rateLimit": {

@@ -8,7 +8,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { V1_DEFAULTS } from "./migrations.ts";
+import { V1_DEFAULTS, V2_DEFAULTS } from "./migrations.ts";
 import { AGENT_DIR_NAME, stateDirFor } from "./paths.ts";
 
 export interface Config {
@@ -18,6 +18,9 @@ export interface Config {
   escalation: { model: string; afterRetries: number };
   permissionMode: string;
   maxRetries: number;
+  /** マージ衝突による失敗の再試行上限。タスク本来の失敗(maxRetries)とは別枠で数える。
+   * マージ衝突はタスクの中身の失敗ではないため、本来のやり直し回数を消費させないための枠 */
+  maxConflictRetries: number;
   taskTimeoutMs: number;
   maxTurns: number;
   rateLimit: { backoffMs: number };
@@ -71,6 +74,7 @@ export function defaultConfig(root: string, env: NodeJS.ProcessEnv = process.env
     escalation: { ...(V1_DEFAULTS.escalation as Config["escalation"]) },
     permissionMode: V1_DEFAULTS.permissionMode as string,
     maxRetries: V1_DEFAULTS.maxRetries as number,
+    maxConflictRetries: V2_DEFAULTS.maxConflictRetries as number,
     taskTimeoutMs: V1_DEFAULTS.taskTimeoutMs as number,
     maxTurns: V1_DEFAULTS.maxTurns as number,
     rateLimit: { ...(V1_DEFAULTS.rateLimit as Config["rateLimit"]) },
@@ -124,8 +128,10 @@ function checkBoolean(obj: Record<string, unknown>, key: string, issues: string[
 
 /**
  * config.json の生データを検査し、人間の言葉で問題点を列挙する(純粋)。
- * 問題が無ければ空配列を返す。ここで検査していない項目(triage / parallel / schemaVersion)は
- * 既存どおり寛容に正規化するため、ここでは検査しない。
+ * 問題が無ければ空配列を返す。ここで検査していない項目(triage / parallel / schemaVersion /
+ * maxConflictRetries)は既存どおり寛容に正規化するため、ここでは検査しない。
+ * maxConflictRetries は schemaVersion 1 の既存 config.json(欠損)を壊さないよう、maxRetries と
+ * 異なり必須にしていない(normalizeConfig が既定値 5 で埋める)。
  */
 export function validateConfig(raw: unknown): string[] {
   if (!isPlainObject(raw)) {
@@ -185,8 +191,8 @@ export function validateConfig(raw: unknown): string[] {
 /**
  * config.json の生の中身から Config を組み立てる。
  * 上記 `validateConfig` が検査する項目は不正なら例外を投げて止める(既定値では埋めない。
- * 誤った設定のまま気付かず走り続けるのを避けるため)。triage / parallel は既存どおり
- * 欠損・型違いを既定値で埋める(古い形式の config.json もそのまま読み込めるようにするため)。
+ * 誤った設定のまま気付かず走り続けるのを避けるため)。triage / parallel / maxConflictRetries は
+ * 既存どおり欠損・型違いを既定値で埋める(古い形式の config.json もそのまま読み込めるようにするため)。
  */
 export function normalizeConfig(raw: unknown, root: string, env: NodeJS.ProcessEnv = process.env): Config {
   const issues = validateConfig(raw);
@@ -220,11 +226,23 @@ export function normalizeConfig(raw: unknown, root: string, env: NodeJS.ProcessE
     model: typeof tr.model === "string" && tr.model !== "" ? tr.model : "haiku",
   };
 
+  // maxRetries と異なり必須にしていない(schemaVersion 1 の既存 config.json には無いため)。
+  // 欠損・型違いは既定値 5 で埋める(triage / parallel と同じ流儀)。
+  const maxConflictRetriesRaw = r.maxConflictRetries;
+  const maxConflictRetries =
+    typeof maxConflictRetriesRaw === "number" &&
+    Number.isFinite(maxConflictRetriesRaw) &&
+    Number.isInteger(maxConflictRetriesRaw) &&
+    maxConflictRetriesRaw >= 0
+      ? maxConflictRetriesRaw
+      : (V2_DEFAULTS.maxConflictRetries as number);
+
   return {
     ...(r as unknown as Config),
     escalation,
     parallel: { maxSessions, worktreeDir, linkPaths },
     triage,
+    maxConflictRetries,
   };
 }
 
