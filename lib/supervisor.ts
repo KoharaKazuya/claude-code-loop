@@ -51,7 +51,7 @@ import { log } from "./log.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectRateLimit } from "./ratelimit.ts";
-import { rotate, rotateResultIsEmpty } from "./rotate.ts";
+import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
 import { generateSystemPrompt } from "./prompt.ts";
 import { generateSettings } from "./settings.ts";
@@ -738,8 +738,8 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
  * 移動先に同名ファイルが既にあってスキップされたものがあれば、件数に関わらず警告ログを 1 件ずつ出す
  * (記録が失われないよう移動を見送っているため、人間が気づいて手で解決する必要がある)。
  */
-export function runRotate(agentDir: string = repoPaths().agentDir): string | null {
-  const result = rotate(agentDir);
+export function runRotate(agentDir: string = repoPaths().agentDir, options: RotateOptions = {}): string | null {
+  const result = rotate(agentDir, options);
   for (const conflict of result.conflicts) {
     log(
       `警告: archive に同名ファイルがあるため移動をスキップした: ${conflict}` +
@@ -818,6 +818,21 @@ export function prunePatches(
   }
   if (removed > 0) log(`${keepDays} 日より古い退避パッチを削除した: ${removed} 件`);
   return removed;
+}
+
+/**
+ * 記録の片付け(ローテーション + 退避パッチの掃除)をまとめて行う。
+ * 走行中のタスクセッションが担当しているタスクの記録だけは動かさない
+ * (main 側で動かすとそのブランチの自動マージが modify/delete 衝突になるため)。
+ */
+export function runHousekeeping(state: State): void {
+  const excludeTaskIds = new Set(
+    state.runningSessions
+      .filter((s): s is RunningSessionState & { taskId: string } => s.kind === "task" && s.taskId !== undefined)
+      .map((s) => s.taskId),
+  );
+  runRotate(repoPaths().agentDir, { excludeTaskIds });
+  prunePatches();
 }
 
 // ---------- 停止制御 ----------
@@ -3443,9 +3458,10 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
       const state = loadState();
       const runningCount = state.runningSessions.length;
 
-      // ローテーションはセッションが走っていない周回だけ行う(走行中のセッションが参照して
-      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外のパスなので
-      // 掃除自体に .agent/ の差分は生じない)。
+      // この周回はセッションが 0 なので、main の git 自己修復とあわせて記録の片付け
+      // (ローテーション + 退避パッチの掃除)も行う。片付けはこれと「探索セッションの起動直前」
+      // の 2 箇所が契機で、タスクが途切れず runningCount === 0 の周回が来ない状況でも記録が
+      // 溜まり続けないようにしている。
       if (runningCount === 0) {
         // main が git 操作(マージ等)の途中で固まっていないかを確認し、可能なら自己修復する。
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
@@ -3464,8 +3480,7 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
           }
         }
 
-        runRotate();
-        prunePatches();
+        runHousekeeping(state);
       }
 
       // 停止指示はシグナルハンドラがメモリ上で進めるだけなので、state.json への写し
@@ -3606,7 +3621,14 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
           action.trigger === "idle"
             ? "実行可能なタスクがなく、前回探索以降に main / 入力が変化したため、次の作業を探す"
             : "前回探索から一定時間が経過し、main / 入力が変化したため、タスク起動前に全体を見直す";
+        // 探索セッションの起動直前にも記録を片付ける。走行中セッションがあっても記録が
+        // 溜まり続けないよう、「セッションが 0 の周回」に加えてここも契機にしている。
+        // この区間は mainLoop の同期区間でマージ・自動コミットが走らないため安全に動かせ、
+        // 探索セッション自身も整理後の記録を読める。
+        runHousekeeping(state);
+        commitAgentDir();
         // 探索セッションの前後で main の `.agent/tasks/` の ID 集合を比べ、新規登録の有無を見る。
+        // 片付けでアーカイブされた分を新規登録と誤認しないよう、基準は片付けの後で取る。
         // 並走するタスクセッションは専用 worktree で動き、その成果が main へ現れるのは
         // ループ先頭の drainCompletedSessions()(同期実行)による自動マージ時なので、
         // この await の区間で main にタスクが増えるのは探索セッション自身の仕業に限られる。

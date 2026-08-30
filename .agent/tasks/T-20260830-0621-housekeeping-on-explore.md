@@ -1,9 +1,10 @@
 ---
 title: "記録の片付けを探索セッションの実行時にも行えるようにする"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "探索セッションの起動直前を片付けの契機に追加。走行中タスクのタスクファイルのみ除外。typecheck/lint/test 通過"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
