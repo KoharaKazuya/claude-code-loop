@@ -285,6 +285,15 @@ function sleepSync(ms: number): void {
  * 状態が解消しないことがあったため、秒境界を跨ぐ待機を挟んで再試行する。再試行するのは
  * racy-git 起因(stderr に "not uptodate" を含む)の失敗のときだけで、それ以外
  * (例: そもそも進行中の merge がない)は待たずに即座に失敗を返す。
+ *
+ * 注意が 2 点ある。
+ * - racy git による一時的な not uptodate と、作業ツリーが本当に index とズレている
+ *   恒久的な not uptodate は git のメッセージ上区別できない。後者では再試行が必ず
+ *   空振りするため、wedged と確定するまでが既定ポリシーで最大 2 秒あまり遅れる。
+ *   固まった main を放置するより遅れて確定する方が安全なので、これは許容している。
+ * - 待機は同期(Atomics.wait)なのでイベントループ全体が止まる。この関数はタスク
+ *   完了時のマージ処理からも呼ばれ、そのとき他の子セッションは動いたままなので、
+ *   待機はマージ 1 回あたり最大でも数秒に収まる範囲に留めること。
  */
 export function abortMerge(root: string, policy: AbortRetryPolicy = DEFAULT_ABORT_RETRY_POLICY): { ok: true } | { ok: false; stderr: string } {
   let lastStderr = "";

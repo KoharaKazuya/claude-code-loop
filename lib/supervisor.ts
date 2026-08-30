@@ -48,7 +48,14 @@ import {
   type LoopLiveness,
 } from "./liveness.ts";
 import { log } from "./log.ts";
-import { abortMerge, mergeAgentBranch, type ConflictKind, type MergeOutcome, type WedgedStep } from "./merge.ts";
+import {
+  abortMerge,
+  mergeAgentBranch,
+  type AbortRetryPolicy,
+  type ConflictKind,
+  type MergeOutcome,
+  type WedgedStep,
+} from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
@@ -1201,7 +1208,7 @@ export type AutoMergeAbortResult = "no-merge" | "not-ours" | "aborted" | "abort-
  * 先端を指していれば Supervisor 自身の自動マージの中断とみなして巻き戻す。一致しなければ
  * 人間が手で始めたマージの途中なので、警告だけ出して一切触らない。
  */
-export function abortInterruptedAutoMerge(root: string): AutoMergeAbortResult {
+export function abortInterruptedAutoMerge(root: string, policy?: AbortRetryPolicy): AutoMergeAbortResult {
   if (!mergeInProgressSafe(root)) return "no-merge";
   const sha = (readGitPathFile(root, "MERGE_HEAD") ?? "").split("\n")[0]?.trim() ?? "";
   if (sha === "") {
@@ -1213,7 +1220,7 @@ export function abortInterruptedAutoMerge(root: string): AutoMergeAbortResult {
     log("警告: main で agent 由来でないマージが進行中のため触らない(人間のマージ途中とみなす)");
     return "not-ours";
   }
-  const result = abortMerge(root);
+  const result = abortMerge(root, policy);
   if (result.ok) {
     log(`中断していた自動マージを巻き戻した(${match.branch})`);
     return "aborted";
@@ -3594,17 +3601,24 @@ function sleep(ms: number): Promise<void> {
  * マージ直後の同一秒内は racy-git により `merge --abort` が `not uptodate` で失敗しうるため、
  * 失敗直後に諦めず待機を挟んで再試行する。「人間の git 操作が進行中」という結論(false を
  * 再試行なしで返す)は、agent 由来でないと判定できた場合にのみ出す。
+ *
+ * 再試行の層はここ 1 つに集約する。abortMerge も自前の再試行を持つが、ここからは
+ * `attempts: 1` で呼び、待機はこのループの `delayMs`(非同期 sleep)だけが行う。
+ * 二重に再試行させると待ち時間が掛け算で伸びるうえ、abortMerge 側の待機は同期
+ * (Atomics.wait)でイベントループを止めるため、非同期で待てるここが待つ方がよい。
+ * 既定の待機は秒境界を必ず跨ぐよう 1 秒より少し長くとる(racy git の解消条件)。
  */
 export async function selfHealGitOperationInProgress(
   root: string,
   opts?: { attempts?: number; delayMs?: number },
 ): Promise<boolean> {
   const attempts = opts?.attempts ?? 3;
-  const delayMs = opts?.delayMs ?? 1000;
+  const delayMs = opts?.delayMs ?? 1100;
+  const singleAttempt: AbortRetryPolicy = { attempts: 1, delayMs: 0 };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let result: AutoMergeAbortResult | undefined;
     try {
-      result = abortInterruptedAutoMerge(root);
+      result = abortInterruptedAutoMerge(root, singleAttempt);
     } catch (err) {
       log(`警告: 自己修復に失敗した: ${String(err)}`);
     }
