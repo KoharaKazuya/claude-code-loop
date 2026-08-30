@@ -1,9 +1,10 @@
 ---
 title: "doctor の設定読み取り修正が変更履歴に載っていない"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "既存の同種項目に doctor を追記した(独立行は足さず 1 行にまとめた)。npm test / lint / typecheck 通過"
 createdAt: 2026-08-30T13:34:03.651Z
 ---
 
