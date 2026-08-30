@@ -1,9 +1,10 @@
 ---
 title: "Node バージョン要件の二重管理を機械検証する"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "lib/node-engines-consistency.test.ts を追加。engines.node を解析して境界バージョンを生成し checkNodeVersion と突き合わせる"
 createdAt: 2026-08-30T13:46:18.783Z
 ---
 
@@ -56,3 +57,19 @@ deny 一覧の一致を検証、`scripts/check-version.mjs` がバージョン�
   作り替える案は、実行時に `package.json` の位置解決が必要になり配布形態の前提が増えるため
   **採らないこと**。採りたくなった場合は理由を `.agent/decisions/` に記録し、
   人間の確認(BLOCK)を経てから行う。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T13:55:59.535Z, セッション記録)
+- 確認済みの事実: `lib/node-engines-consistency.test.ts` を新規追加(既存ファイルは無変更、依存追加なし)。
+  `engines.node` を `^(\d+)\.(\d+)\.(\d+) \|\| >=(\d+)\.0\.0` の厳格な正規表現で解析し、解析結果から
+  境界バージョンを生成(現行値では `22.18.0` / `22.17.0` / `22.19.0` / `21.999.0` / `24.0.0` / `23.0.0` /
+  `25.0.0`)して `satisfies()` と `checkNodeVersion()` の可否一致を検証する。案内文言に `engines.node` の
+  値がそのまま含まれることも検証する。
+- 確認済みの事実(完了条件の赤確認): (a) `engines.node` を `^22.19.0 || >=24.0.0` に一時変更すると
+  `22.18.0` の判定不一致と文言不一致の 2 件が失敗。(b) `checkNodeVersion` の `minor >= 18` を
+  `minor >= 19` に一時変更すると `22.18.0` の判定不一致 1 件が失敗。いずれも復元後 `git diff` は空。
+  さらに (c) `engines.node` を `>=22.18.0` 単独(想定外書式)にすると `parseEngines` が null を返し、
+  `it.each` が 0 件になる前に解析成功を確かめるテストが失敗することをレビュー側が別コピーで実測確認。
+- 確認済みの事実(検証): `npm run typecheck` / `npm run lint` / `npm test`(35 files / 1228 tests)すべて成功。
+- 次の試行への提案: なし(完了)。
