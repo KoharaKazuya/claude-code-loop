@@ -2,5 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-1443-changelog-followup-not-mechanized](D-20260830-1443-changelog-followup-not-mechanized.md) — ドキュメント追随漏れの再発防止は仕組み化せず探索セッションに任せる
+- [ ] [D-20260830-1439-deny-pattern-narrowing-form](D-20260830-1439-deny-pattern-narrowing-form.md) — deny の狭め方は空白の前置とサブコマンド列挙で行う
 - [ ] [D-20260830-1419-own-task-file-status-only-diff](D-20260830-1419-own-task-file-status-only-diff.md) — 衝突解消セッションは自分のタスクファイルを status 1 行だけの差分にする
 - [ ] [D-20260830-1358-task-conflicts-field-semantics](D-20260830-1358-task-conflicts-field-semantics.md) — タスクの conflicts フィールドの意味づけ(対称・欠落は無視・空なら書き出さない)
