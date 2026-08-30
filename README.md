@@ -57,8 +57,10 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
    機械可読な JSON を出力する。`ccloop status` にはループ本体(`ccloop run`)が動いているかと
    状態の最終更新時刻も出る
 5. やりたい作業が明確なら
-   `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--model ...] [--slug ...]`
-   で直接タスクを積める(`--slug` 省略時はタイトルから自動生成する。ASCII 化できなければ `task`)
+   `ccloop add "タイトル" [--desc ...] [--priority ...] [--deps ...] [--conflicts ...] [--model ...] [--slug ...]`
+   で直接タスクを積める(`--slug` 省略時はタイトルから自動生成する。ASCII 化できなければ `task`)。
+   `--deps` は依存タスク ID(先に完了している必要があるタスク)、`--conflicts` は同時に実行しない
+   タスク ID をカンマ区切りで指定する(違いは [docs/architecture.md](docs/architecture.md) を参照)
 
 同一リポジトリに対して `ccloop run` は同時に 1 つだけ実行できる。既に動いていると判定した場合は
 状態を一切書き換えずに起動を拒否する(どうしても起動する場合は `ccloop run --force`)。
