@@ -78,21 +78,21 @@ describe("classifyConflicts", () => {
     });
   });
 
-  it(".agent/decisions/index.md が add/add(stage {2,3})なら decisionsIndex として mechanical", () => {
+  it(".agent/decisions/index.md が add/add(stage {2,3})なら decisionsIndex として mechanical、hasBase は false", () => {
     const stages = new Map([[".agent/decisions/index.md", new Set([2, 3])]]);
     expect(classifyConflicts(stages, TASK_ID)).toEqual({
       kind: "mechanical",
       ownTaskFile: null,
-      decisionsIndex: ".agent/decisions/index.md",
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: false },
     });
   });
 
-  it(".agent/decisions/index.md が modify/modify(stage {1,2,3})でも decisionsIndex として mechanical", () => {
+  it(".agent/decisions/index.md が modify/modify(stage {1,2,3})でも decisionsIndex として mechanical、hasBase は true", () => {
     const stages = new Map([[".agent/decisions/index.md", new Set([1, 2, 3])]]);
     expect(classifyConflicts(stages, TASK_ID)).toEqual({
       kind: "mechanical",
       ownTaskFile: null,
-      decisionsIndex: ".agent/decisions/index.md",
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: true },
     });
   });
 
@@ -104,7 +104,7 @@ describe("classifyConflicts", () => {
     expect(classifyConflicts(stages, TASK_ID)).toEqual({
       kind: "mechanical",
       ownTaskFile: `.agent/tasks/${TASK_ID}.md`,
-      decisionsIndex: ".agent/decisions/index.md",
+      decisionsIndex: { path: ".agent/decisions/index.md", hasBase: true },
     });
   });
 
@@ -452,6 +452,35 @@ describe("mergeAgentBranch", () => {
     expect(git(["log", "-1", "--pretty=%B"])).toContain(
       "決定インデックスは両ブランチの項目を統合: .agent/decisions/index.md",
     );
+  });
+
+  it("index.md が真の add/add(共通祖先に存在しない)でも機械的に解決し、両方の行が ID 降順で入る(hasBase===false の経路)", () => {
+    const indexPath = ".agent/decisions/index.md";
+    // 分岐前のコミットには index.md が存在しない(base に無い = 真の add/add)
+    writeFile(".gitkeep", "");
+    commitAll("init: index.md 無しの基点を追加する");
+    git(["branch", "agent/T-050"]);
+
+    // header は両側で同一にする(食い違うと機械的解決を諦める仕様のため)
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-101](D-101.md) — main 側で新規追加した決定\n`);
+    commitAll("docs(agent): main 側の決定記録を追加する");
+
+    git(["checkout", "agent/T-050"]);
+    writeFile(indexPath, `${DECISIONS_HEADER}- [ ] [D-102](D-102.md) — branch 側で新規追加した決定\n`);
+    commitAll("docs(agent): branch 側の決定記録を追加する");
+    git(["checkout", "main"]);
+
+    const outcome = mergeAgentBranch(dir, "agent/T-050", "T-050", "index.md の真の add/add", TRAILER);
+
+    expect(outcome).toEqual({ result: "renumbered" });
+    const text = fs.readFileSync(path.join(dir, indexPath), "utf8");
+    const lines = text.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines).toEqual([
+      "- [ ] [D-102](D-102.md) — branch 側で新規追加した決定",
+      "- [ ] [D-101](D-101.md) — main 側で新規追加した決定",
+    ]);
+    expect(git(["ls-files", "-u"]).trim()).toBe("");
+    expect(git(["status", "--porcelain"]).trim()).toBe("");
   });
 
   it("own-task-file と index.md が同時に衝突しても機械的に解決される", () => {

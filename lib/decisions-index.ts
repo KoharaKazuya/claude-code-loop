@@ -101,6 +101,9 @@ export function mergeDecisionsIndexText(base: string | null, ours: string, their
   const mergedFooter = mergeTextPart(baseParsed?.footer ?? null, oursParsed.footer, theirsParsed.footer);
   if (mergedFooter === null) return null;
 
+  // 同じ側に同一 ID の行が複数あるのは手編集で壊れた index.md の場合のみで、その場合は
+  // Map の構築により無警告で最後の行が採用される(壊れた入力に対しては最後の行を採る、という
+  // 意図した挙動)。
   const baseById = new Map((baseParsed?.entries ?? []).map((e) => [e.id, e] as const));
   const oursById = new Map(oursParsed.entries.map((e) => [e.id, e] as const));
   const theirsById = new Map(theirsParsed.entries.map((e) => [e.id, e] as const));

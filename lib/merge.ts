@@ -101,8 +101,13 @@ export type MechanicalConflicts = {
   kind: "mechanical";
   /** own-task-file の衝突があればそのパス、無ければ null */
   ownTaskFile: string | null;
-  /** .agent/decisions/index.md の衝突があればそのパス、無ければ null */
-  decisionsIndex: string | null;
+  /**
+   * .agent/decisions/index.md の衝突があればそのパスと hasBase、無ければ null。
+   * hasBase は分類時点の stage 集合から確定している stage 1(共通祖先)の有無で、
+   * true なら modify/modify({1,2,3})、false なら add/add({2,3})。resolveMechanically が
+   * これをそのまま使い、stage 1 の取得可否を git の実行結果から推測しない。
+   */
+  decisionsIndex: { path: string; hasBase: boolean } | null;
 };
 
 export type ConflictClassification = MechanicalConflicts | { kind: "substantive"; paths: string[] };
@@ -121,14 +126,16 @@ export function classifyConflicts(stages: Map<string, Set<number>>, taskId: stri
   if (paths.length === 0) return { kind: "substantive", paths };
 
   let ownTaskFile: string | null = null;
-  let decisionsIndex: string | null = null;
+  let decisionsIndex: { path: string; hasBase: boolean } | null = null;
   for (const p of paths) {
     const stageSet = stages.get(p);
     if (stageSet === undefined) return { kind: "substantive", paths };
     if (isOwnTaskFilePath(p, stageSet, taskId)) {
       ownTaskFile = p;
     } else if (isDecisionsIndexPath(p, stageSet)) {
-      decisionsIndex = p;
+      // stage 集合はこの時点で確定している({2,3}=add/add なら stage 1 は無い、
+      // {1,2,3}=modify/modify なら stage 1 がある)ので、ここで確定情報として持ち回る。
+      decisionsIndex = { path: p, hasBase: stageSet.has(1) };
     } else {
       return { kind: "substantive", paths };
     }
@@ -273,15 +280,6 @@ function abortMergeIfInProgress(root: string): { ok: true } | { ok: false; stder
   return abortMerge(root);
 }
 
-/** `git show <spec>` を試み、失敗(対象 stage が存在しない等)すれば null を返す */
-function readGitShowOrNull(root: string, spec: string): string | null {
-  try {
-    return git(["show", spec], root);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * "mechanical" と分類されたコンフリクト(own-task-file・decisions/index.md)を機械的に
  * 解決し、解決コミットを作る。失敗(substantive 判定・想定外の例外)時は merge を abort
@@ -304,7 +302,7 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     }
 
     const { ownTaskFile, decisionsIndex } = classification;
-    knownPaths = [ownTaskFile, decisionsIndex].filter((p): p is string => p !== null);
+    knownPaths = [ownTaskFile, decisionsIndex?.path ?? null].filter((p): p is string => p !== null);
 
     if (ownTaskFile !== null) {
       // マージ中のタスク自身のタスクファイルは branch 側(theirs)を正とする。main 側の
@@ -317,12 +315,14 @@ export function resolveMechanically(root: string, branch: string, taskId: string
     }
 
     if (decisionsIndex !== null) {
-      // stage 1(共通祖先)は add/add のとき存在しないため、取得失敗は null として扱う。
-      // stage 2/3 の取得失敗はここまでの分類と矛盾する想定外の状態なので、例外のまま
-      // 外側の catch へ伝播させる。
-      const base = readGitShowOrNull(root, `:1:${decisionsIndex}`);
-      const ours = git(["show", `:2:${decisionsIndex}`], root);
-      const theirs = git(["show", `:3:${decisionsIndex}`], root);
+      const { path: decisionsIndexPath, hasBase } = decisionsIndex;
+      // hasBase は classifyConflicts が分類時点の stage 集合から確定させた事実であり、
+      // ここで推測はしない。hasBase なら stage 1 は必ず存在するので取得し、失敗すれば
+      // 想定外の状態として例外のまま外側の catch へ伝播させる。hasBase でなければ
+      // stage 1 は存在しないと分かっているので、そもそも git を呼ばない。
+      const base = hasBase ? git(["show", `:1:${decisionsIndexPath}`], root) : null;
+      const ours = git(["show", `:2:${decisionsIndexPath}`], root);
+      const theirs = git(["show", `:3:${decisionsIndexPath}`], root);
       const merged = mergeDecisionsIndexText(base, ours, theirs);
       if (merged === null) {
         // header/footer が両側で書き換えられた等、機械的に解決できない。substantive として
@@ -331,8 +331,8 @@ export function resolveMechanically(root: string, branch: string, taskId: string
         if (!abortResult.ok) return { result: "wedged", stderr: abortResult.stderr };
         return { result: "conflict", paths: knownPaths, conflictKind: "substantive" };
       }
-      fs.writeFileSync(path.join(root, decisionsIndex), merged);
-      execFileSync("git", ["add", "--", decisionsIndex], { cwd: root });
+      fs.writeFileSync(path.join(root, decisionsIndexPath), merged);
+      execFileSync("git", ["add", "--", decisionsIndexPath], { cwd: root });
     }
 
     const remainingUnmerged = git(["ls-files", "-u"], root).trim();
@@ -340,7 +340,10 @@ export function resolveMechanically(root: string, branch: string, taskId: string
       throw new Error(`コンフリクト解消後も未マージのパスが残っている: ${remainingUnmerged}`);
     }
 
-    const message = mergeCommitMessage(branch, taskId, title, trailer, { ownTaskFile, decisionsIndex });
+    const message = mergeCommitMessage(branch, taskId, title, trailer, {
+      ownTaskFile,
+      decisionsIndex: decisionsIndex?.path ?? null,
+    });
     execFileSync("git", ["commit", "-F", "-"], {
       cwd: root,
       input: message,
