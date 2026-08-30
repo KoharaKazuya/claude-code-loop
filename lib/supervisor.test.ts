@@ -2405,6 +2405,25 @@ describe("runRotate", () => {
     // 実際に archive へ移動されている(要約文字列だけのモックではない)
     expect(fs.existsSync(path.join(dir, "archive", "tasks", "T-001.md"))).toBe(true);
   });
+
+  it("移動先に同名ファイルがあり衝突だけの場合は null を返す(空文字列ではない)", () => {
+    const tasksDir = path.join(dir, "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(path.join(tasksDir, "T-001.md"), serializeFrontmatter({ status: "completed" }, "本文"));
+    const archiveTasksDir = path.join(dir, "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(archiveTasksDir, "T-001.md"),
+      serializeFrontmatter({ status: "completed" }, "archive 側の本文"),
+    );
+
+    expect(runRotate(dir)).toBeNull();
+    // 衝突したファイルは移動されず、archive 側も上書きされない
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(archiveTasksDir, "T-001.md"), "utf8")).toBe(
+      serializeFrontmatter({ status: "completed" }, "archive 側の本文"),
+    );
+  });
 });
 
 describe("parseNameStatus", () => {

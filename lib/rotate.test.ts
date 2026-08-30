@@ -269,7 +269,7 @@ describe("rotate", () => {
     const textAfterSecond = readIndex(decisionsDir);
     const mtimeAfterSecond = fs.statSync(path.join(decisionsDir, "index.md")).mtimeMs;
 
-    expect(second).toEqual({ tasks: 0, decisions: 0, humanReview: 0 });
+    expect(second).toEqual({ tasks: 0, decisions: 0, humanReview: 0, conflicts: [] });
     expect(rotateResultIsEmpty(second)).toBe(true);
     expect(textAfterSecond).toBe(textAfterFirst);
     expect(mtimeAfterSecond).toBe(mtimeAfterFirst);
@@ -293,7 +293,7 @@ describe("rotate", () => {
 
     const result = rotate(emptyDir);
 
-    expect(result).toEqual({ tasks: 0, decisions: 0, humanReview: 0 });
+    expect(result).toEqual({ tasks: 0, decisions: 0, humanReview: 0, conflicts: [] });
     expect(rotateResultIsEmpty(result)).toBe(true);
   });
 
@@ -325,5 +325,111 @@ describe("rotate", () => {
     expect(result.decisions).toBe(0);
     expect(readIndex(decisionsDir)).toBe(merged);
     expect(fs.existsSync(path.join(agentDir, "archive", "decisions"))).toBe(false);
+  });
+
+  it("archive/tasks/ に同名ファイルが既にあれば移動をスキップし、両方の内容が保たれる", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(tasksDir, "T-001.md", fixture("completed", "アクティブ側の本文"));
+    const archiveTasksDir = path.join(agentDir, "archive", "tasks");
+    writeFile(archiveTasksDir, "T-001.md", fixture("completed", "archive 側の本文"));
+
+    const result = rotate(agentDir);
+
+    expect(result.tasks).toBe(0);
+    expect(result.conflicts).toEqual(["tasks/T-001.md"]);
+    expect(fs.readFileSync(path.join(archiveTasksDir, "T-001.md"), "utf8")).toBe(
+      fixture("completed", "archive 側の本文"),
+    );
+    expect(fs.readFileSync(path.join(tasksDir, "T-001.md"), "utf8")).toBe(
+      fixture("completed", "アクティブ側の本文"),
+    );
+  });
+
+  it("archive/human-review/ に同名ファイルが既にあれば移動をスキップし、両方の内容が保たれる", () => {
+    const hrDir = path.join(agentDir, "human-review");
+    writeFile(hrDir, "HR-20260812-01.md", fixture("closed", "アクティブ側の本文"));
+    const archiveHrDir = path.join(agentDir, "archive", "human-review");
+    writeFile(archiveHrDir, "HR-20260812-01.md", fixture("closed", "archive 側の本文"));
+
+    const result = rotate(agentDir);
+
+    expect(result.humanReview).toBe(0);
+    expect(result.conflicts).toEqual(["human-review/HR-20260812-01.md"]);
+    expect(fs.readFileSync(path.join(archiveHrDir, "HR-20260812-01.md"), "utf8")).toBe(
+      fixture("closed", "archive 側の本文"),
+    );
+    expect(fs.readFileSync(path.join(hrDir, "HR-20260812-01.md"), "utf8")).toBe(
+      fixture("closed", "アクティブ側の本文"),
+    );
+  });
+
+  it("archive/decisions/ に同名ファイルが既にあれば [x] の決定でも移動をスキップし、index.md の行が [x] のまま残る", () => {
+    const decisionsDir = path.join(agentDir, "decisions");
+    writeFile(decisionsDir, "D-20260101-0000-a.md", decisionFixture("残す判断"));
+    writeFile(decisionsDir, "D-20260102-0000-drop.md", decisionFixture("衝突する判断", "アクティブ側の本文"));
+    const archiveDecisionsDir = path.join(agentDir, "archive", "decisions");
+    writeFile(
+      archiveDecisionsDir,
+      "D-20260102-0000-drop.md",
+      decisionFixture("衝突する判断", "archive 側の本文"),
+    );
+    writeFile(
+      decisionsDir,
+      "index.md",
+      [
+        "# 決定インデックス",
+        "",
+        "チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。",
+        "",
+        "- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 残す判断",
+        "- [x] [D-20260102-0000-drop](D-20260102-0000-drop.md) — 衝突する判断",
+        "",
+      ].join("\n"),
+    );
+
+    const result = rotate(agentDir);
+
+    expect(result.decisions).toBe(0);
+    expect(result.conflicts).toEqual(["decisions/D-20260102-0000-drop.md"]);
+    // 実体ファイルはどちらも残る
+    expect(fs.existsSync(path.join(decisionsDir, "D-20260102-0000-drop.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(archiveDecisionsDir, "D-20260102-0000-drop.md"), "utf8")).toBe(
+      decisionFixture("衝突する判断", "archive 側の本文"),
+    );
+    // index.md の行は [x] のまま残る
+    const text = readIndex(decisionsDir);
+    expect(text).toContain("- [x] [D-20260102-0000-drop](D-20260102-0000-drop.md) — 衝突する判断");
+    expect(text).toContain("- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 残す判断");
+  });
+
+  it("衝突するファイルと衝突しないファイルが混在する場合、衝突しない方はきちんと移動される", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(tasksDir, "T-001.md", fixture("completed"));
+    writeFile(tasksDir, "T-002.md", fixture("completed"));
+    const archiveTasksDir = path.join(agentDir, "archive", "tasks");
+    writeFile(archiveTasksDir, "T-001.md", fixture("completed", "archive 側の本文"));
+
+    const result = rotate(agentDir);
+
+    expect(result.tasks).toBe(1);
+    expect(result.conflicts).toEqual(["tasks/T-001.md"]);
+    // 衝突した方はそのまま残る
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(true);
+    // 衝突しない方は移動される
+    expect(fs.existsSync(path.join(tasksDir, "T-002.md"))).toBe(false);
+    expect(fs.existsSync(path.join(archiveTasksDir, "T-002.md"))).toBe(true);
+  });
+
+  it("衝突があるとき rotateResultIsEmpty は false を返す", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(tasksDir, "T-001.md", fixture("completed"));
+    const archiveTasksDir = path.join(agentDir, "archive", "tasks");
+    writeFile(archiveTasksDir, "T-001.md", fixture("completed", "archive 側の本文"));
+
+    const result = rotate(agentDir);
+
+    expect(result.tasks).toBe(0);
+    expect(result.conflicts.length).toBeGreaterThan(0);
+    expect(rotateResultIsEmpty(result)).toBe(false);
   });
 });

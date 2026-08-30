@@ -740,14 +740,25 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
 
 // ---------- .agent/ 状態ファイルのローテーション ----------
 
-/** 何かを移動した場合だけログ 1 行を出し、移動の要約文字列を返す(移動が無ければ null) */
+/**
+ * 何かを移動した場合だけログ 1 行を出し、移動の要約文字列を返す(移動が無ければ null)。
+ * 移動先に同名ファイルが既にあってスキップされたものがあれば、件数に関わらず警告ログを 1 件ずつ出す
+ * (記録が失われないよう移動を見送っているため、人間が気づいて手で解決する必要がある)。
+ */
 export function runRotate(agentDir: string = repoPaths().agentDir): string | null {
   const result = rotate(agentDir);
+  for (const conflict of result.conflicts) {
+    log(
+      `警告: archive に同名ファイルがあるため移動をスキップした: ${conflict}` +
+        `(記録が失われないよう移動を見送った。両方の内容を確認して手で解決すること)`,
+    );
+  }
   if (rotateResultIsEmpty(result)) return null;
   const parts: string[] = [];
   if (result.tasks > 0) parts.push(`tasks ${result.tasks} 件`);
   if (result.decisions > 0) parts.push(`decisions ${result.decisions} 件`);
   if (result.humanReview > 0) parts.push(`human-review ${result.humanReview} 件`);
+  if (parts.length === 0) return null;
   const summary = parts.join(", ");
   log(`archive へ移動: ${summary}`);
   return summary;
