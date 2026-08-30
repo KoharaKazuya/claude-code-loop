@@ -1801,6 +1801,11 @@ export function refreshGeneratedSessionInputs(paths: Paths = repoPaths()): void 
 /**
  * claude を 1 回起動する。引数の組み立ては buildClaudeArgs を参照。
  * env は CLAUDE_AGENT_AUTONOMOUS に追加する環境変数(hook がセッション種別を判別するために使う)。
+ *
+ * 子プロセスの異常(実行ファイルが無い等)は error イベント経由で resolve するが、spawn 自体の
+ * 同期 throw(オプション不正など)は executor の外へ出て Promise の reject になる。**呼び出し元は
+ * 必ず reject に備えること**(crashResultFromError でクラッシュ結果へ変換する)。備えを忘れると
+ * 未捕捉例外になり、セッション 1 件の起動失敗で ccloop run プロセス全体が落ちる。
  */
 function runClaude(
   config: Config,
@@ -2805,7 +2810,8 @@ export function exploreEndLogLine(res: SessionResult, timeoutMs: number): string
  * 戻り値の fastCrashed は、呼び出し元が「探索は何もしていない」扱いにして次の探索へ
  * クールダウン(exploreDue)を課すために使う(rateLimited のときは常に false)。
  */
-async function runExploreSession(
+// テスト用に export する(spawn 失敗時に例外が漏れず継続することを回帰テストで検証するため)
+export async function runExploreSession(
   config: Config,
   reason: string,
   ctx: ExploreContext,
@@ -2822,9 +2828,20 @@ async function runExploreSession(
   try {
     log(`${styleText("cyan", "▶")} 探索セッションを開始: ${reason}`);
     const deadline = sessionDeadline(startedAt, config.taskTimeoutMs);
-    const res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, repoPaths().root, {
-      env: { CLAUDE_AGENT_SESSION_KIND: "explore" },
-    });
+    // 起動そのものの失敗(spawn の同期 throw など)はタスクセッション経路(launchTaskSession)と
+    // 同じくクラッシュ結果へ変換する。ここで捕まえないと未捕捉例外になり、探索 1 件の失敗で
+    // ccloop run 全体が落ちる(タスクセッションでは同じ失敗が吸収されるため、経路ごとの差になる)。
+    let res: SessionResult;
+    try {
+      res = await runClaude(config, buildExplorePrompt({ ...ctx, startedAt, deadline }), config.model, repoPaths().root, {
+        env: { CLAUDE_AGENT_SESSION_KIND: "explore" },
+      });
+    } catch (err) {
+      log(`警告: 探索セッションが想定外に失敗した: ${String(err)}`);
+      // exitCode: null かつ即座に返るため、以降の isFastCrash が「瞬時クラッシュ」と判定する
+      // = 入力ハッシュを更新せず、次の探索へクールダウンを課す
+      res = crashResultFromError(err);
+    }
     recordMetrics({ kind: "explore", model: config.model, res, sessionCwd: repoPaths().root });
     if (isSessionRateLimited(res)) {
       applyRateLimit(config);

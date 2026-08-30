@@ -1,6 +1,6 @@
 ---
 title: "探索・triage セッションの起動失敗が未捕捉例外になり ccloop run ごと落ちる"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
@@ -44,3 +44,14 @@ executor 内で `spawn` を呼ぶ。executor 内の同期 throw はそのまま 
    1 行足す。
 
 ## 試行履歴
+
+### 試行 1(2026-08-30T06:18:37.738Z, セッション記録)
+- 確認済みの事実: triage 経路(`runHumanReviewTriage`)は既に `catch` を持っており未捕捉になる経路
+  ではなかった(タスク本文の記述は現状と食い違っていた)。修正が必要だったのは探索経路のみ。
+- 確認済みの事実: `runExploreSession` の `runClaude` 呼び出しを try/catch で囲み、失敗時は
+  `crashResultFromError` へ変換(= 瞬時クラッシュ扱い、入力ハッシュ非更新、次の探索へクールダウン)。
+  `runClaude` の docstring に「呼び出し元は必ず reject に備える」契約を明記。
+  テスト用に `runExploreSession` を export し、`vi.mock("node:child_process")` で spawn の同期 throw を
+  注入する回帰テストを `lib/supervisor.test.ts` に追加。
+- 確認済みの事実: `npm run test`(1005 件 pass)/ `npm run lint` / `npm run typecheck` が通ることを確認。
+  reviewer サブエージェントは APPROVE(minor 指摘の docstring 追記は対応済み)。

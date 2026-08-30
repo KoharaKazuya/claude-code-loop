@@ -73,6 +73,7 @@ import {
   resolveTaskSlug,
   retryContextSection,
   type RunningSessionState,
+  runExploreSession,
   runningSessionLines,
   runRotate,
   selfHostedLibDir,
@@ -105,6 +106,26 @@ import {
   worktreePathFor,
 } from "./worktree.ts";
 import { type LoopInput, planLoopStep } from "./scheduler.ts";
+
+/**
+ * runExploreSession の spawn 失敗回帰テスト用: node:child_process の spawn だけ差し替え、
+ * execFileSync / spawnSync 等の他の named export(このファイル自身や supervisor.ts が git 操作に
+ * 使う)は実物のまま通す。spawnControl.shouldThrow をテストごとに切り替えて同期 throw を注入する。
+ */
+const spawnControl = vi.hoisted(() => ({ shouldThrow: false }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      if (spawnControl.shouldThrow) {
+        throw new Error("spawn 起動に失敗した(テスト注入)");
+      }
+      return actual.spawn(...args);
+    },
+  };
+});
 
 /** 先頭 BOM(U+FEFF)。ソース中に不可視文字を直接書かないよう、コード値から組み立てる */
 const BOM = String.fromCharCode(0xfeff);
@@ -2062,6 +2083,56 @@ describe("classifyHumanReview", () => {
   it("旧方式(status: answered)も answered に分類する", () => {
     const entry = hr({ status: "answered", body: "## 回答\n\n対応不要。" });
     expect(classifyHumanReview([entry]).answered).toEqual([entry]);
+  });
+});
+
+describe("runExploreSession(回帰: spawn の同期 throw が漏れない)", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    // useRepoRoot はモジュール内で共有される currentPaths を書き換えるため、他のテストへ
+    // 影響を残さないよう元の値を退避し、afterEach で必ず復元する
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-exploresession-"));
+    useRepoRoot(dir);
+    spawnControl.shouldThrow = false;
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+    spawnControl.shouldThrow = false;
+    vi.restoreAllMocks();
+  });
+
+  it("spawn が同期 throw しても例外が外へ漏れず、クラッシュ結果として処理が継続する", async () => {
+    // spawn のオプション不正などで new Promise((resolve) => spawn(...)) の executor 内が
+    // 同期的に throw すると、runClaude の Promise は reject になる。ここで catch していないと
+    // 未捕捉例外になり、探索セッション 1 件の失敗で ccloop run プロセスごと落ちていた(回帰)。
+    spawnControl.shouldThrow = true;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const config = makeConfig();
+    const outcome = await runExploreSession(config, "テスト起動", {
+      trigger: "idle",
+      goalChanged: null,
+      newAnsweredIds: null,
+      runningTasks: [],
+    });
+
+    // 例外が漏れず戻り値まで到達し、瞬時クラッシュとして次の探索へクールダウンを課す扱いになる
+    expect(outcome).toEqual({ rateLimited: false, fastCrashed: true });
+    const logged = logSpy.mock.calls.map((args) => String(args[0])).join("\n");
+    expect(logged).toContain("警告: 探索セッションが想定外に失敗した");
+
+    // finally ブロックの後始末により、実行中セッション一覧からも掃除されている
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as {
+      runningSessions: unknown[];
+      sessionCount: number;
+    };
+    expect(state.runningSessions).toEqual([]);
+    expect(state.sessionCount).toBe(1);
   });
 });
 
