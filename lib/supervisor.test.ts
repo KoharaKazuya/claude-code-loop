@@ -28,6 +28,7 @@ import {
   dirtyPathsOutsideAgent,
   ensureWritableDir,
   type ExploreContext,
+  exploreEndLogLine,
   fastCrashStreakAfterWait,
   formatElapsed,
   installedSourceDriftLines,
@@ -2049,6 +2050,35 @@ describe("isFastCrash", () => {
 
   it("FAST_CRASH_MS 以上かかった異常終了は瞬時クラッシュとみなさない", () => {
     expect(isFastCrash(res({ exitCode: 1 }), 10_000)).toBe(false);
+  });
+});
+
+describe("exploreEndLogLine", () => {
+  function res(overrides: Partial<SessionResult> = {}): SessionResult {
+    return { exitCode: 1, timedOut: false, stdout: "", stderr: "", ...overrides };
+  }
+
+  it("タイムアウトなら時間切れと分かる文言になる(タスクセッション側と表記を揃える)", () => {
+    const line = exploreEndLogLine(res({ exitCode: null, timedOut: true }), 40 * 60 * 1000);
+    expect(line).toContain("タイムアウト");
+    expect(line).toContain(`${40 * 60 * 1000}ms`);
+  });
+
+  it("通常の異常終了は従来どおりの文言で、タイムアウトとは表記が混ざらない", () => {
+    const line = exploreEndLogLine(res({ exitCode: 1 }), 40 * 60 * 1000);
+    expect(line).toContain("異常終了");
+    expect(line).toContain("exitCode=1");
+    expect(line).not.toContain("タイムアウト");
+  });
+
+  it("正常終了なら成功の文言になる", () => {
+    const line = exploreEndLogLine(res({ exitCode: 0 }), 40 * 60 * 1000);
+    expect(line).toContain("探索セッション終了");
+  });
+
+  it("timedOut と異常な exitCode が両方成立する場合、タイムアウトを優先する", () => {
+    const line = exploreEndLogLine(res({ exitCode: 1, timedOut: true }), 1_000);
+    expect(line).toContain("タイムアウト");
   });
 });
 
