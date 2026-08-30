@@ -2,8 +2,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serializeFrontmatter } from "./frontmatter.ts";
+import { readProcStartToken, writeRunnerRecord } from "./liveness.ts";
 import {
   AGENT_COMMIT_TRAILER,
   allTaskIds,
@@ -39,6 +40,7 @@ import {
   loadPendingDecisions,
   loadPermissionDenials,
   mainChangedByTaskOutcome,
+  mainLoop,
   newTaskId,
   nextFastCrashStreak,
   nextStopEscalation,
@@ -4248,4 +4250,74 @@ describe("allTaskIds / assertDepsExist(archive)", () => {
 
     expect(() => assertDepsExist(["T-done"], allTaskIds())).not.toThrow();
   });
+});
+
+describe("mainLoop の二重起動ガード(回帰)", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+  let originalExitCode: typeof process.exitCode;
+
+  beforeEach(() => {
+    // useRepoRoot はモジュール内で共有される currentPaths を書き換えるため、他のテストへ
+    // 影響を残さないよう元の値を退避し、afterEach で必ず復元する
+    originalPaths = repoPaths();
+    originalExitCode = process.exitCode;
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-startupguard-"));
+    useRepoRoot(dir);
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    process.exitCode = originalExitCode;
+    fs.rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it(
+    "生存記録が『生きている』状態なら、mainLoop は state.json の runningSessions を書き換えずに起動を拒否する",
+    async () => {
+      // 起動時点で先発プロセスが積んだ「実行中セッション」を再現する。ガードが本体の処理へ
+      // 抜けてしまうと、この内容が recoverStartup 等によって書き換えられてしまう。
+      const stateBefore = {
+        runningSessions: [
+          {
+            kind: "task",
+            taskId: "T-001",
+            branch: "agent/T-001",
+            worktree: "/tmp/does-not-matter",
+            model: "opus",
+            startedAt: "2026-08-30T09:00:00.000Z",
+            phase: "running",
+          },
+        ],
+        sessionCount: 1,
+      };
+      fs.writeFileSync(repoPaths().statePath, JSON.stringify(stateBefore));
+
+      // 「生きている」生存記録: PID は自分自身(必ず生存する)、procStartToken は実測値を使う
+      // (Linux では起動時刻トークンの照合が走るため、記録時と評価時で値を一致させる必要がある)。
+      const procStartToken = readProcStartToken(process.pid);
+      writeRunnerRecord(repoPaths().runnerPath, {
+        pid: process.pid,
+        startedAt: "2026-08-30T08:00:00.000Z",
+        heartbeatAt: new Date().toISOString(),
+        host: os.hostname(),
+        heartbeatIntervalMs: 60_000,
+        ...(procStartToken !== null ? { procStartToken } : {}),
+      });
+
+      const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await mainLoop();
+
+      expect(process.exitCode).toBe(1);
+      expect(JSON.parse(fs.readFileSync(repoPaths().statePath, "utf8"))).toEqual(stateBefore);
+      expect(stderrSpy).toHaveBeenCalled();
+      // 原因(既に動いている)と対処(停止する / status で確認する)が読み取れる文言であること
+      const message = stderrSpy.mock.calls.flat().join("\n");
+      expect(message).toContain("既に ccloop run が動いています");
+      expect(message).toContain("ccloop status");
+    },
+    10000,
+  );
 });

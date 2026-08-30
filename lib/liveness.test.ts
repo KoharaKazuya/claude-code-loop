@@ -6,10 +6,12 @@ import {
   clearRunnerRecord,
   describeLoopLiveness,
   evaluateLoopLiveness,
+  evaluateStartupGuard,
   isProcessAlive,
   parseProcStatStartTime,
   readRunnerRecord,
   writeRunnerRecord,
+  type LoopLiveness,
   type RunnerRecord,
   type RunnerRecordRead,
 } from "./liveness.ts";
@@ -286,6 +288,74 @@ describe("describeLoopLiveness", () => {
     });
     expect(text).toContain("不明");
     expect(text).toContain("内容が JSON として壊れています");
+  });
+});
+
+describe("evaluateStartupGuard", () => {
+  it("running は拒否し、message は空でない", () => {
+    const l: LoopLiveness = {
+      status: "running",
+      pid: 1234,
+      startedAt: "2026-08-30T10:00:00.000Z",
+      heartbeatAt: "2026-08-30T11:59:00.000Z",
+    };
+    const result = evaluateStartupGuard(l);
+    expect(result.allow).toBe(false);
+    expect(result).toMatchObject({ allow: false });
+    if (!result.allow) expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it("unknown/heartbeat-stale は拒否し、message は空でない(PID が生きている可能性があるため)", () => {
+    const l: LoopLiveness = {
+      status: "unknown",
+      reason: "heartbeat-stale",
+      pid: 1234,
+      startedAt: "2026-08-30T10:00:00.000Z",
+      heartbeatAt: "2026-08-30T11:00:00.000Z",
+    };
+    const result = evaluateStartupGuard(l);
+    expect(result.allow).toBe(false);
+    if (!result.allow) expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it("stopped/no-record は許可し、warning は無い", () => {
+    const l: LoopLiveness = { status: "stopped", reason: "no-record" };
+    const result = evaluateStartupGuard(l);
+    expect(result).toEqual({ allow: true, warning: null });
+  });
+
+  it("stopped/process-gone は許可するが、異常終了の旨を warning に出す", () => {
+    const l: LoopLiveness = {
+      status: "stopped",
+      reason: "process-gone",
+      pid: 1234,
+      startedAt: "2026-08-30T10:00:00.000Z",
+      heartbeatAt: "2026-08-30T11:00:00.000Z",
+    };
+    const result = evaluateStartupGuard(l);
+    expect(result.allow).toBe(true);
+    if (result.allow) expect(result.warning).not.toBeNull();
+  });
+
+  it("unknown/record-unreadable は必ず許可する(記録が壊れただけで起動不能にしないため)", () => {
+    const l: LoopLiveness = { status: "unknown", reason: "record-unreadable", detail: "内容が JSON として壊れています" };
+    const result = evaluateStartupGuard(l);
+    expect(result.allow).toBe(true);
+    if (result.allow) expect(result.warning).not.toBeNull();
+  });
+
+  it("unknown/foreign-host は許可するが警告を出す(別ホストでは PID 確認が意味を持たないため)", () => {
+    const l: LoopLiveness = {
+      status: "unknown",
+      reason: "foreign-host",
+      pid: 1234,
+      startedAt: "2026-08-30T10:00:00.000Z",
+      heartbeatAt: "2026-08-30T11:00:00.000Z",
+      host: "host-b",
+    };
+    const result = evaluateStartupGuard(l);
+    expect(result.allow).toBe(true);
+    if (result.allow) expect(result.warning).not.toBeNull();
   });
 });
 

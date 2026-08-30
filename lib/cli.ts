@@ -173,7 +173,7 @@ export async function main(argv: string[]): Promise<void> {
 
   switch (cmd) {
     case "run":
-      await mainLoop();
+      await mainLoop({ force: args.includes("--force") });
       break;
     case "status":
       cmdStatus(args);

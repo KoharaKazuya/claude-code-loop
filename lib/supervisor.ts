@@ -41,6 +41,7 @@ import {
   clearRunnerRecord,
   describeLoopLiveness,
   evaluateLoopLiveness,
+  evaluateStartupGuard,
   readProcStartToken,
   readRunnerRecord,
   writeRunnerRecord,
@@ -3239,7 +3240,24 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-export async function mainLoop(): Promise<void> {
+export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
+  // 状態を書き換える処理(generateSettings 以降)より前に、必ず二重起動ガードを確認する。
+  // 後発の ccloop run がここより後ろへ進むと、recoverStartup 等が先発プロセスの実行状態を
+  // 無条件に書き換えてしまうため、判定だけを行うここでは一切のファイル書き込みをしない。
+  const guard = evaluateStartupGuard(evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), new Date()));
+  if (!guard.allow) {
+    if (opts.force === true) {
+      log(`--force が指定されたため、次の警告を無視して起動します:\n${guard.message}`);
+    } else {
+      // ログファイルではなく確実に標準エラーへ出す(呼び出し元がここで異常終了に気づけるように)
+      console.error(guard.message);
+      process.exitCode = 1;
+      return;
+    }
+  } else if (guard.warning !== null) {
+    log(guard.warning);
+  }
+
   // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
   // (ccloop 側のテンプレート更新も、利用側リポジトリの追記も、次の起動から効くようにするため)
   generateSettings(repoPaths());
