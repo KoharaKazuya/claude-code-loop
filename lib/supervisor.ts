@@ -5419,8 +5419,8 @@ function styledSectionLabel(tag: string, rest: string): string {
  * 実行中タスクは runningIds で除外する。これを渡さないと、実行中のタスクが「実行中」と
  * 「次に実行予定」の両方に重複表示される。
  */
-function nextRunnableTasks(tasks: Task[], runningIds: ReadonlySet<string>, limit: number): Task[] {
-  return planTaskSelection(tasks, new Date(), runningIds).runnable.slice(0, limit);
+function nextRunnableTasks(tasks: Task[], runningIds: ReadonlySet<string>, now: Date, limit: number): Task[] {
+  return planTaskSelection(tasks, now, runningIds).runnable.slice(0, limit);
 }
 
 /**
@@ -5428,8 +5428,8 @@ function nextRunnableTasks(tasks: Task[], runningIds: ReadonlySet<string>, limit
  * run モードの自動終了判定(scheduler.ts の pendingSnoozeCount)と同じ
  * planTaskSelection().snoozed をそのまま使う(判定基準を表示用に複製しない)。
  */
-function snoozedTasksByUntil(tasks: Task[], runningIds: ReadonlySet<string>): Task[] {
-  return [...planTaskSelection(tasks, new Date(), runningIds).snoozed].sort(
+function snoozedTasksByUntil(tasks: Task[], runningIds: ReadonlySet<string>, now: Date): Task[] {
+  return [...planTaskSelection(tasks, now, runningIds).snoozed].sort(
     (a, b) => Date.parse(a.snoozeUntil ?? "") - Date.parse(b.snoozeUntil ?? ""),
   );
 }
@@ -5443,9 +5443,10 @@ function snoozedTasksByUntil(tasks: Task[], runningIds: ReadonlySet<string>): Ta
 function conflictHeldTasks(
   tasks: Task[],
   runningIds: ReadonlySet<string>,
+  now: Date,
   limit: number,
 ): { total: number; items: { task: Task; blockedBy: string[] }[] } {
-  const all = planTaskSelection(tasks, new Date(), runningIds).conflictHeld;
+  const all = planTaskSelection(tasks, now, runningIds).conflictHeld;
   return { total: all.length, items: all.slice(0, limit) };
 }
 
@@ -6059,9 +6060,9 @@ export function collectStatusData(now: Date): StatusData {
   const runningTaskIds = new Set(
     state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
   );
-  const next = nextRunnableTasks(tasks, runningTaskIds, 3);
-  const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
-  const { total: conflictHeldTotal, items: conflictHeldItems } = conflictHeldTasks(tasks, runningTaskIds, 3);
+  const next = nextRunnableTasks(tasks, runningTaskIds, now, 3);
+  const snoozed = snoozedTasksByUntil(tasks, runningTaskIds, now);
+  const { total: conflictHeldTotal, items: conflictHeldItems } = conflictHeldTasks(tasks, runningTaskIds, now, 3);
   const conflictHeld = conflictHeldItems.map(({ task, blockedBy }) => ({
     id: task.id,
     priority: task.priority,
@@ -6157,9 +6158,9 @@ export function metricsTotalLine(metrics: SessionMetrics[], truncated: boolean):
  * `ccloop status` の表示内容を 1 つの文字列として組み立てる。
  * `status` は 1 回出力するだけだが、`watch` は同じ内容を毎秒描き直すため、
  * 「出力」ではなく「文字列」を作る形にして両方から使えるようにしてある。
+ * `now` はテストから固定時刻を注入できるよう引数で受ける(既定は呼び出し時点の実時刻)。
  */
-export function formatStatus(): string {
-  const now = new Date();
+export function formatStatus(now: Date = new Date()): string {
   const data = collectStatusData(now);
   const out: string[] = [];
   const push = (line: string): void => {
