@@ -27,10 +27,10 @@
 `scripts/sync-version.mjs` で機械的に同期する。`npm version <patch|minor|major>` の `version` フックが
 これを実行してからコミットと `vX.Y.Z` タグを作るため、通常の手順ではこれらがずれない。
 
-`.devcontainer/devcontainer.json` の feature 参照と `.devcontainer/devcontainer-lock.json` はこの同期の
-対象外で、リリース後に手動で更新する。lock の digest は publish 後にしか確定しないため、
-devcontainer.json だけを自動更新すると lock との整合が取れない差分が生じる。lock はコンテナ再ビルド時に
-devcontainer CLI が解決し直す。
+この開発用 devcontainer 自身の `.devcontainer/devcontainer.json` / `.devcontainer/devcontainer-lock.json`
+は ccloop feature を参照しない(checkout の `bin/ccloop` をそのまま `ccloop` として使う。理由は
+[docs/architecture.md](architecture.md) 参照)。そのため、この 2 ファイルをリリースに合わせて
+更新する手順は無い。
 
 ずれを検出する安全弁として `scripts/check-version.mjs` があり、CI(`.github/workflows/ci.yml`)が
 毎 push で package.json を含む 3 箇所の一致を、リリースワークフロー(`.github/workflows/release.yml`)が

@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-1008-devcontainer-use-local-ccloop](D-20260830-1008-devcontainer-use-local-ccloop.md) — この開発 devcontainer は公開 feature をやめ checkout の bin/ccloop を使う
 - [x] [D-20260830-0934-running-task-file-guard-declined](D-20260830-0934-running-task-file-guard-declined.md) — 実行中タスクの記録ファイルへの書き込みを仕組みで拒否する対応は見送る
 - [x] [D-20260830-0934-orphaned-worktree-detection-declined](D-20260830-0934-orphaned-worktree-detection-declined.md) — ccloop の管理から外れた作業場所を検出して status に出す対応は見送る
 - [x] [D-20260830-0825-failure-kind-priority-order](D-20260830-0825-failure-kind-priority-order.md) — 同時成立する失敗種別の優先順を レートリミット → 衝突未解消 → 時間切れ に確定する
