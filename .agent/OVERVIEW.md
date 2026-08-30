@@ -8,9 +8,9 @@ total: 85
 
 GOAL の「現在の目標」に挙がっていた作業(decisions アーカイブの人間承認化、`ccloop status` への
 未承認決定の表示、人間の確認・介入の導線)はいずれも消化済み。現在フェーズは 4(思いつく改善すべて)。
-**人間の手が要る残務はゼロ**(未承認の決定 15 件は承認済みで書庫へ、退避ブランチも削除済み。
-`ccloop status` は「要対応事項なし」)。前進は **フェーズ 4 の確認トピックに回答をもらうこと**と
-**確認不要で拾える修理**の両輪で決まるが、確認トピックは在庫も回答待ちも空である。
+**人間の手が要る残務はゼロ**(`ccloop status` は「要対応事項なし」)。前進は **フェーズ 4 の確認
+トピックに回答をもらうこと**と**確認不要で拾える修理**の両輪で決まるが、確認トピックは在庫も
+回答待ちも空である。
 
 ## いま登録されているタスク(ready 5 件、うち 3 件は実行中)
 
@@ -18,7 +18,7 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 「探索セッションが競合しそうなタスクを判断し、依存と同じようにタスクへメタデータを持たせ、
 タスク選択時に同時実行しない」。巨大ファイルの分割は選ばれなかったので蒸し返さない。
 
-- `-1334-task-conflict-metadata-scheduling`(p2)— `conflicts` フィールドとタスク選択の実装。
+- `-1334-task-conflict-metadata-scheduling`(p2、実行中)— `conflicts` フィールドとタスク選択の実装。
 - `-1334-explore-assigns-conflict-metadata`(p3)— 探索セッションが `conflicts` を付ける指示を
   `lib/prompt/PROMPT.md` と探索プロンプトへ定着させる。これが無いとフィールドは空のまま。
   上の実装に `dependencies` で直列化済み(両者とも `lib/supervisor.ts` を触るため)。
@@ -26,10 +26,9 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
   アサーションで、例外が投げられない環境ではアサーション 0 回のまま緑になる。
 - `-1346-node-engines-doctor-consistency`(p3、実行中)— `package.json` の `engines.node` と
   `lib/doctor.ts` の `checkNodeVersion` が独立にハードコードされており突き合わせが無い。
-- `-1354-git-operation-in-progress-coverage`(p3)— `lib/worktree.ts` の
-  `gitOperationInProgress` は 6 条件で「進行中の git 操作」を判定するが、うち `REVERT_HEAD` /
-  `BISECT_LOG` / `rebase-merge` / `rebase-apply` の 4 条件が全 1215 件のテストで一度も再現されて
-  いない(今回の探索で発見)。触るのは `lib/worktree.test.ts` だけで、他タスクと重ならない。
+- `-1354-git-operation-in-progress-coverage`(p3)— `lib/worktree.ts` の `gitOperationInProgress`
+  の 6 条件のうち `REVERT_HEAD` / `BISECT_LOG` / `rebase-merge` / `rebase-apply` の 4 条件が
+  全 1215 件のテストで一度も再現されていない(今回の探索で発見)。触るのは `lib/worktree.test.ts` だけ。
 
 テスト品質の 3 件は互いにも走行中タスクにも触るファイルが重ならないので直列化していない。
 
@@ -39,12 +38,10 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 `npm test` 1215 件全通過・lint / typecheck / `check:version` すべて警告ゼロ。
 **無理にひねり出さず「収穫ゼロ」を正直に記録するほうがよい。**
 
-今回見つけたが**タスク化しなかった**もの(再提案しないこと): レートリミット再試行の待機
-`1100ms` が `lib/merge.ts` と `lib/supervisor.ts` に別々にハードコードされている。どちらも
-「git の秒境界を必ず跨ぐ」という同じ根拠のコメント付きで、値がずれても実害が出る筋道が無く、
-共有定数化のために衝突ホットスポットである `lib/supervisor.ts` を触る割に合わない。
-`lib/frontmatter.ts` の `parseScalar` が壊れた引用符を raw のまま返すフォールバックも未テストだが、
-意図的な安全側の挙動で実害が無いためタスク化していない。
+**タスク化しなかった**もの(再提案しないこと): レートリミット再試行の待機 `1100ms` が
+`lib/merge.ts` と `lib/supervisor.ts` に別々にハードコードされている件(どちらも「git の秒境界を
+必ず跨ぐ」という同じ根拠のコメント付きで、ずれても実害が出る筋道が無い)。`lib/frontmatter.ts` の
+`parseScalar` が壊れた引用符を raw のまま返すフォールバックが未テストな件(意図的な安全側の挙動)。
 
 ## 人間の好み(回答から読み取れたもの。次のトピックを出すときの目安)
 
@@ -67,28 +64,20 @@ GOAL の「現在の目標」に挙がっていた作業(decisions アーカイ�
 ## 突き合わせ済みで食い違いが無いことを確認した範囲(同じ調査を繰り返さないための記録)
 
 - permission 拒否の記録(実装 ⇔ `lib/prompt/PROMPT.md` ⇔ docs ⇔ README): 一致。
-  「deny 一致の拒否は記録しない、classifier 判定の拒否だけ記録・要約表示する」で一貫している。
-- `lib/settings.template.json` ⇔ `lib/prompt/PROMPT.md` の deny 一覧は `lib/deny-consistency.test.ts` が
-  機械検証している。**手で突き合わせ直す必要はない。**
-- `README.md` / `docs/` / `lib/help.ts` と実装、`.agent/config.json` の各キーと既定値、
-  `lib/templates/` と `docs/compatibility.md`、`lib/` の TODO/FIXME: 食い違い無し。
-- CLI の異常系(`--interval` の 0 / 負値 / 非数値、存在しない `--repo`、未知サブコマンド、
-  存在しないタスク ID への `retry`)はいずれも適切なメッセージを返す。
+- deny 一覧(`lib/settings.template.json` ⇔ `PROMPT.md`)は `lib/deny-consistency.test.ts` が
+  機械検証済み。**手で突き合わせ直さない。**
+- `README.md` / `docs/` / `lib/help.ts` と実装、`.agent/config.json` のキーと既定値、
+  `lib/templates/` と `docs/compatibility.md`、`lib/` の TODO/FIXME、CLI の異常系: 食い違い無し。
 - 未使用・到達不能な export は無い。`it.skip` の放置も無い。`JSON.parse` / `fs` の catch は
   いずれも理由がコメントされた意図的なフェイルセーフで、想定内の失敗でループが落ちる箇所は無い。
-- **型安全性は穴無し**。`as`(約 45 件)・non-null 断言(27 件)を全数追跡したが、外部入力
-  (`.agent/` の frontmatter・各種 JSON・git 出力・Claude Code の出力・hook stdin)の境界は
-  すべて `typeof` / `Array.isArray` / `isPlainObject` 等で検証してから使っている。`any` と
-  `@ts-ignore` は 0 件。**この角度はもう掘らなくてよい。**
+- **型安全性は穴無し**。`as` 約 45 件・non-null 断言 27 件を全数追跡したが、外部入力の境界は
+  すべて検証してから使っている。`any` と `@ts-ignore` は 0 件。
 - **プロンプト資産と実装の文字列レベルの一致は確認済み**。`lib/prompt/PROMPT.md`(唯一のプロンプト
-  資産。`lib/prompt/` に他ファイルは無い)と、それを読むパーサ(ID の正規表現、`status` の値、
-  `## 試行履歴` / `### 試行 N` / `### 未コミット差分` の見出し、`## 回答` のチェックボックス文言、
-  決定インデックスの行形式、`OVERVIEW.md` の frontmatter、`snoozeUntil` の解釈、`agent/<taskId>`)は
-  一致。`.claude/CLAUDE.md` との重複ルールにも矛盾は無い。**この角度も掘り終えた。**
-- **実装 29 モジュールすべてに対応するテストがある**(テスト皆無のモジュールは無い)。
-  `scheduler` / `merge` / `liveness` / `rotate` / `ratelimit` / `decisions-index` /
-  `supervisor` の状態選定・status 集計は分岐まで確認して穴無し。唯一の穴が上記の
-  `gitOperationInProgress`(タスク登録済み)。
+  資産)と、それを読むパーサ(ID の正規表現、`status` の値、`## 試行履歴` 系の見出し、`## 回答` の
+  チェックボックス文言、決定インデックスの行形式、`snoozeUntil`、`agent/<taskId>`)は一致。
+  `.claude/CLAUDE.md` との重複ルールにも矛盾は無い。
+- **実装 29 モジュールすべてに対応するテストがある**。主要モジュールは分岐まで確認して穴無し。
+  唯一の穴が上記の `gitOperationInProgress`(タスク登録済み)。
 - **worktree の使い回しは意図された挙動**(`D-20260830-0752-salvage-failure-keeps-worktree`)。
 - **やることが尽きたときの挙動**: `planLoopStep`(`lib/scheduler.ts`)が `idle-exit` を返して終了する。
 - 退避ブランチが status で「未取り込み」と出続けるのは `parkedBranchMergedIntoHead` が patch-id 比較を
