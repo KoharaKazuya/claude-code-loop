@@ -1,10 +1,10 @@
 ---
 title: "衝突解消セッションが時間切れになると、失敗理由が「時間切れ」と記録され衝突が原因だと分からなくなる"
-status: ready
+status: failed
 priority: 3
 dependencies: []
-retries: 2
-note: "失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(CHANGELOG.md, lib/supervisor.ts)(元: -))"
+retries: 3
+note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md, CHANGELOG.md)(元: 失敗のため ready に戻す(2/3)。理由: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .…)"
 createdAt: 2026-08-30T08:08:20.118Z
 ---
 
@@ -66,3 +66,11 @@ createdAt: 2026-08-30T08:08:20.118Z
 - 結果: セッションが中断され、main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md)
 - セッションは終了処理を実行できていない。作業がコミット済み・未コミットのまま残っている可能性がある。`git log --oneline -10` と `git status` で現状を確認してから再開すること
 - この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 3(2026-08-30T09:23:22.304Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/tasks/T-20260830-0808-conflict-session-timeout-mislabeled.md, CHANGELOG.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+- 未コミット差分を `/home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z.patch` へ退避した(`CHANGELOG.md`, `lib/cli.test.ts`, `lib/supervisor.status.test.ts`, `lib/supervisor.test.ts`, `lib/supervisor.ts`)。復元は `git apply /home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z.patch`
+- コミット済みの成果はブランチ `agent/conflict/T-20260830-0808-conflict-session-timeout-mislabeled-20260830T092322Z` に退避した(削除していない)
