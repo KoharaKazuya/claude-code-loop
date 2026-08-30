@@ -2,6 +2,7 @@
 
 チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。
 
+- [ ] [D-20260830-1053-serialize-supervisor-hotspot-tasks](D-20260830-1053-serialize-supervisor-hotspot-tasks.md) — lib/supervisor.ts に集中するタスクは依存関係で直列化する
 - [ ] [D-20260830-1018-index-backfill-defer-to-reconcile](D-20260830-1018-index-backfill-defer-to-reconcile.md) — 決定インデックスの手作業バックフィルは取りやめ、main 側の人間のチェックを優先する
 - [ ] [D-20260830-1008-devcontainer-use-local-ccloop](D-20260830-1008-devcontainer-use-local-ccloop.md) — この開発 devcontainer は公開 feature をやめ checkout の bin/ccloop を使う
 - [ ] [D-20260830-1006-abort-retry-single-layer](D-20260830-1006-abort-retry-single-layer.md) — merge --abort の再試行は同期待機を最小限にし、待機の層を 1 つに保つ
