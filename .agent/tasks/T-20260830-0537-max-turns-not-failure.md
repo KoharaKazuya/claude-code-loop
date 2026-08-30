@@ -1,10 +1,10 @@
 ---
 title: "ターン上限で打ち切られたセッションが失敗として数えられない"
-status: failed
+status: completed
 priority: 2
 dependencies: []
 retries: 3
-note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/tasks/T-20260830-0537-max-turns-not-failure.md, CHANGELOG.md)(元: 失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-0537-max-turns-…)"
+note: "成果は T-20260830-0621-rescue-max-turns-work で main へ取り込んだ(試行 3 回はいずれもマージ衝突による失敗)"
 createdAt: 2026-08-30T05:37:00.000Z
 ---
 

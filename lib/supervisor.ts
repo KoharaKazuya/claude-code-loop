@@ -1430,7 +1430,7 @@ function recoverStartup(config: Config): StartupRecovery {
 // ---------- 失敗時の知見引き継ぎ ----------
 
 /** タスク失敗の種別。試行履歴への定型文・見出し表記を出し分けるために使う */
-type FailureKind = "timeout" | "crash" | "no-status-update" | "merge-conflict" | "recovery";
+type FailureKind = "timeout" | "crash" | "no-status-update" | "merge-conflict" | "recovery" | "max-turns";
 
 const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
   timeout: "タイムアウト",
@@ -1438,6 +1438,7 @@ const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
   "no-status-update": "status 未更新",
   "merge-conflict": "マージ衝突",
   recovery: "中断復旧",
+  "max-turns": "ターン上限",
 };
 
 const RESUME_INTERRUPTED_NOTE =
@@ -1453,6 +1454,9 @@ const FAILURE_KIND_ADVICE: Record<FailureKind, string> = {
   "merge-conflict":
     "このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。" +
     "`git status` で衝突ファイルを確認し、解消してコミットすることから始めること",
+  "max-turns":
+    `セッションはターン数の上限に達して打ち切られた。${RESUME_INTERRUPTED_NOTE}。` +
+    "同じ失敗が続く場合はタスクの範囲が 1 セッションに対して大きすぎる可能性があるので、分割を検討すること",
 };
 
 const ATTEMPT_HISTORY_HEADING = "## 試行履歴";
@@ -1921,6 +1925,28 @@ function stderrTail(res: SessionResult): string {
   if (line === undefined) return "";
   const chars = Array.from(line);
   return `: ${chars.slice(0, 200).join("")}${chars.length > 200 ? "…" : ""}`;
+}
+
+/**
+ * 結果 JSON が「エラーとして終わったセッション」を示しているか。is_error !== true なら null を返す。
+ * is_error: true のときは subtype(無ければ terminal_reason、どちらも無ければ "unknown")を返す。
+ * is_error: true であること自体は失敗として扱うため、この場合は必ず非 null を返す。
+ * レートリミットも is_error: true な結果を返すことがあるため、呼び出し側では
+ * isSessionRateLimited を先に判定してから使うこと。
+ */
+function sessionErrorSubtype(res: SessionResult): string | null {
+  const json = parseResultJson(res);
+  if (json === null || json.is_error !== true) return null;
+  if (typeof json.subtype === "string") return json.subtype;
+  if (typeof json.terminal_reason === "string") return json.terminal_reason;
+  return "unknown";
+}
+
+/** 結果 JSON がターン数上限による打ち切り(`subtype: error_max_turns` / `terminal_reason: max_turns`)を示しているか */
+function isMaxTurnsError(res: SessionResult): boolean {
+  const json = parseResultJson(res);
+  if (json === null) return false;
+  return json.subtype === "error_max_turns" || json.terminal_reason === "max_turns";
 }
 
 // ---------- permission deny ルールとの照合 ----------
@@ -3142,6 +3168,7 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
     };
 
     // 6. 結果の分類(判定の順序に意味がある)
+    const errorSubtype = sessionErrorSubtype(res);
     if (res.timedOut) {
       fail(`タイムアウト(${config.taskTimeoutMs}ms)`, "timeout");
     } else if (rateLimited) {
@@ -3168,6 +3195,12 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
         fail(`main へのマージを開始できなかった: ${outcome.reason}`, "merge-conflict");
       } else if (res.exitCode !== 0) {
         fail(`claude が異常終了 (exitCode=${res.exitCode})${stderrTail(res)}`, "crash");
+      } else if (isMaxTurnsError(res)) {
+        // exitCode 0 でも結果 JSON が is_error を立てることがある。レートリミットは
+        // 成功扱いの is_error: true を出すため、この判定は必ずレートリミット判定より後ろに置く
+        fail("セッションがターン数の上限に達して打ち切られた", "max-turns");
+      } else if (errorSubtype !== null) {
+        fail(`claude がエラーを報告して終了した (subtype=${errorSubtype})`, "crash");
       } else if (!taskFileChanged && statusUnchanged) {
         fail("セッションがタスクファイルの status を更新せず終了した", "no-status-update");
       } else {
