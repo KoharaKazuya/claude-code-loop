@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -147,10 +146,10 @@ describe("resolveRepoRoot(git worktree)", () => {
 
   it("本体リポジトリのルートを渡したときの repoId は worktree の有無に影響されない", () => {
     initRepo(dir);
-    addWorktree(dir, "wt");
-    const expected = `${path.basename(dir)}-${createHash("sha1").update(dir).digest("hex").slice(0, 8)}`;
+    const worktreeDir = addWorktree(dir, "wt");
 
-    expect(repoId(resolveRepoRoot({ repo: dir, env: {} }))).toBe(expected);
+    expect(repoId(resolveRepoRoot({ repo: dir, env: {} }))).toBe(repoId(dir));
+    expect(repoId(resolveRepoRoot({ repo: worktreeDir, env: {} }))).toBe(repoId(dir));
   });
 
   it(".git ファイルの中身が gitdir: 形式でなければ、そのディレクトリ自身が返る", () => {
@@ -171,10 +170,24 @@ describe("resolveRepoRoot(git worktree)", () => {
 });
 
 describe("repoId / stateDirFor", () => {
+  // 期待値は実装と同じ式で計算せず、固定の入力に対する事前計算済みのリテラルで固定する。
+  // 式を写すとハッシュ関数・スライス長・結合順が変わってもテストが追随してしまい、
+  // 状態ディレクトリの同定がずれる変更(別リポジトリ扱い・状態ディレクトリの共有)を検知できない。
   it("basename と realpath の sha1 先頭 8 文字を組み合わせる", () => {
-    const expected = `${path.basename(dir)}-${createHash("sha1").update(dir).digest("hex").slice(0, 8)}`;
+    // 存在しないパスなので realpath は失敗し、resolve 済みのパスがそのままハッシュ対象になる。
+    // sha1("/nonexistent/ccloop-fixture/my-repo") = 69455ab4872... の先頭 8 文字
+    expect(repoId("/nonexistent/ccloop-fixture/my-repo")).toBe("my-repo-69455ab4");
+  });
 
-    expect(repoId(dir)).toBe(expected);
+  it("シンボリックリンク経由のパスでも実体パスから導出した ID になる", () => {
+    const real = path.join(dir, "real-repo");
+    const link = path.join(dir, "link-to-repo");
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, link);
+
+    expect(repoId(link)).toBe(repoId(real));
+    // basename もリンク名ではなく実体側の名前になる
+    expect(repoId(link)).toMatch(/^real-repo-[0-9a-f]{8}$/);
   });
 
   it("同名でもパスが違えば別の ID になる", () => {
