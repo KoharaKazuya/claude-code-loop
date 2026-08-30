@@ -2534,7 +2534,7 @@ export function isInstalledSourceDrifted(args: {
 export function installedSourceDriftLines(drifted: boolean): string[] {
   if (!drifted) return [];
   return [
-    "  ※ インストール済みの ccloop がこのリポジトリの lib/ と一致していない — リポジトリの変更を ccloop コマンドに反映するにはコンテナの再ビルドが必要 (docs/architecture.md「手元の ccloop をリポジトリの最新の中身へ入れ替える」参照)",
+    "  ※ インストール済みの ccloop がこのリポジトリの lib/ と一致していない (docs/architecture.md「インストール済み ccloop とリポジトリ lib/ の乖離検出」参照)",
   ];
 }
 

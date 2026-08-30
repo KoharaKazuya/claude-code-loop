@@ -4,11 +4,6 @@
       "version": "1.0.5",
       "resolved": "ghcr.io/anthropics/devcontainer-features/claude-code@sha256:cfc2e7d3e9fd3b9b01f8d5cb158508a884c8c0ede2e23ed10f32dea5d4ffe69a",
       "integrity": "sha256:cfc2e7d3e9fd3b9b01f8d5cb158508a884c8c0ede2e23ed10f32dea5d4ffe69a"
-    },
-    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.1": {
-      "version": "0.4.1",
-      "resolved": "ghcr.io/koharakazuya/claude-code-loop/ccloop@sha256:22568e4b178e3ef42fac16f367eb97046a4318c899d635e6785d7e26f8e7051b",
-      "integrity": "sha256:22568e4b178e3ef42fac16f367eb97046a4318c899d635e6785d7e26f8e7051b"
     }
   }
 }
