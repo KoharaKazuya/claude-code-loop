@@ -1,9 +1,10 @@
 ---
 title: "worktree 内で ccloop を実行するとリポジトリ本体の .agent を書き換える"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "paths を root(git・state)と agentRoot(.agent/)の 2 系統に分離。run は worktree 内でエラー終了"
 createdAt: 2026-08-30T11:32:00.000Z
 ---
 

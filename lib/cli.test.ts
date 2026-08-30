@@ -950,3 +950,104 @@ describe("ccloop abandon(子プロセスで検証)", () => {
     }
   });
 });
+
+describe("git worktree 内からの実行(子プロセスで検証): .agent/ は agentRoot(worktree 自身)基準", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+  let worktreeDir: string;
+
+  /** .agent/tasks/<id>.md を dir 配下に直接書く(cmdAdd を経由せず任意の status を作るため) */
+  function writeTaskAt(tasksDir: string, id: string, fields: Record<string, string | number>, body = "本文"): string {
+    fs.mkdirSync(tasksDir, { recursive: true });
+    const lines = Object.entries(fields).map(
+      ([k, v]) => `${k}: ${typeof v === "number" ? String(v) : JSON.stringify(String(v))}`,
+    );
+    const text = ["---", ...lines, "---", "", body, ""].join("\n");
+    const file = path.join(tasksDir, `${id}.md`);
+    fs.writeFileSync(file, text);
+    return file;
+  }
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-worktree-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    // worktree add にはコミットが 1 つ必要。.agent/ を含めてコミットし、worktree 側にも
+    // config.json 等が checkout された状態を作る(paths.test.ts の addWorktree に倣う)
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync(
+      "git",
+      ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "init"],
+      { cwd: repo },
+    );
+    worktreeDir = path.join(repo, "wt");
+    execFileSync("git", ["worktree", "add", "-b", "wt-branch", worktreeDir, "main"], { cwd: repo });
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("worktree の cwd で ccloop abandon すると worktree 側の .agent/tasks/ だけが更新され、本体側は変わらない", () => {
+    const id = "T-20260101-0000-worktree-task";
+    const fields = {
+      title: "worktree タスク",
+      status: "failed",
+      priority: 3,
+      retries: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const mainFile = writeTaskAt(path.join(repo, ".agent", "tasks"), id, fields);
+    const worktreeFile = writeTaskAt(path.join(worktreeDir, ".agent", "tasks"), id, fields);
+    const mainBefore = fs.readFileSync(mainFile, "utf8");
+
+    // --repo は付けず、worktree の中を cwd にして実行する(実際の利用シーンの再現)
+    const result = spawnSync(
+      process.execPath,
+      ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "abandon", id],
+      { cwd: worktreeDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(0);
+    // worktree 側は abandonedAt が書かれる
+    expect(fs.readFileSync(worktreeFile, "utf8")).toMatch(/abandonedAt: \d{4}-\d{2}-\d{2}T/);
+    // 本体側は一切変更されない
+    expect(fs.readFileSync(mainFile, "utf8")).toBe(mainBefore);
+  });
+});
+
+describe("ccloop run を git worktree 内から実行(子プロセスで検証)", () => {
+  const CLI_ENTRY = path.join(import.meta.dirname, "cli.ts");
+  let repo: string;
+  let worktreeDir: string;
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-cli-run-worktree-"));
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "--repo", repo, "init", "--yes"]);
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync(
+      "git",
+      ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "init"],
+      { cwd: repo },
+    );
+    worktreeDir = path.join(repo, "wt");
+    execFileSync("git", ["worktree", "add", "-b", "wt-branch", worktreeDir, "main"], { cwd: repo });
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it("worktree の cwd で ccloop run すると本体での実行を促すメッセージで exit 1 になる", () => {
+    const result = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI_ENTRY, "run"], {
+      cwd: worktreeDir,
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("ccloop run はリポジトリ本体のワーキングツリーで実行すること");
+    expect(result.stderr).toContain(fs.realpathSync(worktreeDir));
+    expect(result.stderr).toContain(fs.realpathSync(repo));
+  });
+});

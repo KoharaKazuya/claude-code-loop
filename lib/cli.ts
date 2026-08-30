@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { checkNodeVersion, cmdDoctor } from "./doctor.ts";
 import { SUBCOMMAND_HELP, TOP_LEVEL_HELP } from "./help.ts";
 import { checkSchemaVersion, cmdInit, configReadErrorMessage, ensureAgentDir } from "./init.ts";
-import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoot } from "./paths.ts";
+import { createPaths, type Paths, RepoRootNotFoundError, resolveRepoRoots } from "./paths.ts";
 import { cmdAbandon, cmdAdd, cmdList, cmdRetry, cmdStatus, mainLoop, useRepoRoot } from "./supervisor.ts";
 import { cmdWatch } from "./watch.ts";
 
@@ -78,7 +78,8 @@ function die(message: string): never {
 /** doctor 用: リポジトリを特定できなくても診断を続けられるよう、失敗を値で返す */
 function tryResolvePaths(repo: string | undefined): { paths: Paths | null; error: string | null } {
   try {
-    return { paths: createPaths(resolveRepoRoot({ repo })), error: null };
+    const { root, agentRoot } = resolveRepoRoots({ repo });
+    return { paths: createPaths(root, process.env, agentRoot), error: null };
   } catch (err) {
     if (err instanceof RepoRootNotFoundError) return { paths: null, error: err.message };
     return { paths: null, error: String((err as Error).message) };
@@ -139,7 +140,8 @@ export async function main(argv: string[]): Promise<void> {
 
   let paths: Paths;
   try {
-    paths = useRepoRoot(resolveRepoRoot({ repo: parsed.repo }));
+    const { root, agentRoot } = resolveRepoRoots({ repo: parsed.repo });
+    paths = useRepoRoot(root, agentRoot);
   } catch (err) {
     if (err instanceof RepoRootNotFoundError) die(err.message);
     throw err;
@@ -150,6 +152,18 @@ export async function main(argv: string[]): Promise<void> {
   // init は `.agent/` を用意する側なので、未配置チェックより前に処理する
   if (cmd === "init") {
     process.exit(await cmdInit(paths, args));
+  }
+
+  // `ccloop run` は自身が worktree を作って git 操作(worktree add / merge / branch)を本体
+  // (paths.root)に対して行う一方、`.agent/` の読み書きは paths.agentRoot を基準にする。
+  // linked worktree 内から `ccloop run` を起動すると両者がずれて壊れるため、他のサブコマンドとは
+  // 異なりここで止める(status/list/add/retry/abandon は worktree 内から実行しても安全)。
+  if (cmd === "run" && paths.root !== paths.agentRoot) {
+    die(
+      "ccloop run はリポジトリ本体のワーキングツリーで実行すること" +
+        `(今いる worktree: ${paths.agentRoot} / 本体: ${paths.root})。` +
+        "本体のワーキングツリーへ移動して実行すること。",
+    );
   }
 
   // 打ち間違いに対して `.agent/` の配置を促すのは筋が悪いので、未配置チェックより前に弾く

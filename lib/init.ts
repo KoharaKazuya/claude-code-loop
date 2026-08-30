@@ -167,11 +167,11 @@ export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
 
   const conflicts: PathConflict[] = [];
   for (const d of dirExpected) {
-    const kind = entryKind(path.join(paths.root, d));
+    const kind = entryKind(path.join(paths.agentRoot, d));
     if (kind !== "missing" && kind !== "directory") conflicts.push({ rel: d, expected: "directory", actual: kind });
   }
   for (const f of fileExpected) {
-    const kind = entryKind(path.join(paths.root, f));
+    const kind = entryKind(path.join(paths.agentRoot, f));
     if (kind === "directory" || kind === "other") conflicts.push({ rel: f, expected: "file", actual: kind });
   }
   conflicts.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
@@ -180,7 +180,7 @@ export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
   const gitignoreConflict = conflicts.some((c) => c.rel === ".gitignore");
   const gitignore = gitignoreConflict
     ? { action: "none" as const, lines: [] }
-    : planGitignore(paths.root, gitignoreRequired);
+    : planGitignore(paths.agentRoot, gitignoreRequired);
 
   const creates: PlannedFile[] = [];
   const skips: string[] = [];
@@ -188,7 +188,7 @@ export function planInit(paths: Paths, home: string = ccloopHome()): InitPlan {
     const rel = templateRels[i];
     const repoRel = repoRels[i];
     if (rel === undefined || repoRel === undefined) continue;
-    const kind = entryKind(path.join(paths.root, repoRel));
+    const kind = entryKind(path.join(paths.agentRoot, repoRel));
     if (kind === "file") skips.push(repoRel);
     else if (kind === "missing") creates.push({ rel: repoRel, source: path.join(templateDir, rel) });
     // それ以外(directory/other)は上で conflicts に積んでいるため、skips にも creates にも入れない
@@ -234,11 +234,16 @@ export function initConflictMessage(plan: InitPlan): string {
   ].join("\n");
 }
 
-/** plan の通りに書き込む。既存ファイルには一切触れない */
+/**
+ * plan の通りに書き込む。既存ファイルには一切触れない。
+ * 配置先は `agentRoot`(実行中の作業ツリー)であり、linked worktree 内で実行したときに
+ * リポジトリ本体を書き換えない(`.agent/` は git 管理下なので、置いた worktree の
+ * ブランチに乗せてマージするのが正しい)。
+ */
 export function applyInit(paths: Paths, plan: InitPlan): void {
   if (plan.conflicts.length > 0) throw new Error(initConflictMessage(plan));
   for (const f of plan.creates) {
-    const dest = path.join(paths.root, f.rel);
+    const dest = path.join(paths.agentRoot, f.rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     // wx: 計画時から実体ができていた場合に上書きしない(既存ファイル保護の最後の砦)
     try {
@@ -248,7 +253,7 @@ export function applyInit(paths: Paths, plan: InitPlan): void {
     }
   }
   if (plan.gitignore.action === "none") return;
-  const file = path.join(paths.root, ".gitignore");
+  const file = path.join(paths.agentRoot, ".gitignore");
   const block = plan.gitignore.lines.join("\n") + "\n";
   if (plan.gitignore.action === "create") {
     try {
