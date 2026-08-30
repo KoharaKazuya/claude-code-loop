@@ -1,9 +1,10 @@
 ---
 title: "退避ブランチに取り残された「後始末の中断復旧」の実装を main へ取り込む"
-status: ready
+status: completed
 priority: 1
 dependencies: []
 retries: 0
+note: "退避ブランチの実装・テスト・判断記録・変更履歴を main へ取り込んだ。取り込まなかった差分は D-20260830-1110-rescue-branch-omissions"
 createdAt: 2026-08-30T10:53:39.546Z
 ---
 
