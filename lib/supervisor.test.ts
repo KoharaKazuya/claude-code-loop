@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.ts";
-import { readProcStartToken, writeRunnerRecord } from "./liveness.ts";
+import { readProcStartToken, writeRunnerRecord, type LoopLiveness } from "./liveness.ts";
 import { createPaths, type Paths } from "./paths.ts";
 import {
   AGENT_COMMIT_TRAILER,
@@ -1281,11 +1281,18 @@ function makeRunningSession(overrides: Partial<RunningSessionState> = {}): Runni
   return { kind: "task", taskId: "T-001", startedAt: "2026-08-16T00:00:00.000Z", ...overrides };
 }
 
+const RUNNING_LIVENESS: LoopLiveness = {
+  status: "running",
+  pid: 1,
+  startedAt: "2026-08-16T00:00:00.000Z",
+  heartbeatAt: "2026-08-16T00:00:00.000Z",
+};
+
 describe("runningSessionLines", () => {
   const staleAfterMs = 2400000; // 40分
 
   it("セッションが無ければ空配列を返す", () => {
-    expect(runningSessionLines([], new Map(), new Date(), staleAfterMs, 1)).toEqual([]);
+    expect(runningSessionLines([], new Map(), new Date(), staleAfterMs, 1, RUNNING_LIVENESS)).toEqual([]);
   });
 
   it("タスク実行中1件: ヘッダー・ID・優先度・タイトル・経過時間を表示する", () => {
@@ -1296,7 +1303,7 @@ describe("runningSessionLines", () => {
     ];
     const now = new Date("2026-08-16T02:32:00.000Z");
 
-    expect(runningSessionLines(sessions, byId, now, staleAfterMs, 1)).toEqual([
+    expect(runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS)).toEqual([
       "実行中のセッション (1/1)",
       "T-156  p2  GUI スクリーンショットの日本語表示を直す",
       "  12分経過 (2026-08-16T02:20:00.000Z 開始)",
@@ -1307,7 +1314,7 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ kind: "explore", taskId: undefined, startedAt: "2026-08-16T02:00:00.000Z" })];
     const now = new Date("2026-08-16T02:00:45.000Z");
 
-    expect(runningSessionLines(sessions, new Map(), now, staleAfterMs, 1)).toEqual([
+    expect(runningSessionLines(sessions, new Map(), now, staleAfterMs, 1, RUNNING_LIVENESS)).toEqual([
       "実行中のセッション (1/1)",
       "探索セッション  (次の作業を探索中)",
       "  45秒経過 (2026-08-16T02:00:00.000Z 開始)",
@@ -1327,7 +1334,7 @@ describe("runningSessionLines", () => {
     ];
     const now = new Date("2026-08-16T02:20:00.000Z");
 
-    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 2);
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 2, RUNNING_LIVENESS);
 
     expect(lines).toEqual([
       "実行中のセッション (2/2)",
@@ -1344,7 +1351,7 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ phase: "finishing", startedAt: "2026-08-16T02:00:00.000Z" })];
     const now = new Date("2026-08-16T02:00:00.000Z");
 
-    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1);
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS);
 
     expect(lines[1]).toBe("T-001  p3  タイトル  マージ中");
   });
@@ -1355,7 +1362,7 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ startedAt: "2026-08-16T00:00:00.000Z" })];
     const now = new Date("2026-08-16T01:00:01.000Z"); // 60分1秒経過 > staleAfterMs(40分)
 
-    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1);
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS);
 
     expect(lines).toHaveLength(4);
     expect(lines[3]).toContain("タイムアウト(40分)を超過");
@@ -1367,7 +1374,7 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ startedAt: "2026-08-16T00:00:00.000Z" })];
     const now = new Date(new Date(sessions[0]!.startedAt).getTime() + staleAfterMs); // ちょうど40分経過
 
-    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1);
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS);
 
     expect(lines).toHaveLength(3);
     expect(lines.join("\n")).not.toContain("タイムアウト");
@@ -1379,8 +1386,8 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ startedAt: "2026-08-16T02:00:00.000Z" })];
     const now = new Date("2026-08-16T01:59:00.000Z"); // startedAt より1分前
 
-    expect(() => runningSessionLines(sessions, byId, now, staleAfterMs, 1)).not.toThrow();
-    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1);
+    expect(() => runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS)).not.toThrow();
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, RUNNING_LIVENESS);
     expect(lines[2]).toBe("  0秒経過 (2026-08-16T02:00:00.000Z 開始)");
   });
 
@@ -1388,7 +1395,7 @@ describe("runningSessionLines", () => {
     const sessions = [makeRunningSession({ taskId: "T-999", startedAt: "2026-08-16T02:20:00.000Z" })];
     const now = new Date("2026-08-16T02:20:05.000Z");
 
-    const lines = runningSessionLines(sessions, new Map(), now, staleAfterMs, 1);
+    const lines = runningSessionLines(sessions, new Map(), now, staleAfterMs, 1, RUNNING_LIVENESS);
 
     expect(lines[1]).toBe("T-999  (タスクファイルが見つからない)");
   });
@@ -1398,9 +1405,79 @@ describe("runningSessionLines", () => {
     const byId = new Map([[t.id, t]]);
     const sessions = [makeRunningSession({ taskId: "T-010", startedAt: "invalid-date" })];
 
-    expect(runningSessionLines(sessions, byId, new Date(), staleAfterMs, 1)).toEqual([
+    expect(runningSessionLines(sessions, byId, new Date(), staleAfterMs, 1, RUNNING_LIVENESS)).toEqual([
       "実行中のセッション (1/1)",
       "T-010  p3  タイトル",
+    ]);
+  });
+
+  it("ループ停止中(process-gone)は「実行中ではないセッションの記録」見出しになり、経過・タイムアウト行は出ない", () => {
+    const t = makeTask({ id: "T-001" });
+    const byId = new Map([[t.id, t]]);
+    const sessions = [makeRunningSession({ startedAt: "2026-08-16T00:00:00.000Z" })];
+    // staleAfterMs を大きく超えた now でもタイムアウト注記が出ないことを確認する
+    const now = new Date("2026-08-17T00:00:00.000Z");
+    const liveness: LoopLiveness = {
+      status: "stopped",
+      reason: "process-gone",
+      pid: 12345,
+      startedAt: "2026-08-15T00:00:00.000Z",
+      heartbeatAt: "2026-08-15T00:00:00.000Z",
+    };
+
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, liveness);
+
+    expect(lines[0]).toBe("※ ループ本体(ccloop run)が動いていないため、下記の 1 件は実行中ではなく記録が残っているだけ");
+    expect(lines.join("\n")).not.toContain("経過");
+    expect(lines.join("\n")).not.toContain("タイムアウト");
+  });
+
+  it("ループ停止中(no-record)でも同じ扱いになる", () => {
+    const t = makeTask({ id: "T-001" });
+    const byId = new Map([[t.id, t]]);
+    const sessions = [makeRunningSession({ startedAt: "2026-08-16T00:00:00.000Z" })];
+    const now = new Date("2026-08-17T00:00:00.000Z");
+    const liveness: LoopLiveness = { status: "stopped", reason: "no-record" };
+
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, liveness);
+
+    expect(lines[0]).toBe("※ ループ本体(ccloop run)が動いていないため、下記の 1 件は実行中ではなく記録が残っているだけ");
+    expect(lines.join("\n")).not.toContain("経過");
+    expect(lines.join("\n")).not.toContain("タイムアウト");
+  });
+
+  it("ループ停止中で startedAt がパース不能なら開始時刻行を出さない", () => {
+    const t = makeTask({ id: "T-001" });
+    const byId = new Map([[t.id, t]]);
+    const sessions = [makeRunningSession({ startedAt: "not-a-date" })];
+    const now = new Date("2026-08-17T00:00:00.000Z");
+    const liveness: LoopLiveness = { status: "stopped", reason: "no-record" };
+
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, liveness);
+
+    expect(lines.join("\n")).not.toContain("開始");
+  });
+
+  it("生存確認できない(unknown/heartbeat-stale)ときは見出しは従来どおりで、注意行が1行追加され経過時間行も従来どおり出る", () => {
+    const t = makeTask({ id: "T-156", priority: 2, title: "GUI スクリーンショットの日本語表示を直す" });
+    const byId = new Map([[t.id, t]]);
+    const sessions = [makeRunningSession({ taskId: "T-156", startedAt: "2026-08-16T02:20:00.000Z" })];
+    const now = new Date("2026-08-16T02:32:00.000Z");
+    const liveness: LoopLiveness = {
+      status: "unknown",
+      reason: "heartbeat-stale",
+      pid: 12345,
+      startedAt: "2026-08-16T00:00:00.000Z",
+      heartbeatAt: "2026-08-16T01:00:00.000Z",
+    };
+
+    const lines = runningSessionLines(sessions, byId, now, staleAfterMs, 1, liveness);
+
+    expect(lines).toEqual([
+      "実行中のセッション (1/1)",
+      "※ ループ本体(ccloop run)の生存を確認できないため、下記は古い記録の可能性がある",
+      "T-156  p2  GUI スクリーンショットの日本語表示を直す",
+      "  12分経過 (2026-08-16T02:20:00.000Z 開始)",
     ]);
   });
 });

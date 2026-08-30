@@ -1,10 +1,10 @@
 ---
 title: "ループが死んでいると判定済みでも「実行中のタスク」が生きているように表示され続ける"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 2
-note: "失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0602-status-shows-dead-session-running.md)(元: 失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md…)"
+note: "死活判定を実行中セッション表示に反映。停止時は経過時間を出さず記録扱いで表示する。typecheck/lint/test 通過"
 createdAt: 2026-08-30T06:02:18.660Z
 ---
 
@@ -65,3 +65,9 @@ createdAt: 2026-08-30T06:02:18.660Z
 - 結果: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0602-status-shows-dead-session-running.md)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 3(2026-08-30T07:30:16.099Z, セッション記録)
+
+- 確認済みの事実: 実装(933af26)は試行 1 でコミット済み。今回は衝突解消のみ。稼働中の Supervisor はインストール版 0.4.1 で、機械的マージ解決の対象は自タスクファイルだけ(`decisions/index.md` の 3-way 解決はソースにあるが未リリース)。index.md が衝突すると全体が substantive 扱いで失敗する——これが試行 1・2 の失敗根因
+- 対策: index.md は main 側と同じ位置関係を保って両決定の行を残した(main は 54d902f 以降 index.md 無変更のため再衝突しない)。CHANGELOG.md は main 側が未リリース節末尾に追記済みのため、自分の項目を別の位置(挿入アンカーが重ならない場所)へ移した
+- 次の試行への提案: もし再度衝突したら、衝突パスごとに「main 先端との差分アンカーが重なっていないか」を最初に確認すること
