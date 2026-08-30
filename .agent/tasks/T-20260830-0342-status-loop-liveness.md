@@ -3,7 +3,8 @@ title: "ccloop status にループの生存と状態の更新時刻を表示す�
 status: ready
 priority: 3
 dependencies: []
-retries: 0
+retries: 1
+note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(lib/supervisor.status.test.ts)(元: -)"
 createdAt: 2026-08-30T03:42:50.737Z
 ---
 
@@ -46,3 +47,11 @@ createdAt: 2026-08-30T03:42:50.737Z
   異常終了で記録が残ったままのケースも検証する。
 - `npm run` 経由の test / typecheck / lint が通る。
 - 表示文言は README の `ccloop status` の説明と食い違わないようにする(必要なら README も直す)。
+
+## 試行履歴
+
+### 試行 1(2026-08-30T04:10:13.737Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(lib/supervisor.status.test.ts)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
