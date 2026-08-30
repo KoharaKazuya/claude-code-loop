@@ -259,6 +259,39 @@ describe("collectChecks", () => {
     expect(probed).toContain("my-claude");
     expect(find(results, "claude").name).toBe("claude (my-claude)");
   });
+
+  it("root と agentRoot が異なる場合、claudeCommand の診断には agentRoot 側の config.json を使う", () => {
+    // linked worktree 内から実行した状況を模す: root(本体ワークツリー)と agentRoot(いま実行して
+    // いる作業ツリー)を別ディレクトリにし、それぞれに異なる claudeCommand の config.json を置く
+    const rootOnly = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-doctor-root-"));
+    const agentRootOnly = fs.mkdtempSync(path.join(os.tmpdir(), "ccloop-doctor-agentroot-"));
+    try {
+      const p = createPaths(rootOnly, process.env, agentRootOnly);
+      applyInit(p, planInit(p, HOME));
+      const config = JSON.parse(fs.readFileSync(p.configPath, "utf8")) as Record<string, unknown>;
+      fs.writeFileSync(p.configPath, JSON.stringify({ ...config, claudeCommand: "agent-claude" }) + "\n");
+      // root 側にも .agent/config.json を置き、diagnose が誤って root を読んでいないことを確認する
+      fs.mkdirSync(path.join(rootOnly, AGENT_DIR_NAME), { recursive: true });
+      fs.writeFileSync(
+        path.join(rootOnly, AGENT_DIR_NAME, "config.json"),
+        JSON.stringify({ ...config, claudeCommand: "root-claude" }) + "\n",
+      );
+      const probed: string[] = [];
+      const probe: ProbeFn = (command) => {
+        probed.push(command);
+        return { ok: true, output: "1.0.0" };
+      };
+
+      const results = collectChecks({ paths: p, home: HOME, nodeVersion: "24.0.0", probe });
+
+      expect(probed).toContain("agent-claude");
+      expect(probed).not.toContain("root-claude");
+      expect(find(results, "claude").name).toBe("claude (agent-claude)");
+    } finally {
+      fs.rmSync(rootOnly, { recursive: true, force: true });
+      fs.rmSync(agentRootOnly, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("checkClaudeAuth", () => {

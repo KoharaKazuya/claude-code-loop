@@ -12,6 +12,11 @@
  *    `{ ...process.env }` を基点にすると、これらがそのまま漏れ、被テストコード側の
  *    「セッション種別による分岐」を意図せず変えてしまう。テスト対象は明示的に指定した
  *    env だけを見るべきなので、ここで一括削除して実行元セッションの影響を遮断する。
+ *
+ * 3. 同じ理由で `CCLOOP_REPO` も削除する。自律運用セッション自身がこの変数を持っている場合、
+ *    `--repo` を渡さずに子プロセスを spawn するテスト(cwd から .git を探索させたいテスト)が
+ *    そちらを拾ってしまい、テスト用の一時リポジトリではなく実行元セッションの対象リポジトリへ
+ *    誤って書き込む(`ccloop run` 系のテストでは特に危険)。
  */
 
 import * as fs from "node:fs";
@@ -25,6 +30,7 @@ process.env.XDG_STATE_HOME = stateHome;
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("CLAUDE_AGENT_")) delete process.env[key];
 }
+delete process.env.CCLOOP_REPO;
 
 afterAll(() => {
   fs.rmSync(stateHome, { recursive: true, force: true });

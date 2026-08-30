@@ -285,7 +285,7 @@ export function collectChecks(opts: DoctorOptions): CheckResult[] {
   let configError: string | null = null;
   if (opts.paths !== null) {
     try {
-      const configured = loadConfigFrom(opts.paths.root).claudeCommand;
+      const configured = loadConfigFrom(opts.paths.agentRoot).claudeCommand;
       claudeCommand = typeof configured === "string" && configured !== "" ? configured : "claude";
     } catch (err) {
       configError = String((err as Error)?.message ?? err);

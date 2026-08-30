@@ -108,10 +108,16 @@ function mainWorktreeRoot(dir: string): string {
  * ① `--repo <path>` ② 環境変数 `CCLOOP_REPO` ③ cwd から上方への `.git` 探索。
  * ①② は指定された時点で確定し、そこが git リポジトリでなければエラーにする
  * (黙って別のリポジトリへフォールバックすると、意図しない場所を書き換えてしまうため)。
- * 指定・探索の結果がリンクされた worktree だった場合は、同一リポジトリの本体ワークツリーへ
- * 読み替える(worktree ごとに repoId が変わり、無関係な state ディレクトリを参照してしまうため)。
+ *
+ * 指定・探索の結果がリンクされた worktree だった場合、戻り値は 2 系統に分かれる。
+ * - `root`: 同一リポジトリの本体ワークツリーへ読み替えた実体パス(worktree ごとに repoId が
+ *   変わって無関係な state ディレクトリを参照してしまうのを防ぐため。また git 操作
+ *   (worktree add / merge / branch)は必ず本体で行う必要があるため)。
+ * - `agentRoot`: 読み替えをしない、見つかった(または指定された)作業ツリーそのものの実体パス。
+ *   `.agent/` はいま作業している worktree のものを読み書きすべきで、本体側へ読み替えると
+ *   worktree 内から `ccloop abandon` 等を実行したときに無関係な本体のファイルを書き換えてしまう。
  */
-export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
+export function resolveRepoRoots(opts: ResolveRepoRootOptions = {}): { root: string; agentRoot: string } {
   const env = opts.env ?? process.env;
   const explicit = opts.repo ?? (env.CCLOOP_REPO !== "" ? env.CCLOOP_REPO : undefined);
   if (explicit !== undefined) {
@@ -126,7 +132,7 @@ export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
           "リポジトリのルートを指定すること",
       );
     }
-    return realpath(mainWorktreeRoot(dir));
+    return { root: realpath(mainWorktreeRoot(dir)), agentRoot: realpath(dir) };
   }
 
   const found = findGitRoot(opts.cwd ?? process.cwd());
@@ -136,7 +142,12 @@ export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
         "リポジトリ内で実行するか、--repo <path> か環境変数 CCLOOP_REPO でルートを指定すること",
     );
   }
-  return realpath(mainWorktreeRoot(found));
+  return { root: realpath(mainWorktreeRoot(found)), agentRoot: realpath(found) };
+}
+
+/** `resolveRepoRoots(opts).root` の薄いラッパー。git 操作・state ディレクトリの基準だけが要る箇所向け */
+export function resolveRepoRoot(opts: ResolveRepoRootOptions = {}): string {
+  return resolveRepoRoots(opts).root;
 }
 
 /** realpath を試み、失敗したら resolve 済みのパスをそのまま返す(state ディレクトリ ID の安定化用) */
@@ -178,8 +189,14 @@ export function taskFileRelPath(taskId: string): string {
 
 /** ccloop が読み書きするパス一式。root ごとに createPaths で作る */
 export interface Paths {
-  /** 対象リポジトリのルート */
+  /** 対象リポジトリのルート(git 操作・state ディレクトリの基準。本体ワークツリー) */
   root: string;
+  /**
+   * `.agent/` 配下の読み書きの基準(実行中の作業ツリーそのもの)。通常は root と同じだが、
+   * linked worktree 内から実行した場合は worktree 自身を指し、root(本体)とは異なる
+   * (resolveRepoRoots 参照)。
+   */
+  agentRoot: string;
 
   // ---- git 管理下(.agent/) ----
   agentDir: string;
@@ -212,13 +229,17 @@ export interface Paths {
 /**
  * root に対するパス一式を組み立てる。state ディレクトリは無ければ作る
  * (実行時ファイルの書き込みは常にここへ行われるため、呼び出し側ごとの mkdir を不要にする)。
+ *
+ * agentRoot(既定は root)は `.agent/` 配下の組み立てにのみ使う。state ディレクトリ(repoId)は
+ * 常に root 基準(呼び出し元が 2 引数で呼んだ既存コードは agentRoot === root のまま変わらない)。
  */
-export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env): Paths {
-  const agentDir = path.join(root, AGENT_DIR_NAME);
+export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env, agentRoot: string = root): Paths {
+  const agentDir = path.join(agentRoot, AGENT_DIR_NAME);
   const stateDir = stateDirFor(root, env);
   fs.mkdirSync(stateDir, { recursive: true });
   return {
     root,
+    agentRoot,
     agentDir,
     configPath: path.join(agentDir, "config.json"),
     tasksDir: path.join(agentDir, "tasks"),

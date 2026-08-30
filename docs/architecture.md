@@ -83,6 +83,32 @@ basename と、同名リポジトリ(別クローン)を取り違えないため
 防げない抜け道になるため、生成物自身の絶対パスを `permissions.deny` に動的に追加して自己改変を禁じている
 (`lib/settings.ts` の `generateSettings`)。
 
+## パス解決を `root` と `agentRoot` の 2 系統に分ける
+
+`lib/paths.ts` はリポジトリのパスを 2 系統に分けて解決する(`resolveRepoRoots`)。
+
+- `root`: git 操作(worktree の作成・削除・ブランチ・マージ)と、上述の state ディレクトリ
+  (`repoId` の算出元)の基準。linked worktree 内から実行しても、常に本体ワークツリーへ読み替える。
+- `agentRoot`: `.agent/` 配下(config.json / tasks / decisions / human-review / archive /
+  GOAL.md / OVERVIEW.md / PROMPT.local.md)の読み書きの基準。読み替えをせず、実行時の cwd
+  (または `--repo` / `CCLOOP_REPO`)が指す作業ツリーそのものを使う。
+
+分ける理由は、この 2 つが「読み替えるべきか」で逆の答えを持つため。git 操作と state ディレクトリは
+worktree ごとに変えると意味が壊れる(worktree の追加・削除は本体でしか完結せず、worktree ごとに
+別の repoId になると無関係な実行状態を参照してしまう)ので本体へ読み替える必要がある。一方
+`.agent/` はタスクファイルなど「いま作業しているブランチの成果」そのものであり、本体へ読み替えると
+worktree 内で `ccloop add` / `retry` / `abandon` を実行したときに無関係な本体側の `.agent/` を
+書き換えてしまい、その worktree のブランチには乗らない(自律実行セッションの成果が自動マージに
+反映されない事故につながる)。
+
+この分離の結果、`ccloop status` / `list` / `add` / `retry` / `abandon` / `init` は worktree 内から
+実行しても安全で、その worktree の `.agent/` だけを読み書きする。`.agent/` を触る処理を新しく足す
+ときは `paths.root` ではなく `paths.agentRoot`(またはそこから作られる `agentDir` 系のフィールド)を
+使うこと。一方 `ccloop run` は自分で worktree を作り
+git 操作を `root` に対して行うため、linked worktree 内から起動すると `root` と `agentRoot` がずれて
+壊れる。そのためリンクされた worktree 内から `ccloop run` を起動した場合はエラーで止め、本体の
+ワーキングツリーへ移動するよう案内する。
+
 ## permissions 設計(`lib/settings.template.json`)
 
 自律実行セッションは `node`/`npm` による任意コード実行が本質的に不可避なため、permissions で

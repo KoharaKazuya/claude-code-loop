@@ -63,7 +63,7 @@ import {
   readSchemaVersion,
   type SchemaCompat,
 } from "./migrations.ts";
-import { AGENT_DIR_NAME, ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
+import { AGENT_DIR_NAME, ccloopHome, createPaths, resolveRepoRoots, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
@@ -111,7 +111,10 @@ let currentPaths: Paths | null = null;
  * 引数で受け取ること(cwd 由来の暗黙値のまま呼ばれると、意図しないリポジトリのブランチを壊す)。
  */
 export function repoPaths(): Paths {
-  if (currentPaths === null) currentPaths = createPaths(resolveRepoRoot());
+  if (currentPaths === null) {
+    const { root, agentRoot } = resolveRepoRoots();
+    currentPaths = createPaths(root, process.env, agentRoot);
+  }
   return currentPaths;
 }
 
@@ -120,9 +123,12 @@ export function setRepoPaths(p: Paths): void {
   currentPaths = p;
 }
 
-/** 対象リポジトリを root で確定させ、確定した Paths を返す */
-export function useRepoRoot(root: string): Paths {
-  const p = createPaths(root);
+/**
+ * 対象リポジトリを root(・agentRoot)で確定させ、確定した Paths を返す。
+ * agentRoot 省略時は root と同じ(`.agent/` と git 操作・state の基準が一致する通常経路)。
+ */
+export function useRepoRoot(root: string, agentRoot: string = root): Paths {
+  const p = createPaths(root, process.env, agentRoot);
   setRepoPaths(p);
   return p;
 }
@@ -400,8 +406,10 @@ function loadTasksIn(root: string): Task[] {
   return loadTasksFrom(tasksDirOf(root), true).tasks;
 }
 
+// タスクファイルは .agent/ 配下(agentRoot 基準)。root(本体)基準にすると、worktree 内から
+// 実行したときに本体側のタスクファイルを読み書きしてしまう。
 function loadTasks(): Task[] {
-  return loadTasksIn(repoPaths().root);
+  return loadTasksIn(repoPaths().agentRoot);
 }
 
 /** id のタスクを 1 件だけ読む。見つからなければ null */
@@ -410,7 +418,7 @@ function loadTaskIn(root: string, id: string): Task | null {
 }
 
 function loadTask(id: string): Task | null {
-  return loadTaskIn(repoPaths().root, id);
+  return loadTaskIn(repoPaths().agentRoot, id);
 }
 
 /**
@@ -449,7 +457,7 @@ function saveTaskIn(root: string, t: Task): void {
 }
 
 function saveTask(t: Task): void {
-  saveTaskIn(repoPaths().root, t);
+  saveTaskIn(repoPaths().agentRoot, t);
 }
 
 /** state.json が無いフレッシュなクローン向けの初期状態 */
@@ -5796,7 +5804,12 @@ function realpathOrSelf(p: string): string {
  * (status は状況を見るためのものなので、他コマンドのように止めない)。
  */
 export function collectStatusData(now: Date): StatusData {
-  const { tasks, invalidFiles: invalidTaskFiles } = loadTasksFrom(tasksDirOf(repoPaths().root), false);
+  // タスクの読み先は agentRoot(実行中の作業ツリー)。他のコマンドと同じ `.agent/` を見せる
+  // ため、worktree 内から実行されたときは worktree 側のタスクを表示する
+  const { tasks, invalidFiles: invalidTaskFiles } = loadTasksFrom(
+    tasksDirOf(repoPaths().agentRoot),
+    false,
+  );
   const state = loadState();
   const hr = parseHumanReview();
   // 進捗は archive へ退避済みの completed タスクも分子・分母に含め、

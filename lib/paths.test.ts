@@ -10,6 +10,7 @@ import {
   repoId,
   RepoRootNotFoundError,
   resolveRepoRoot,
+  resolveRepoRoots,
   stateDirFor,
   taskFileRelPath,
 } from "./paths.ts";
@@ -169,6 +170,67 @@ describe("resolveRepoRoot(git worktree)", () => {
   });
 });
 
+describe("resolveRepoRoots", () => {
+  it("worktree 内から解決すると root は本体、agentRoot は worktree 自身になる", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    const resolved = resolveRepoRoots({ cwd: worktreeDir, env: {} });
+
+    expect(resolved.root).toBe(dir);
+    expect(resolved.agentRoot).toBe(fs.realpathSync(worktreeDir));
+  });
+
+  it("worktree のネストしたディレクトリから解決しても agentRoot は worktree 自身になる(本体へは読み替えない)", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+    const nested = path.join(worktreeDir, "a", "b");
+    fs.mkdirSync(nested, { recursive: true });
+
+    const resolved = resolveRepoRoots({ cwd: nested, env: {} });
+
+    expect(resolved.root).toBe(dir);
+    expect(resolved.agentRoot).toBe(fs.realpathSync(worktreeDir));
+  });
+
+  it("本体ワークツリーから解決すると root === agentRoot", () => {
+    initRepo(dir);
+    addWorktree(dir, "wt");
+
+    const resolved = resolveRepoRoots({ cwd: dir, env: {} });
+
+    expect(resolved.root).toBe(dir);
+    expect(resolved.agentRoot).toBe(dir);
+  });
+
+  it("--repo に worktree のパスを渡した場合も root と agentRoot が分かれる", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    const resolved = resolveRepoRoots({ repo: worktreeDir, env: {} });
+
+    expect(resolved.root).toBe(dir);
+    expect(resolved.agentRoot).toBe(fs.realpathSync(worktreeDir));
+  });
+
+  it("CCLOOP_REPO に worktree のパスを渡した場合も root と agentRoot が分かれる", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    const resolved = resolveRepoRoots({ cwd: os.tmpdir(), env: { CCLOOP_REPO: worktreeDir } });
+
+    expect(resolved.root).toBe(dir);
+    expect(resolved.agentRoot).toBe(fs.realpathSync(worktreeDir));
+  });
+
+  it("resolveRepoRoot() は resolveRepoRoots().root と同じ値を返す(既存の薄いラッパー)", () => {
+    initRepo(dir);
+    const worktreeDir = addWorktree(dir, "wt");
+
+    expect(resolveRepoRoot({ cwd: worktreeDir, env: {} })).toBe(resolveRepoRoots({ cwd: worktreeDir, env: {} }).root);
+  });
+});
+
 describe("repoId / stateDirFor", () => {
   // 期待値は実装と同じ式で計算せず、固定の入力に対する事前計算済みのリテラルで固定する。
   // 式を写すとハッシュ関数・スライス長・結合順が変わってもテストが追随してしまい、
@@ -247,6 +309,27 @@ describe("createPaths", () => {
     const p = createPaths(dir);
 
     expect(fs.existsSync(p.stateDir)).toBe(true);
+  });
+
+  it("agentRoot 省略時は root と同じ(既存呼び出しの挙動は変わらない)", () => {
+    const p = createPaths(dir);
+
+    expect(p.agentRoot).toBe(dir);
+  });
+
+  it("agentRoot を渡すと .agent/ 配下は agentRoot 基準、state 系は root 基準になる", () => {
+    const agentRoot = path.join(dir, "worktree");
+    fs.mkdirSync(agentRoot, { recursive: true });
+
+    const p = createPaths(dir, process.env, agentRoot);
+
+    expect(p.root).toBe(dir);
+    expect(p.agentRoot).toBe(agentRoot);
+    expect(p.agentDir).toBe(path.join(agentRoot, ".agent"));
+    expect(p.tasksDir).toBe(path.join(agentRoot, ".agent", "tasks"));
+    expect(p.archiveDir).toBe(path.join(agentRoot, ".agent", "archive"));
+    // state ディレクトリ(repoId)は root 基準のまま(worktree ごとに変わらない)
+    expect(p.stateDir).toBe(stateDirFor(dir));
   });
 });
 
