@@ -4,7 +4,8 @@ status: ready
 priority: 2
 dependencies: []
 retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: セッションが中断された(ブランチに成果は残っていなかった)(元: -)"
+conflictRetries: 1
+note: "マージ衝突が続くため ready に戻す(1/5)。理由: main へのマージが衝突した(.agent/tasks/T-20260830-1132-ccloop-in-worktree-targets-main-agent-dir.md, lib/supervisor.ts)(元: 失敗のため ready に戻す(1/3)。理由: セッションが中断された(ブランチに成果は残っていなかった)(元: -))"
 createdAt: 2026-08-30T11:32:00.000Z
 ---
 
@@ -53,4 +54,10 @@ worktree 内から `./bin/ccloop abandon <ID>` を 2 回実行した。結果:
 
 - 結果: セッションが中断された(ブランチに成果は残っていなかった)
 - セッションは終了処理を実行できていない。作業がコミット済み・未コミットのまま残っている可能性がある。`git log --oneline -10` と `git status` で現状を確認してから再開すること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 2(2026-08-30T11:45:23.958Z, ccloop 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/tasks/T-20260830-1132-ccloop-in-worktree-targets-main-agent-dir.md, lib/supervisor.ts)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
