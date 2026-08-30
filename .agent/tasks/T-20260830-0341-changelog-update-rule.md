@@ -1,9 +1,10 @@
 ---
 title: "変更履歴を各セッションが更新する運用をルールとして定める"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-0341-changelog-initial]
 retries: 0
+note: "変更を入れたセッションが更新する運用に決定。マージの機械的解決は入れず衝突解消の指示で対応"
 createdAt: 2026-08-30T03:41:11.303Z
 ---
 
