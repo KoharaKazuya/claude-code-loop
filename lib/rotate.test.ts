@@ -47,6 +47,32 @@ describe("rotate", () => {
     expect(fs.existsSync(path.join(tasksDir, "T-002.md"))).toBe(true);
   });
 
+  it("abandonedAt が設定された failed タスクは archive/tasks/ へ移動する", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(
+      tasksDir,
+      "T-001.md",
+      "---\nstatus: failed\nabandonedAt: 2026-01-01T00:00:00.000Z\n---\n本文",
+    );
+
+    const result = rotate(agentDir);
+
+    expect(result.tasks).toBe(1);
+    expect(fs.existsSync(path.join(agentDir, "archive", "tasks", "T-001.md"))).toBe(true);
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(false);
+  });
+
+  it("abandonedAt が無い failed タスクはアーカイブされない", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(tasksDir, "T-001.md", fixture("failed"));
+
+    const result = rotate(agentDir);
+
+    expect(result.tasks).toBe(0);
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(true);
+    expect(fs.existsSync(path.join(agentDir, "archive", "tasks", "T-001.md"))).toBe(false);
+  });
+
   it("excludeTaskIds に含まれる completed タスクは移動されず、含まれないものだけ移動される", () => {
     const tasksDir = path.join(agentDir, "tasks");
     writeFile(tasksDir, "T-001.md", fixture("completed"));

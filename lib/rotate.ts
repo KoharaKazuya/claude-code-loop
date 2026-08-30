@@ -4,8 +4,9 @@
  * tasks / decisions / human-review は「1 トピック 1 ファイル + frontmatter」で
  * `.agent/<種別>/<ID>.md` に置かれる。アクティブ側のファイル数が増え続けると
  * 自律セッションが一覧を読む際のコンテキスト消費が線形に増えるため、
- * 「終わったもの」(completed タスク・closed な Review・人間がチェックを付けた判断)を
- * ファイルごと `.agent/archive/<同名ディレクトリ>/` へ移動し、アクティブ側を有界に保つ。
+ * 「終わったもの」(completed タスク・断念(abandonedAt)が記録された failed タスク・closed な
+ * Review・人間がチェックを付けた判断)をファイルごと `.agent/archive/<同名ディレクトリ>/` へ
+ * 移動し、アクティブ側を有界に保つ。
  *
  * tasks / human-review はファイル名 = ID がそのまま索引になるため索引の再生成は行わない。
  * decisions だけは `.agent/decisions/index.md` のチェックボックスに人間がチェックを付けた
@@ -33,16 +34,21 @@ function listMdFiles(dir: string): string[] {
     .sort();
 }
 
-/** dir/fileName の frontmatter から status を読む。読めない・無い場合は "" */
-function statusOf(dir: string, fileName: string): string {
+/** dir/fileName の frontmatter から field を文字列として読む。読めない・無い・文字列以外は "" */
+function frontmatterFieldOf(dir: string, fileName: string, field: string): string {
   try {
     const text = fs.readFileSync(path.join(dir, fileName), "utf8");
     const { data } = parseFrontmatter(text);
-    const status = data.status;
-    return typeof status === "string" ? status : "";
+    const value = data[field];
+    return typeof value === "string" ? value : "";
   } catch {
     return "";
   }
+}
+
+/** dir/fileName の frontmatter から status を読む。読めない・無い場合は "" */
+function statusOf(dir: string, fileName: string): string {
+  return frontmatterFieldOf(dir, fileName, "status");
 }
 
 /**
@@ -198,11 +204,13 @@ export interface RotateOptions {
  */
 export function rotate(agentDir: string, options: RotateOptions = {}): RotateResult {
   const tasksDir = path.join(agentDir, "tasks");
-  const tasksToArchive = listMdFiles(tasksDir).filter(
-    (f) =>
-      statusOf(tasksDir, f) === "completed" &&
-      !(options.excludeTaskIds?.has(f.slice(0, -".md".length)) ?? false),
-  );
+  const tasksToArchive = listMdFiles(tasksDir).filter((f) => {
+    const status = statusOf(tasksDir, f);
+    const isDone =
+      status === "completed" ||
+      (status === "failed" && frontmatterFieldOf(tasksDir, f, "abandonedAt") !== "");
+    return isDone && !(options.excludeTaskIds?.has(f.slice(0, -".md".length)) ?? false);
+  });
   const tasksResult = moveToArchive(agentDir, "tasks", tasksToArchive);
 
   const decisionsResult = rotateDecisions(agentDir);

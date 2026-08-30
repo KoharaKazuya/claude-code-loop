@@ -106,6 +106,13 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
   (ローテーションはループ内で自動)。判断ファイルは `.agent/decisions/index.md` で人間がチェックを
   付けたものだけが退避される。未チェックの判断が何件溜まっているかは `ccloop status` の
   `[確認推奨]` に件数とプレビューが出る。
+- **failed タスクの断念**: 再挑戦させないなら `ccloop abandon <タスクID>` を使う。status: failed の
+  タスクにのみ使え、それ以外の status や実行中のタスクにはエラーになり何も変更しない。実行すると
+  タスクファイルの frontmatter に断念日時(`abandonedAt`)を記録するが、`status` は `failed` のまま
+  変えない(完了していない作業を進捗率の分子に含めないため)。断念したタスクは `ccloop status` の
+  `[要対応]` の failed 一覧から消え、次回のローテーションで `.agent/archive/tasks/` へ自動的に
+  退避される。取り消したくなったら `ccloop retry <タスクID>` を使う(マーカーが解除され
+  `status: ready` に戻る)。
 - **巻き戻し**: 自律コミットは対象リポジトリの `git log` に積まれるだけで push はされない。緊急時は
   `ccloop run` を停止し、`git log` / `git diff` で確認したうえで人間が `git revert` し、経緯を
   `.agent/decisions/` に記録してから再開する。

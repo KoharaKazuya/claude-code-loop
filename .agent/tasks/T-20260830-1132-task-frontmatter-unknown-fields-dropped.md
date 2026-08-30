@@ -1,0 +1,38 @@
+---
+title: "タスクファイルの保存で未知の frontmatter フィールドが黙って消える"
+status: ready
+priority: 3
+dependencies: []
+retries: 0
+createdAt: 2026-08-30T11:32:00.000Z
+---
+
+所属フェーズ: 4(思いつく改善すべて)。壊れているものの修理なので人間への確認は取らずに進めてよい。
+
+## 何が問題か(確認済みの事実)
+
+`taskFromFile`(`lib/supervisor.ts`)は frontmatter から `Task` 型の既知フィールドだけを拾い、
+`taskFrontmatter` は既知フィールドだけを書き出す。そのため `saveTask` を通すと **`Task` 型に
+定義されていないフィールドは黙って失われる**。
+
+実例: `ccloop abandon` の実行で、対象タスクファイルの `updatedAt` が消えた
+(`abandonedAt` の追記と同時に `updatedAt: 2026-08-30T08:13:38.542Z` の行が削除された)。
+`ccloop retry` も同じ経路なので同様に消す。`updatedAt` は共通ルール(`lib/prompt/PROMPT.md`)が
+記録対象として挙げているフィールドであり、失われてよいものではない。
+
+human-review 側の `closeHumanReview` は `parseFrontmatter` の生データをそのまま書き戻すため、
+この問題は起きない。タスクだけが非対称になっている。
+
+## やること
+
+- タスクの読み書きでも未知フィールドを保持する(生データを保持して書き戻す、または `Task` に
+  拡張フィールドの受け皿を持たせる)
+- `updatedAt` を既知フィールドとして扱うべきかも併せて判断する(共通ルールが言及している以上、
+  型に持たせるのが素直か)
+- 未知フィールドが往復で保持されることをテストで固定する
+
+## 完了条件
+
+- 未知フィールドを持つタスクファイルを `saveTask` 経由で書き換えても、そのフィールドが残ることが
+  テストで確認できること
+- `ccloop retry` / `ccloop abandon` の実行で `updatedAt` が消えないこと
