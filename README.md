@@ -185,17 +185,19 @@ origin/main と同期していることを確認したうえで `check:version` 
 すべて通れば `npm version <patch|minor|major>`(コミットメッセージは `build: バージョンを %s に更新` に固定)
 を実行してコミットと `vX.Y.Z` タグを作成し、最後に `git push --follow-tags` する。`npm version` の
 `version` フック(`scripts/sync-version.mjs`)が `features/ccloop/devcontainer-feature.json` の
-`version`、README.md と `.devcontainer/devcontainer.json` 中の ccloop feature 参照バージョンを同期する。
-これら 3 ファイルを手で編集してはいけない(`scripts/sync-version.mjs` が上書きする)。push が失敗した場合、
-コミットとタグはローカルに作成済みなので `git push --follow-tags origin main` を再実行すれば回復する。
-状態チェックと検証だけ試したい場合は `npm run release -- <patch|minor|major> --dry-run`(npm 経由で
-オプションを渡すには `--` が必要)を使うと、`npm version` や `git push` などの変更操作を実行する手前で止まる。
+`version` と README.md 中の ccloop feature 参照バージョンを同期する。これら 2 ファイルを手で編集しては
+いけない(`scripts/sync-version.mjs` が上書きする)。push が失敗した場合、コミットとタグはローカルに
+作成済みなので `git push --follow-tags origin main` を再実行すれば回復する。状態チェックと検証だけ
+試したい場合は `npm run release -- <patch|minor|major> --dry-run`(npm 経由でオプションを渡すには `--`
+が必要)を使うと、`npm version` や `git push` などの変更操作を実行する手前で止まる。
 
-`scripts/check-version.mjs` が package.json を含む 4 箇所のバージョン一致を検証する。CI
+`scripts/check-version.mjs` が package.json を含む 3 箇所のバージョン一致を検証する。CI
 (`.github/workflows/ci.yml`)は push 時にこれを実行し、GitHub Actions(`.github/workflows/release.yml`)は
 `vX.Y.Z` タグ push 時にタグバージョンとの一致まで検証したうえで `lib/` と `bin/` を feature にバンドルし、
-GHCR へ publish する。`.devcontainer/devcontainer-lock.json` の ccloop エントリは同期対象に含めない
-(digest は publish 後にしか分からないため)。コンテナ再ビルド時に devcontainer CLI が解決し直す。
+GHCR へ publish する。`.devcontainer/devcontainer.json` 中の ccloop feature 参照と
+`.devcontainer/devcontainer-lock.json` はこの同期・検証の対象外で、リリース後に手動で更新する
+(digest は publish 後にしか確定しないため、devcontainer.json だけ自動更新すると lock との整合が取れない)。
+lock はコンテナ再ビルド時に devcontainer CLI が解決し直す。
 
 ## ドキュメント
 
