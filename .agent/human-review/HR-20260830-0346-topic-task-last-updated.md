@@ -1,6 +1,6 @@
 ---
 title: "タスクが最後に動いた時刻を記録して status に出すか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T03:46:01.571Z
 ---
