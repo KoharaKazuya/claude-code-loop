@@ -1,9 +1,10 @@
 ---
 title: "時間切れで失敗した再試行に「タスクを小さく割れ」と明示的に伝える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "時間切れ・ターン上限で失敗した再試行に分割を促す申し送りを注入するようにした。持ち時間は据え置き"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 

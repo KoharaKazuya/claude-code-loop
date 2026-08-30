@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -383,6 +384,30 @@ describe("salvagePatch", () => {
       const result = salvagePatch(dir, outFile);
       expect(result).toBeNull();
       expect(fs.existsSync(outFile)).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it("execFileSync の既定 maxBuffer(1MB)を超える差分でもパッチを書き出せる", () => {
+    // 圧縮されて既定 maxBuffer を下回らないよう、ランダムなバイト列にする(先頭を \0 にして
+    // バイナリ扱いにし、--binary(base64 化)経路に乗せる)
+    const big = randomBytes(2 * 1024 * 1024);
+    big[0] = 0;
+    fs.writeFileSync(path.join(dir, "big.bin"), big);
+
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-test-salvage-big-"));
+    const outFile = path.join(outDir, "T-001-20260816T102105Z.patch");
+
+    try {
+      let paths: string[] | null = null;
+      expect(() => {
+        paths = salvagePatch(dir, outFile);
+      }).not.toThrow();
+
+      expect(paths).toContain("big.bin");
+      expect(fs.existsSync(outFile)).toBe(true);
+      expect(fs.statSync(outFile).size).toBeGreaterThan(1024 * 1024);
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }

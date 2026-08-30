@@ -14,7 +14,9 @@ import {
   collectStatusData,
   formatStatus,
   hrSummary,
+  loadSalvageFailures,
   repoPaths,
+  type SalvageFailure,
   setRepoPaths,
   statePathOf,
   useRepoRoot,
@@ -378,6 +380,43 @@ describe("collectStatusData / formatStatus", () => {
       expect(out).toContain("T-bad.md");
       expect(out).not.toContain("要対応事項なし");
     });
+  });
+});
+
+describe("loadSalvageFailures", () => {
+  let dir: string;
+  let originalPaths: ReturnType<typeof repoPaths>;
+
+  beforeEach(() => {
+    originalPaths = repoPaths();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-salvage-failures-test-"));
+    useRepoRoot(dir);
+  });
+
+  afterEach(() => {
+    setRepoPaths(originalPaths);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeFailureMarker(rec: SalvageFailure): void {
+    fs.mkdirSync(repoPaths().salvageFailuresDir, { recursive: true });
+    fs.writeFileSync(path.join(repoPaths().salvageFailuresDir, `${rec.taskId}.json`), JSON.stringify(rec));
+  }
+
+  it("記録された worktree が既に無ければ、マーカーファイルごと削除して結果から除く(自己清掃)", () => {
+    const stillThere = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-salvage-failures-wt-"));
+    try {
+      writeFailureMarker({ taskId: "T-gone", worktree: "/does/not/exist", at: NOW.toISOString(), error: "boom" });
+      writeFailureMarker({ taskId: "T-kept", worktree: stillThere, at: NOW.toISOString(), error: "boom" });
+
+      const result = loadSalvageFailures(dir);
+
+      expect(result.map((r) => r.taskId)).toEqual(["T-kept"]);
+      expect(fs.existsSync(path.join(repoPaths().salvageFailuresDir, "T-gone.json"))).toBe(false);
+      expect(fs.existsSync(path.join(repoPaths().salvageFailuresDir, "T-kept.json"))).toBe(true);
+    } finally {
+      fs.rmSync(stillThere, { recursive: true, force: true });
+    }
   });
 });
 

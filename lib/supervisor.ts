@@ -51,7 +51,7 @@ import { log } from "./log.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
 import { detectSessionRateLimit } from "./ratelimit.ts";
-import { rotate, rotateResultIsEmpty } from "./rotate.ts";
+import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
 import { generateSystemPrompt } from "./prompt.ts";
 import { generateSettings } from "./settings.ts";
@@ -738,8 +738,8 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
  * 移動先に同名ファイルが既にあってスキップされたものがあれば、件数に関わらず警告ログを 1 件ずつ出す
  * (記録が失われないよう移動を見送っているため、人間が気づいて手で解決する必要がある)。
  */
-export function runRotate(agentDir: string = repoPaths().agentDir): string | null {
-  const result = rotate(agentDir);
+export function runRotate(agentDir: string = repoPaths().agentDir, options: RotateOptions = {}): string | null {
+  const result = rotate(agentDir, options);
   for (const conflict of result.conflicts) {
     log(
       `警告: archive に同名ファイルがあるため移動をスキップした: ${conflict}` +
@@ -818,6 +818,21 @@ export function prunePatches(
   }
   if (removed > 0) log(`${keepDays} 日より古い退避パッチを削除した: ${removed} 件`);
   return removed;
+}
+
+/**
+ * 記録の片付け(ローテーション + 退避パッチの掃除)をまとめて行う。
+ * 走行中のタスクセッションが担当しているタスクの記録だけは動かさない
+ * (main 側で動かすとそのブランチの自動マージが modify/delete 衝突になるため)。
+ */
+export function runHousekeeping(state: State): void {
+  const excludeTaskIds = new Set(
+    state.runningSessions
+      .filter((s): s is RunningSessionState & { taskId: string } => s.kind === "task" && s.taskId !== undefined)
+      .map((s) => s.taskId),
+  );
+  runRotate(repoPaths().agentDir, { excludeTaskIds });
+  prunePatches();
 }
 
 // ---------- 停止制御 ----------
@@ -1323,9 +1338,13 @@ function recoverOrphanBranch(
   }
 
   // merged / renumbered / nothing-to-merge: 成果は main 側にあるので worktree とブランチを畳む
-  const leftovers = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : null;
-  if (worktreeExists) removeWorktree(root, worktree);
-  if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  const salvage = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : ({ kind: "none" } as const);
+  if (salvage.kind === "failed") {
+    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+  } else {
+    if (worktreeExists) removeWorktree(root, worktree);
+    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  }
   if (outcome.result !== "nothing-to-merge") {
     counts.recoveredMerges += 1;
     log(`${taskId}: 中断していたタスクの成果を回収した`);
@@ -1340,8 +1359,15 @@ function recoverOrphanBranch(
         ? "セッションが中断された(ブランチに成果は残っていなかった)"
         : "セッションが中断された(ブランチの成果は main へ回収済み)",
     at,
+    extraLines:
+      salvage.kind === "failed"
+        ? [
+            `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
+          ]
+        : undefined,
   });
 
+  const leftovers = salvage.kind === "saved" ? salvage : null;
   if (leftovers !== null) {
     const t = loadTaskIn(root, taskId);
     if (t === null) {
@@ -1464,6 +1490,46 @@ const FAILURE_KIND_ADVICE: Record<FailureKind, string> = {
 };
 
 const ATTEMPT_HISTORY_HEADING = "## 試行履歴";
+
+/** FAILURE_KIND_LABEL の値からキーを引く逆引き表(ラベル定義を二重管理しないため機械的に導出する) */
+const FAILURE_KIND_BY_LABEL: Record<string, FailureKind> = Object.fromEntries(
+  (Object.entries(FAILURE_KIND_LABEL) as [FailureKind, string][]).map(([kind, label]) => [label, kind]),
+);
+
+/** `### 試行 N(...)` 見出し行から `ccloop 記録: <ラベル>` のラベル部分だけを取り出す */
+const ATTEMPT_HEADING_KIND_PATTERN = /^### 試行 .*ccloop 記録: ([^)]*)\)/;
+
+/**
+ * タスク本文の「## 試行履歴」に記録された、直前の試行の失敗種別を復元する(純関数)。
+ * タスクの frontmatter には失敗種別が保存されていないため、appendAttemptRecord が残す
+ * `### 試行 N(<ISO 時刻>, ccloop 記録: <ラベル>)` 見出しから逆引きする。
+ * `### 未コミット差分(...)` など他の見出しは対象にせず、`### 試行 ` 見出しのうち最後のものだけを見る。
+ * 該当する見出しが無い、またはラベルが未知の場合は null を返す。
+ */
+export function lastAttemptFailureKind(body: string): FailureKind | null {
+  const headings = body
+    .split("\n")
+    .filter((line) => line.startsWith("### 試行 "));
+  const lastHeading = headings.at(-1);
+  if (lastHeading === undefined) return null;
+
+  const match = lastHeading.match(ATTEMPT_HEADING_KIND_PATTERN);
+  if (match === null) return null;
+
+  return FAILURE_KIND_BY_LABEL[match[1]] ?? null;
+}
+
+/**
+ * 「1 セッションに対して作業量が多すぎた」ことを示す失敗種別と、再試行コンテキストの本文で使う
+ * その呼び名(FAILURE_KIND_LABEL とは別に、文中で読みやすい表現を持たせる)。
+ * timeout と max-turns は、いずれもセッションが与えられた持ち時間・ターン数を使い切って
+ * 打ち切られた失敗であり、再試行しても上限は増えない点で共通する。この表に載っている種別のときだけ
+ * タスク分割を促す文言を出す(載っていない種別は undefined になり、従来どおりの文面になる)。
+ */
+const OVERSIZED_FAILURE_KIND_PHRASE: Partial<Record<FailureKind, string>> = {
+  timeout: "時間切れ(タイムアウト)",
+  "max-turns": "ターン数の上限による打ち切り",
+};
 
 /**
  * タスク本文の末尾に「## 試行履歴」セクションへ 1 試行分のエントリを追記する(純関数)。
@@ -2489,18 +2555,32 @@ function goalSection(): string[] {
  */
 export function retryContextSection(config: Config, task: Task): string[] {
   if (task.retries === 0) return [];
-  return [
-    [
-      "## 再試行コンテキスト(Supervisor による機械的情報)",
-      "",
-      `- これは ${task.retries + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries})`,
-      `- 直前の失敗: ${task.note ?? "記録なし"}`,
-      "- 上記タスク本文の「## 試行履歴」を読み、前回と同じ戦略の単純リトライは避けること",
-      "- ただし試行履歴のうち「未検証の推測」は前回セッションの観察であり誤りうる。git log / git status / " +
-        "このリポジトリの検証コマンドで現状を確認し、記録と現状が食い違う場合は現状を優先して方針を決めること",
-      "- 前回の作業が既にコミットされている可能性がある。再実装を始める前に必ず git log を確認すること",
-    ].join("\n"),
+
+  const lines = [
+    "## 再試行コンテキスト(Supervisor による機械的情報)",
+    "",
+    `- これは ${task.retries + 1} 回目の試行(過去 ${task.retries} 回失敗、上限 ${config.maxRetries})`,
+    `- 直前の失敗: ${task.note ?? "記録なし"}`,
+    "- 上記タスク本文の「## 試行履歴」を読み、前回と同じ戦略の単純リトライは避けること",
+    "- ただし試行履歴のうち「未検証の推測」は前回セッションの観察であり誤りうる。git log / git status / " +
+      "このリポジトリの検証コマンドで現状を確認し、記録と現状が食い違う場合は現状を優先して方針を決めること",
+    "- 前回の作業が既にコミットされている可能性がある。再実装を始める前に必ず git log を確認すること",
   ];
+
+  const lastKind = lastAttemptFailureKind(task.body);
+  const phrase = lastKind === null ? undefined : OVERSIZED_FAILURE_KIND_PHRASE[lastKind];
+  if (phrase !== undefined) {
+    lines.push(
+      `- 直前の失敗は${phrase}である。1 セッションの持ち時間・ターン数の上限は再試行しても増えないため、` +
+        "同じ範囲を同じやり方でもう一度やれば同じところで打ち切られる。まずこのタスクが 1 セッションに収まる大きさかを見直すこと",
+      "- 収まらないと判断したら、最後までやり切ろうとしないこと。1 ラウンド(例: 調査 → 一部の実装 → 機械的検証)で区切り、" +
+        "そこまでの成果をコミットし、残りを新しいタスクとして `.agent/tasks/` に登録し、このタスクの `## 試行履歴` に" +
+        "到達点と続きの手掛かりを書いてからセッションを終える",
+      "- 範囲を絞って終えることは失敗ではない。上限に達して打ち切られるより、確実に前進した分を残すほうが良い",
+    );
+  }
+
+  return [lines.join("\n")];
 }
 
 /** セッション開始時刻とタイムアウトから、強制終了される締め切り時刻(ISO 8601)を計算する */
@@ -2948,21 +3028,83 @@ function reproduceMergeConflict(worktree: string, opts: { root?: string } = {}):
   }
 }
 
-/** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する。戻り値はパッチの絶対パスと対象パス */
+/** 未コミット差分の退避結果。失敗(failed)を null と区別できないと worktree を消してしまう */
+type SalvageOutcome =
+  | { kind: "none" }
+  | { kind: "saved"; patchFile: string; paths: string[] }
+  | { kind: "failed"; error: string };
+
+/** 退避に失敗して残した worktree の記録(status の「要対応」に出す) */
+export interface SalvageFailure {
+  taskId: string;
+  worktree: string;
+  at: string; // ISO 8601
+  error: string;
+}
+
+/**
+ * 退避失敗を state ディレクトリへ記録する(`<taskId>.json`。同じタスクの再発は上書きでよい)。
+ * 書き込み自体が失敗しても例外を投げない。退避失敗の記録でさらに落ちて worktree 削除の判断まで
+ * 壊すことがないようにするため
+ */
+function recordSalvageFailure(root: string, rec: SalvageFailure): void {
+  try {
+    const dir = createPaths(root).salvageFailuresDir;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${rec.taskId}.json`), JSON.stringify(rec));
+  } catch (err) {
+    log(`警告: ${rec.taskId} の退避失敗記録の書き込みに失敗した: ${String(err)}`);
+  }
+}
+
+/**
+ * 退避に失敗して残っている worktree の一覧(status 表示用)。
+ * 記録された worktree が既に存在しない(人間が片付けた)エントリはマーカーファイルごと
+ * 削除して結果から除く(自己清掃: status から自然に消える)。taskId 昇順。
+ * 失敗は握りつぶして空配列を返す(status を例外で落とさないため)。
+ */
+export function loadSalvageFailures(root: string = repoPaths().root): SalvageFailure[] {
+  try {
+    const dir = createPaths(root).salvageFailuresDir;
+    if (!fs.existsSync(dir)) return [];
+    const result: SalvageFailure[] = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(dir, name);
+      try {
+        const rec = JSON.parse(fs.readFileSync(file, "utf8")) as SalvageFailure;
+        if (!fs.existsSync(rec.worktree)) {
+          fs.rmSync(file, { force: true });
+          continue;
+        }
+        result.push(rec);
+      } catch {
+        // 壊れたファイルはスキップする
+      }
+    }
+    return result.sort((a, b) => a.taskId.localeCompare(b.taskId));
+  } catch {
+    return [];
+  }
+}
+
+/** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する */
 function salvageWorktreeDiff(
   taskId: string,
   worktree: string,
   at: Date,
   root: string = repoPaths().root,
-): { patchFile: string; paths: string[] } | null {
+): SalvageOutcome {
   try {
     const patchFile = path.join(patchesDirOf(root), patchFileName(taskId, at));
     const paths = salvagePatch(worktree, patchFile);
-    if (paths === null) return null;
-    return { patchFile, paths };
+    if (paths === null) return { kind: "none" };
+    return { kind: "saved", patchFile, paths };
   } catch (err) {
-    log(`警告: ${taskId} の未コミット差分の退避に失敗した: ${String(err)}`);
-    return null;
+    const error = String(err);
+    log(`警告: ${taskId} の未コミット差分の退避に失敗した: ${error}`);
+    recordSalvageFailure(root, { taskId, worktree, at: at.toISOString(), error });
+    return { kind: "failed", error };
   }
 }
 
@@ -2974,11 +3116,16 @@ function salvageWorktreeDiff(
 function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: Date): string[] {
   if (!fs.existsSync(worktree)) return [];
   const lines: string[] = [];
-  const salvaged = salvageWorktreeDiff(taskId, worktree, at);
-  if (salvaged !== null) {
+  const salvage = salvageWorktreeDiff(taskId, worktree, at);
+  if (salvage.kind === "saved") {
     lines.push(
-      `- 未コミット差分を \`${salvaged.patchFile}\` へ退避した(${formatDiffPathList(salvaged.paths)})。復元は \`git apply ${salvaged.patchFile}\``,
+      `- 未コミット差分を \`${salvage.patchFile}\` へ退避した(${formatDiffPathList(salvage.paths)})。復元は \`git apply ${salvage.patchFile}\``,
     );
+  } else if (salvage.kind === "failed") {
+    lines.push(
+      `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
+    );
+    return lines;
   }
   try {
     removeWorktree(repoPaths().root, worktree);
@@ -3115,9 +3262,14 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
           log(`error: ${taskId}: ${describeMergeOutcome(outcome)}`);
         } else if (outcome.result !== "blocked") {
           // blocked は main 側でマージを開始すらできていない状態。worktree に手を触れず次の試行へ回す
-          leftovers = salvageWorktreeDiff(taskId, worktree, now);
-          removeWorktree(repoPaths().root, worktree);
-          if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+          const salvage = salvageWorktreeDiff(taskId, worktree, now);
+          if (salvage.kind === "saved") leftovers = salvage;
+          if (salvage.kind === "failed") {
+            log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+          } else {
+            removeWorktree(repoPaths().root, worktree);
+            if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+          }
         }
       }
     }
@@ -3459,9 +3611,10 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
       const state = loadState();
       const runningCount = state.runningSessions.length;
 
-      // ローテーションはセッションが走っていない周回だけ行う(走行中のセッションが参照して
-      // いるファイルを動かさないため)。退避パッチの掃除も同じ間隔で行う(git 管理外のパスなので
-      // 掃除自体に .agent/ の差分は生じない)。
+      // この周回はセッションが 0 なので、main の git 自己修復とあわせて記録の片付け
+      // (ローテーション + 退避パッチの掃除)も行う。片付けはこれと「探索セッションの起動直前」
+      // の 2 箇所が契機で、タスクが途切れず runningCount === 0 の周回が来ない状況でも記録が
+      // 溜まり続けないようにしている。
       if (runningCount === 0) {
         // main が git 操作(マージ等)の途中で固まっていないかを確認し、可能なら自己修復する。
         // wedged(F3)や、想定していない経路で残ったマージが起きても、次の周回でここが拾って
@@ -3480,8 +3633,7 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
           }
         }
 
-        runRotate();
-        prunePatches();
+        runHousekeeping(state);
       }
 
       // 停止指示はシグナルハンドラがメモリ上で進めるだけなので、state.json への写し
@@ -3622,7 +3774,14 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
           action.trigger === "idle"
             ? "実行可能なタスクがなく、前回探索以降に main / 入力が変化したため、次の作業を探す"
             : "前回探索から一定時間が経過し、main / 入力が変化したため、タスク起動前に全体を見直す";
+        // 探索セッションの起動直前にも記録を片付ける。走行中セッションがあっても記録が
+        // 溜まり続けないよう、「セッションが 0 の周回」に加えてここも契機にしている。
+        // この区間は mainLoop の同期区間でマージ・自動コミットが走らないため安全に動かせ、
+        // 探索セッション自身も整理後の記録を読める。
+        runHousekeeping(state);
+        commitAgentDir();
         // 探索セッションの前後で main の `.agent/tasks/` の ID 集合を比べ、新規登録の有無を見る。
+        // 片付けでアーカイブされた分を新規登録と誤認しないよう、基準は片付けの後で取る。
         // 並走するタスクセッションは専用 worktree で動き、その成果が main へ現れるのは
         // ループ先頭の drainCompletedSessions()(同期実行)による自動マージ時なので、
         // この await の区間で main にタスクが増えるのは探索セッション自身の仕業に限られる。
@@ -4750,6 +4909,8 @@ export interface StatusData {
   humanReview: { openBlock: HrEntry[]; openReview: HrEntry[]; answered: HrEntry[] };
   overview: Overview | null;
   pendingConflicts: PendingConflicts;
+  /** 未コミット差分の退避に失敗して残された worktree */
+  salvageFailures: SalvageFailure[];
   permissionDenials: PermissionDenialSummary;
   /** 未承認(未アーカイブ)の決定 */
   pendingDecisions: PendingDecisions;
@@ -4812,6 +4973,7 @@ export function collectStatusData(now: Date): StatusData {
     // config が読めなければ既定値にフォールバック
   }
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
+  const salvageFailures = loadSalvageFailures(repoPaths().root);
   const permissionDenials = summarizePermissionDenials(loadPermissionDenials(), now);
   const pendingDecisions = loadPendingDecisions();
 
@@ -4857,6 +5019,7 @@ export function collectStatusData(now: Date): StatusData {
     humanReview,
     overview,
     pendingConflicts,
+    salvageFailures,
     permissionDenials,
     pendingDecisions,
     nextRunnableTasks: next,
@@ -4955,6 +5118,12 @@ export function formatStatus(): string {
     "退避された衝突ブランチ — 内容を確認し、統合するか破棄するかを判断:",
     pending.parkedBranches,
   );
+  section(
+    "要対応",
+    "未コミット差分の退避に失敗して残した worktree — 中の差分を回収したら " +
+      "`git worktree remove --force <path>` と `git branch -D agent/<タスクID>` で片付けてよい:",
+    data.salvageFailures.map((f) => `${f.taskId}: ${f.worktree}\n      ${f.at} の退避が失敗: ${f.error}`),
+  );
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
     "確認推奨",
@@ -4974,6 +5143,7 @@ export function formatStatus(): string {
       blocked.length +
       pending.worktrees.length +
       pending.parkedBranches.length +
+      data.salvageFailures.length +
       data.pendingDecisions.count +
       data.invalidTaskFiles.length ===
     0

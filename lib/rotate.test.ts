@@ -47,6 +47,53 @@ describe("rotate", () => {
     expect(fs.existsSync(path.join(tasksDir, "T-002.md"))).toBe(true);
   });
 
+  it("excludeTaskIds に含まれる completed タスクは移動されず、含まれないものだけ移動される", () => {
+    const tasksDir = path.join(agentDir, "tasks");
+    writeFile(tasksDir, "T-001.md", fixture("completed"));
+    writeFile(tasksDir, "T-002.md", fixture("completed"));
+
+    const result = rotate(agentDir, { excludeTaskIds: new Set(["T-001"]) });
+
+    expect(result.tasks).toBe(1);
+    expect(fs.existsSync(path.join(tasksDir, "T-001.md"))).toBe(true);
+    expect(fs.existsSync(path.join(agentDir, "archive", "tasks", "T-001.md"))).toBe(false);
+    expect(fs.existsSync(path.join(tasksDir, "T-002.md"))).toBe(false);
+    expect(fs.existsSync(path.join(agentDir, "archive", "tasks", "T-002.md"))).toBe(true);
+  });
+
+  it("excludeTaskIds を渡しても decisions / human-review の挙動は変わらない", () => {
+    const hrDir = path.join(agentDir, "human-review");
+    writeFile(hrDir, "HR-20260812-01.md", fixture("closed"));
+    const decisionsDir = path.join(agentDir, "decisions");
+    writeFile(decisionsDir, "D-20260101-0000-a.md", decisionFixture("判断 A"));
+    writeFile(
+      decisionsDir,
+      "index.md",
+      [
+        "# 決定インデックス",
+        "",
+        "チェック `[x]` を付けた決定は、次回ローテーションでアーカイブされる。",
+        "",
+        "- [x] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A",
+        "",
+      ].join("\n"),
+    );
+
+    // excludeTaskIds に human-review / decisions の ID を含めても無視される(対象は tasks のみ)
+    const result = rotate(agentDir, {
+      excludeTaskIds: new Set(["HR-20260812-01", "D-20260101-0000-a"]),
+    });
+
+    expect(result.humanReview).toBe(1);
+    expect(fs.existsSync(path.join(agentDir, "archive", "human-review", "HR-20260812-01.md"))).toBe(
+      true,
+    );
+    expect(result.decisions).toBe(1);
+    expect(fs.existsSync(path.join(agentDir, "archive", "decisions", "D-20260101-0000-a.md"))).toBe(
+      true,
+    );
+  });
+
   it("closed な human-review だけが移動する", () => {
     const hrDir = path.join(agentDir, "human-review");
     writeFile(hrDir, "HR-20260812-01.md", fixture("closed"));
