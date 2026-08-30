@@ -153,6 +153,18 @@ describe("worktree-create hook", () => {
     expect(fs.readFileSync(path.join(linked, "marker.txt"), "utf8")).toBe("x");
   });
 
+  it("CLAUDE_PROJECT_DIR も input.cwd も無いと worktree/ブランチを作らずに exit 1 で失敗する(fail-closed)", () => {
+    // 子プロセスの実行時 cwd は repo に固定しているが、これは spawnSync の cwd であって
+    // 「対象リポジトリ」の指定ではない。process.cwd() へフォールバックしていた旧実装なら
+    // ここでも repo に worktree を作れてしまっていたが、fail-closed 化により拒否されるはず。
+    const result = runHook({ cwd: repo, input: { name: "T-004" } });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("CLAUDE_PROJECT_DIR");
+    expect(result.stderr).toContain("cwd");
+    expect(fs.readdirSync(worktreeDir)).toEqual([]);
+  });
+
   it("CLAUDE_PROJECT_DIR が無くても入力の cwd から起点を解決できる(startDir のフォールバック)", () => {
     const result = runHook({ cwd: repo, input: { name: "T-002", cwd: repo } });
 
