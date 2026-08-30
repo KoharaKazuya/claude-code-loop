@@ -1,7 +1,8 @@
 ---
 title: "status のスヌーズ表示テストが実時刻依存で 2026-09-01 に壊れる"
-status: ready
+status: completed
 priority: 3
+note: "formatStatus(NOW) に修正。時刻を 2027-06-15 に偽装した全 35 ファイルのテスト実行でも全件通ることを実測で確認"
 dependencies: []
 conflicts: []
 retries: 0

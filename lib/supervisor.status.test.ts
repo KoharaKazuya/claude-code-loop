@@ -293,7 +293,7 @@ describe("collectStatusData / formatStatus", () => {
       snoozeUntil: "2026-09-02T00:00:00.000Z",
     });
 
-    const out = formatStatus();
+    const out = formatStatus(NOW);
     expect(out).toContain("note: 外部 API のレート制限解除待ち");
     expect(out).toContain("T-snoozed-plain");
     expect(out).toContain("[snoozed until");
