@@ -4682,20 +4682,86 @@ export function runningSessionLines(
   return lines;
 }
 
-/** metrics.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
-function loadMetrics(): SessionMetrics[] {
-  if (!fs.existsSync(repoPaths().metricsPath)) return [];
-  const lines = fs
-    .readFileSync(repoPaths().metricsPath, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "");
+/**
+ * JSONL の実行ログ(metrics / permission-denials)を status 表示のために読む量の上限。
+ * 記録自体は上限なく残す方針のままで、読む量だけを絞る(古い行は表示の集計に入らない)。
+ * このリポジトリでの実測は metrics が 1 行約 540 バイト・permission-denials が約 320 バイト。
+ * 512 KiB / 1000 行はおよそ 1000 セッション分にあたり、1 日 10 セッション回しても 3 か月以上を
+ * 覆う。ccloop watch は既定 1 秒ごとに読み直すため、この程度に抑えて描き直しの負荷を一定にする。
+ */
+const LOG_READ_MAX_BYTES = 512 * 1024;
+const LOG_READ_MAX_ENTRIES = 1000;
+
+/** 末尾読みの結果。truncated が true なら古い行を読み飛ばしている */
+export interface TailReadResult {
+  lines: string[];
+  truncated: boolean;
+}
+
+/**
+ * JSONL ファイルの末尾だけを読む。ファイルが無ければ空扱い。ファイルサイズが maxBytes 以下なら
+ * 全体を読み、超えていれば末尾 maxBytes バイトだけを fs.openSync + fs.readSync(position 指定)で
+ * 読む。この場合、先頭の行は途中で切れている可能性がある(UTF-8 の途中で切れた不正バイトも
+ * 含めて)ため必ず捨てて truncated = true にする。さらに行数が maxEntries を超えていれば末尾
+ * maxEntries 行だけに絞り、truncated = true にする。読み取りに失敗した場合(権限エラー等)は
+ * 例外を投げず空扱いにする(status 表示を例外で落とさない既存方針に合わせる)。
+ */
+export function readTailLines(filePath: string, maxBytes: number, maxEntries: number): TailReadResult {
+  try {
+    if (!fs.existsSync(filePath)) return { lines: [], truncated: false };
+    const size = fs.statSync(filePath).size;
+
+    let text: string;
+    let truncated = false;
+    if (size <= maxBytes) {
+      text = fs.readFileSync(filePath, "utf8");
+    } else {
+      const readSize = maxBytes;
+      const position = size - readSize;
+      const buf = Buffer.alloc(readSize);
+      const fd = fs.openSync(filePath, "r");
+      let bytesRead: number;
+      try {
+        bytesRead = fs.readSync(fd, buf, 0, readSize, position);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // 要求より少なく読めた場合、buf の残りは 0 埋めのままなので実際に読めた分だけを使う
+      // (末尾 = 最新の行が NUL 混じりになって JSON.parse に失敗するのを避ける)
+      text = buf.subarray(0, bytesRead).toString("utf8");
+      truncated = true;
+    }
+
+    let lines = text.split("\n");
+    if (truncated) {
+      // 先頭行は途中で切れている可能性があるため常に捨てる
+      lines = lines.slice(1);
+    }
+    lines = lines.filter((l) => l.trim() !== "");
+
+    if (lines.length > maxEntries) {
+      lines = lines.slice(lines.length - maxEntries);
+      truncated = true;
+    }
+
+    return { lines, truncated };
+  } catch {
+    return { lines: [], truncated: false };
+  }
+}
+
+/** metrics.jsonl の末尾を読む。ファイルが無ければ空、壊れた行はスキップして続行する */
+export function loadMetrics(
+  metricsPath: string = repoPaths().metricsPath,
+): { entries: SessionMetrics[]; truncated: boolean } {
+  const { lines, truncated } = readTailLines(metricsPath, LOG_READ_MAX_BYTES, LOG_READ_MAX_ENTRIES);
   const entries: SessionMetrics[] = [];
   for (const line of lines) {
     try {
       entries.push(JSON.parse(line) as SessionMetrics);
     } catch {}
   }
-  return entries;
+  return { entries, truncated };
 }
 
 /** .agent/OVERVIEW.md の内容。探索セッションが GOAL とタスク全体を突き合わせて更新する */
@@ -4787,21 +4853,19 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   return { worktrees, parkedBranches };
 }
 
-/** permission-denials.jsonl の各行を読む。ファイルが無ければ空配列、壊れた行はスキップして続行する */
-export function loadPermissionDenials(stateDir: string = repoPaths().stateDir): PermissionDenialRecord[] {
+/** permission-denials.jsonl の末尾を読む。ファイルが無ければ空、壊れた行はスキップして続行する */
+export function loadPermissionDenials(
+  stateDir: string = repoPaths().stateDir,
+): { entries: PermissionDenialRecord[]; truncated: boolean } {
   const p = permissionDenialsPathOf(stateDir);
-  if (!fs.existsSync(p)) return [];
-  const lines = fs
-    .readFileSync(p, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "");
+  const { lines, truncated } = readTailLines(p, LOG_READ_MAX_BYTES, LOG_READ_MAX_ENTRIES);
   const entries: PermissionDenialRecord[] = [];
   for (const line of lines) {
     try {
       entries.push(JSON.parse(line) as PermissionDenialRecord);
     } catch {}
   }
-  return entries;
+  return { entries, truncated };
 }
 
 /** unicode-safe に max 文字で切り、切った場合は "…" を付ける(stderrTail と同じ方式) */
@@ -4843,6 +4907,27 @@ export interface PermissionDenialSummary {
   hiddenPatterns: number;
   /** 畳まれたパターンの合計件数 */
   hiddenCount: number;
+  /** 読み込み上限で古い記録を読み飛ばしており、ウィンドウ内の件数が実際より少ない可能性がある */
+  partialWindow: boolean;
+}
+
+/**
+ * entries が読み込み上限で末尾読みされていた(truncated)とき、読み飛ばした側にウィンドウ内の
+ * 記録が残っている可能性があるかを判定する。entries の中で解釈できる最古の timestamp が
+ * cutoff 以降なら「読み飛ばした側もまだウィンドウ内かもしれない」ので true。最古が cutoff より
+ * 古ければウィンドウ内は entries だけで全部読めているので false。timestamp を 1 つも
+ * 解釈できない場合は安全側に倒して true。
+ */
+function hasPartialWindow(entries: PermissionDenialRecord[], cutoffMs: number, truncated: boolean): boolean {
+  if (!truncated) return false;
+  let oldestMs: number | null = null;
+  for (const e of entries) {
+    const t = Date.parse(e.timestamp);
+    if (Number.isNaN(t)) continue;
+    if (oldestMs === null || t < oldestMs) oldestMs = t;
+  }
+  if (oldestMs === null) return true;
+  return oldestMs >= cutoffMs;
 }
 
 /**
@@ -4852,7 +4937,7 @@ export interface PermissionDenialSummary {
 export function summarizePermissionDenials(
   entries: PermissionDenialRecord[],
   now: Date,
-  opts?: { windowMs?: number; maxRows?: number },
+  opts?: { windowMs?: number; maxRows?: number; truncated?: boolean },
 ): PermissionDenialSummary {
   const windowMs = opts?.windowMs ?? 7 * 24 * 60 * 60 * 1000;
   const maxRows = opts?.maxRows ?? 5;
@@ -4895,6 +4980,7 @@ export function summarizePermissionDenials(
     rows,
     hiddenPatterns: hidden.length,
     hiddenCount: hidden.reduce((sum, r) => sum + r.count, 0),
+    partialWindow: hasPartialWindow(entries, cutoff, opts?.truncated === true),
   };
 }
 
@@ -4910,6 +4996,9 @@ export function permissionDenialLines(summary: PermissionDenialSummary): string[
   });
   if (summary.hiddenPatterns > 0) {
     lines.push(`…他 ${summary.hiddenPatterns} パターン ${summary.hiddenCount} 件`);
+  }
+  if (summary.partialWindow) {
+    lines.push("※ 記録が多いため直近ぶんだけを読んで集計している(これより古い拒否は件数に入っていない)");
   }
   lines.push(
     "→ 許可するなら .agent/claude-settings.json の permissions.allow に追記(次に起動するセッションから有効。deny が allow に優先)",
@@ -4994,6 +5083,8 @@ export interface StatusData {
   nextRunnableTasks: Task[];
   snoozedTasks: Task[];
   metrics: SessionMetrics[];
+  /** 読み込み上限で metrics.jsonl の古い記録を読み飛ばしているか(累計 cost が直近ぶんの集計になる) */
+  metricsTruncated: boolean;
   /** 人間の入力(GOAL.md / answered な Human Review)が未取り込みか */
   inputsChanged: boolean;
   taskTimeoutMs: number;
@@ -5054,7 +5145,10 @@ export function collectStatusData(now: Date): StatusData {
   }
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
   const salvageFailures = loadSalvageFailures(repoPaths().root);
-  const permissionDenials = summarizePermissionDenials(loadPermissionDenials(), now);
+  const { entries: permissionDenialEntries, truncated: permissionDenialsTruncated } = loadPermissionDenials();
+  const permissionDenials = summarizePermissionDenials(permissionDenialEntries, now, {
+    truncated: permissionDenialsTruncated,
+  });
   const pendingDecisions = loadPendingDecisions();
 
   const runningTaskIds = new Set(
@@ -5063,7 +5157,7 @@ export function collectStatusData(now: Date): StatusData {
   const next = nextRunnableTasks(tasks, runningTaskIds, 3);
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
   const inputsChanged = isInputsChanged(state.inputsHash, hashInputs());
-  const metrics = loadMetrics();
+  const { entries: metrics, truncated: metricsTruncated } = loadMetrics();
   // インストール先のハッシュは 2 つの判定(起動時からの陳腐化・リポジトリとの乖離)で共用する。
   // 走査対象は同一ディレクトリなので、watch の毎秒ポーリングで二重に走らせない
   const installedSourceHash = supervisorSourceHash();
@@ -5112,6 +5206,7 @@ export function collectStatusData(now: Date): StatusData {
     nextRunnableTasks: next,
     snoozedTasks: snoozed,
     metrics,
+    metricsTruncated,
     inputsChanged,
     taskTimeoutMs,
     maxSessions,
@@ -5121,6 +5216,15 @@ export function collectStatusData(now: Date): StatusData {
     invalidTaskFiles,
     missingDependencies,
   };
+}
+
+/** 累計 cost 行を作る。truncated なら「直近ぶんだけの集計」であることを明示する */
+export function metricsTotalLine(metrics: SessionMetrics[], truncated: boolean): string {
+  const totalCost = metrics.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
+  const scope = truncated
+    ? `直近 ${metrics.length} セッション分・サブエージェント込み。これより古い記録は集計に入っていない`
+    : `終了した ${metrics.length} セッション分・サブエージェント込み`;
+  return `累計: cost=$${totalCost.toFixed(4)}(${scope})`;
 }
 
 /**
@@ -5329,12 +5433,11 @@ export function formatStatus(): string {
   const metrics = data.metrics;
   if (metrics.length > 0) {
     const last = metrics[metrics.length - 1]!;
-    const totalCost = metrics.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
     const fmtCost = (cost: number | undefined): string => (cost !== undefined ? `$${cost.toFixed(4)}` : "不明");
     push(
       `直近セッション: cost=${fmtCost(last.costUsd)} / turns=${last.numTurns ?? "不明"}${last.abnormal ? ` / 異常終了: ${last.abnormal}` : ""}`,
     );
-    push(`累計: cost=${fmtCost(totalCost)}(終了した ${metrics.length} セッション分・サブエージェント込み)`);
+    push(metricsTotalLine(metrics, data.metricsTruncated));
   }
   push("\n確認・介入の手順: README.md の「人間の関与」");
   return out.join("\n");

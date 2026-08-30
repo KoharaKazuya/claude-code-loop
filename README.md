@@ -188,6 +188,9 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
    `metrics.jsonl`。1 セッション 1 行の JSON Lines)に `sessionId` が入っている。`taskId` で絞り込むと
    そのタスクの試行が時系列に並ぶので、最後の行が直近の試行。`sessionId` が無い行は結果 JSON を
    得られずに終わったセッション(タイムアウトや起動失敗)で、原因は同じ行の `abnormal` に出る。
+   `metrics` 配列は表示が重くならないよう直近の記録までしか含まない(`metricsTruncated` が
+   `true` のときは打ち切られている)。それより古いセッションの `sessionId` が要る場合は、
+   消えていない `metrics.jsonl` を直接開く。
 2. **セッションが動いたディレクトリを決める。** タスクセッションは worktree(既定では
    `<状態ディレクトリ>/worktrees/<タスクID>`)、探索・triage セッションはリポジトリ本体で動く。
    状態ディレクトリの絶対パスは `ccloop doctor` の「state ディレクトリ」の行に出る。

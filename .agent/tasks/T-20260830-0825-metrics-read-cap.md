@@ -1,9 +1,10 @@
 ---
 title: "計測ログと権限拒否記録の読み込み量に上限を設ける"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "末尾 512 KiB / 1000 行の上限を実装。打ち切り時は集計の対象範囲を表示に明記する"
 createdAt: 2026-08-30T08:25:02.024Z
 ---
 
