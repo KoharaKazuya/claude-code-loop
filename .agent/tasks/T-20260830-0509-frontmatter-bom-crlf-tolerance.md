@@ -1,8 +1,9 @@
 ---
 title: "BOM/CRLF の記録ファイルが frontmatter 未パースになりタスクが消える"
-status: ready
+status: completed
 priority: 2
 retries: 0
+note: "parseFrontmatter 冒頭で BOM 除去と CRLF→LF 正規化。typecheck/lint/test(964 件)通過"
 createdAt: 2026-08-30T05:09:36.602Z
 ---
 
