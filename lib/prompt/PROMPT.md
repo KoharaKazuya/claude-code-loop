@@ -31,7 +31,8 @@ main への統合はセッション終了後に ccloop が自動マージで行�
 
 探索セッションはリポジトリ本体で動くため、この節は当てはまらない。ただし探索は他のタスクセッションの
 完了を待たずに並走することがある。走行中のタスクがある場合はプロンプトにその一覧が注入されるので、
-該当タスクの `.agent/tasks/<id>.md`(priority・dependencies・status のいずれも)は編集しないこと。
+該当タスクの `.agent/tasks/<id>.md`(priority・dependencies・conflicts・status のいずれも)は
+編集しないこと。
 
 ## 絶対ルール
 
@@ -259,6 +260,7 @@ title: "短いタイトル"
 status: ready
 priority: 3
 dependencies: [T-20260101-0000-other-task]
+conflicts: [T-20260101-0000-same-file-task]
 retries: 0
 model: claude-fable-5
 note: "(任意)1 行の進捗・結果・ブロック理由"
@@ -272,6 +274,11 @@ createdAt: 2026-01-01T00:00:00.000Z
 - `status` は `ready | blocked | completed | failed`。実行中であることはファイルには現れない
   (どのタスクにセッションが走っているかは ccloop が別途管理している)。
 - `priority` は 1 が最高。新規タスクは通常 3。
+- `dependencies` は順序の制約(そのタスクが完了するまで実行されない)。`conflicts` は同時実行だけの
+  制約(順序はどちらでもよいが同時には走らない)で、同じファイルを触るタスク同士のマージ衝突を
+  減らすために使う。関係は対称なので片方に書けば足り、存在しない ID は無視される。**衝突回避の
+  ためだけに `dependencies` を張らない**(依存は本当に順序が必要なときに使う)。付けるのは主に
+  探索セッションの役目。
 - `model` は任意。特に難解と分かっているタスクのみ `claude-fable-5` を指定してよい。
 - `snoozeUntil` は任意。ISO 8601 の日時文字列を書くと、その時刻まで ccloop がそのタスクを
   選ばない。用途は人間のファイル記入待ちなど、今実行しても空振りするタスク。セッション自身が

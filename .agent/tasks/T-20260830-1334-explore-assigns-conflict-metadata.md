@@ -1,6 +1,6 @@
 ---
 title: "探索セッションが競合しそうなタスクに conflicts を付けるようにする"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-1334-task-conflict-metadata-scheduling]
 retries: 0
