@@ -1,6 +1,6 @@
 ---
 title: "ccloop list で各タスクの conflicts が見えるようにする"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 conflicts: [T-20260830-1334-explore-assigns-conflict-metadata]
