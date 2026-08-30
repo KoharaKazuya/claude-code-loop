@@ -1,9 +1,10 @@
 ---
 title: "ループを裏で動かすことを勧める記述を改め、起動した画面を開いたままにする使い方に揃える"
-status: ready
+status: completed
 priority: 4
 dependencies: []
 retries: 0
+note: "lib/help.ts の 2 箇所からバックグラウンド起動の推奨を削り、README にも起動端末を開いたままにする旨を追記した"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
