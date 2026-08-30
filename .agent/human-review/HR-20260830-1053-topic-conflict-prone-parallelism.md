@@ -1,7 +1,8 @@
 ---
 title: "同じファイルを取り合う並列実行を減らす仕組みを入れるか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-1334-task-conflict-metadata-scheduling, T-20260830-1334-explore-assigns-conflict-metadata]
 createdAt: 2026-08-30T10:53:39.546Z
 ---
 

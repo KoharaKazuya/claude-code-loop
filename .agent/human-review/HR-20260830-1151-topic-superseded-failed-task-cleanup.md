@@ -1,6 +1,6 @@
 ---
 title: "他の作業が肩代わりして終わった失敗タスクを、ループ側で片付けてよいか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T11:51:08.359Z
 ---

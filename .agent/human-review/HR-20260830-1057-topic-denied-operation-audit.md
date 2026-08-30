@@ -1,6 +1,6 @@
 ---
 title: "禁止した操作をエージェントが試みた事実を残すか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T10:57:26.096Z
 ---

@@ -1,6 +1,6 @@
 ---
 title: "ネタが尽きてきたとき、次の作業探しの間隔を自動で空けるか"
-status: open
+status: closed
 importance: BLOCK
 createdAt: 2026-08-30T11:43:20.000Z
 ---
