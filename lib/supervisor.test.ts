@@ -1813,6 +1813,7 @@ describe("classifyHumanReview", () => {
       importance: "REVIEW",
       raw: "",
       body: "## 回答\n\n",
+      summary: "",
       ...overrides,
     };
   }
