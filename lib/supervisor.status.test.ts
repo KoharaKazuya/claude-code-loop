@@ -314,19 +314,19 @@ describe("collectStatusData / formatStatus", () => {
     });
 
     it("自ホスト・自 PID・新しい心拍なら「動いています」になる", () => {
-      // formatStatus() は内部で new Date() を使うため、固定の NOW ではなく実時刻に合わせて心拍を書く
+      // formatStatus(NOW) で固定時刻を渡すため、心拍も NOW を基準に書けば実時刻に依存しない
       writeRunner({
         pid: process.pid,
-        startedAt: new Date().toISOString(),
-        heartbeatAt: new Date().toISOString(),
+        startedAt: NOW.toISOString(),
+        heartbeatAt: NOW.toISOString(),
         host: os.hostname(),
         heartbeatIntervalMs: 5_000,
       });
 
-      const data = collectStatusData(new Date());
+      const data = collectStatusData(NOW);
       expect(data.loopLiveness.status).toBe("running");
 
-      const out = formatStatus();
+      const out = formatStatus(NOW);
       expect(out).toContain("ループ本体: 動いています");
     });
 
@@ -635,14 +635,9 @@ describe("collectStatusData / formatStatus", () => {
   });
 
   describe("次に実行予定のタスクが無いときの待ち理由表示", () => {
-    // 実時刻から hours 時間後の ISO 文字列。固定日時だと経過とともにスヌーズが解除されて壊れる
-    const futureIso = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-
     it("next が空でスヌーズ待ちのみのとき「なし(スヌーズ待ち N 件、最短解除 <日時>)」と表示し、最短解除は複数中で最も早い時刻になる", () => {
-      // formatStatus() は内部で new Date() を使うため、固定日時を書くとその日時を過ぎた時点で
-      // スヌーズが解除されテストが壊れる。実時刻からの相対で未来の解除時刻を作る
-      const early = futureIso(24);
-      const late = futureIso(48);
+      const early = "2026-08-31T00:00:00.000Z";
+      const late = "2026-09-01T00:00:00.000Z";
       writeTask("T-snoozed-late", { status: "ready", title: "スヌーズ中(解除が遅い方)", snoozeUntil: late });
       writeTask("T-snoozed-early", { status: "ready", title: "スヌーズ中(解除が早い方)", snoozeUntil: early });
 
@@ -650,7 +645,7 @@ describe("collectStatusData / formatStatus", () => {
       expect(data.nextRunnableTasks).toEqual([]);
       expect(data.snoozedTasks.map((t) => t.id)).toEqual(["T-snoozed-early", "T-snoozed-late"]);
 
-      const out = formatStatus();
+      const out = formatStatus(NOW);
       expect(out).toContain(`なし(スヌーズ待ち 2 件、最短解除 ${early})`);
     });
 
@@ -661,7 +656,7 @@ describe("collectStatusData / formatStatus", () => {
         title: "競合するタスク",
         conflicts: ["T-running"],
       });
-      const snoozeUntil = futureIso(24);
+      const snoozeUntil = "2026-08-31T00:00:00.000Z";
       writeTask("T-snoozed", { status: "ready", title: "スヌーズ中のタスク", snoozeUntil });
       fs.writeFileSync(
         statePathOf(dir),
@@ -675,7 +670,7 @@ describe("collectStatusData / formatStatus", () => {
       expect(data.conflictHeldTotal).toBe(1);
       expect(data.snoozedTasks.map((t) => t.id)).toEqual(["T-snoozed"]);
 
-      const out = formatStatus();
+      const out = formatStatus(NOW);
       expect(out).toContain(`なし(競合待ち 1 件、スヌーズ待ち 1 件、最短解除 ${snoozeUntil})`);
     });
   });
