@@ -655,8 +655,13 @@ let warnedGitInProgress = false;
  * pathspec 付き commit(`-- .agent`)は gitignore 済みファイルを再ステージする事故を
  * 招くため使わない。`git add -A -- .agent` でステージした後、ステージ内容を確認し、
  * .agent/ 以外のパスが混ざっていれば(人間が並行でステージ中の作業がある)コミットを
- * スキップしてパススペックなしで commit する。失敗しても Supervisor 本体は止めず、
- * 警告ログのみ残す。
+ * スキップする。ただし add の後に初めて検査すると、スキップする場合でも自分が加えた
+ * .agent 分のステージだけが index に残ってしまい、人間が次に git commit したときに
+ * .agent/ の自動生成物を巻き込んでしまう。そのため add の前にも同じ検査を行い、
+ * 既に .agent 以外がステージ済みなら add 自体を行わずに抜ける(この時点ではインデックス
+ * を一切変更していないため戻す処理は不要)。add の後の再検査は add による巻き込みに
+ * 対する保険で、通常は起こらないが、該当したら自分が加えた分だけ index から戻す。
+ * 失敗しても Supervisor 本体は止めず、警告ログのみ残す。
  *
  * message を省略するとステージ内容から subject を生成する(何が変わったか分からない
  * 定型コミットが履歴を埋めるのを避けるため)。呼び出し側が文脈を持っている場合
@@ -673,18 +678,36 @@ export function commitAgentDir(message?: string, root: string = repoPaths().root
   try {
     const status = execFileSync("git", ["status", "--porcelain", "--", ".agent"], { cwd: root }).toString();
     if (status.trim() === "") return;
-    execFileSync("git", ["add", "-A", "--", ".agent"], { cwd: root });
-    const staged = parseNameStatus(
+
+    const before = parseNameStatus(
       execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z", "HEAD"], { cwd: root }).toString(),
     );
-    if (staged.length === 0) return;
     // rename は移動元も検査する(`docs/x.md` → `.agent/x.md` のような、人間の作業を
     // .agent/ へ引き込む形のステージを見逃さないため)
-    if (staged.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
+    if (before.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
       log("警告: .agent 以外の変更がステージされているため自動コミットをスキップする(人間の並行作業を保護)");
       return;
     }
-    const subject = message ?? safeSummarize(staged);
+
+    execFileSync("git", ["add", "-A", "--", ".agent"], { cwd: root });
+    const after = parseNameStatus(
+      execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z", "HEAD"], { cwd: root }).toString(),
+    );
+    if (after.length === 0) return;
+    if (after.some((c) => !c.path.startsWith(".agent/") || (c.from !== null && !c.from.startsWith(".agent/")))) {
+      log("警告: .agent 以外の変更がステージされているため自動コミットをスキップする(人間の並行作業を保護)");
+      try {
+        const beforePaths = new Set(before.map((c) => c.path));
+        const toUnstage = after.filter((c) => !beforePaths.has(c.path)).map((c) => c.path);
+        if (toUnstage.length > 0) {
+          execFileSync("git", ["reset", "-q", "HEAD", "--", ...toUnstage], { cwd: root });
+        }
+      } catch (err) {
+        log(`警告: .agent のステージを戻すのに失敗した: ${String(err)}`);
+      }
+      return;
+    }
+    const subject = message ?? safeSummarize(after);
     execFileSync("git", ["commit", "-m", withTrailer(subject)], { cwd: root });
     log(`.agent を commit した: ${subject}`);
   } catch (err) {
@@ -1055,10 +1078,32 @@ function listAgentBranches(root: string): { sha: string; branch: string }[] {
   }
 }
 
-/** mergeInProgress の判定不能(git が使えない等)を「進行中でない」に倒す版 */
+/**
+ * mergeInProgress の判定不能(git が使えない等)を「進行中でない」に倒す版。
+ * main 側専用(MERGE_HEAD の中身を読んで agent ブランチ由来か人間のマージかを見分ける
+ * 処理に使うため、merge 固有の狭い判定のままにしている)。worktree 側の「衝突解消待ちか」の
+ * 判定には代わりに worktreeConflictPending を使うこと。
+ */
 function mergeInProgressSafe(dir: string): boolean {
   try {
     return mergeInProgress(dir);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * worktree に前回の git 操作(merge / cherry-pick / revert / rebase / bisect)が
+ * 中断されたまま残っているか。判定不能(git が使えない等)は「残っていない」に倒す。
+ *
+ * worktree 側の「衝突解消待ちか」の判定は、残す(finishTaskSession)・再開対象に選ぶ
+ * (selectConflictResumable / startTaskSession)・起動時に保持する(recoverStartupIn)・
+ * status に表示する(collectPendingConflicts)がすべて同じ状態を指していなければならない。
+ * ここで一箇所に集約し、判定がずれて worktree が取り残されるのを防ぐ。
+ */
+export function worktreeConflictPending(dir: string): boolean {
+  try {
+    return gitOperationInProgress(dir);
   } catch {
     return false;
   }
@@ -1173,7 +1218,7 @@ function recoverOrphanBranch(
   const worktree = worktreePath ?? worktreePathFor(worktreeDir, taskId);
   const worktreeExists = fs.existsSync(worktree);
 
-  if (worktreeExists && mergeInProgressSafe(worktree)) {
+  if (worktreeExists && worktreeConflictPending(worktree)) {
     // ここは「セッションが中断された」わけではなく、単に衝突解消待ちの worktree が
     // まだ残っているだけの可能性がある(例えば単純な再起動)。実際にセッションが走って
     // 失敗した場合のみ retries を進めるべきで、ここで recordFailure すると再起動のたびに
@@ -1610,7 +1655,7 @@ function selectConflictResumable(config: Config, launchedIds: Set<string>): Task
     launchedIds,
     hasConflict: (taskId) => {
       const worktree = worktreePathFor(config.parallel.worktreeDir, taskId);
-      return fs.existsSync(worktree) && mergeInProgressSafe(worktree);
+      return fs.existsSync(worktree) && worktreeConflictPending(worktree);
     },
   });
 }
@@ -2397,8 +2442,8 @@ function conflictResolutionSection(task: Task): string {
     "## 衝突解消セッション(Supervisor による機械的情報)",
     "",
     `- 前回の試行の成果は \`${branchNameFor(task.id)}\` に既にコミットされている(作業をやり直す必要はない)`,
-    "- この作業ツリーには main とのマージが進行中で、衝突マーカーが残っている(`git status` で確認する)",
-    "- まず衝突を解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` でマージを完成させること",
+    "- この作業ツリーには前回の git 操作(main とのマージなど)が中断されたまま残っている。多くは衝突マーカーを伴うが、必ずしもそうとは限らないため、まず `git status` で実際の中断状態を確認すること",
+    "- 衝突があれば解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` で中断された操作を完了させること",
     "- 解消の判断に迷う箇所は main 側を優先する。優先した理由と捨てた変更は `.agent/decisions/` に記録する",
     "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、どちらかの ID を付け替えて両方残すこと。これは新規追加同士の衝突であり、どちらの ID もこの時点ではまだ他から参照されていないため付け替えてよい(一度付けた slug を変更しないルールは、参照が発生した後の ID に対するもの)。付け替える場合は重複時の規約と同様に末尾へ `-2` を付ける",
     "- 衝突解消が終わってから、必要なら本来のタスクの続きに取りかかること",
@@ -2519,8 +2564,12 @@ export function buildExplorePrompt(ctx: ExploreContext): string {
       "",
       "1. `.agent/human-review/` の各ファイルを読み、status が answered、またはチェックボックスにチェックが入っているものを確認する",
       "   (`status: open` のままチェックだけ入っている場合も回答済み)。",
-      "   `対応:` が「不要」ならそのまま closed にする。それ以外は回答内容に沿って新タスクとして登録し、",
-      "   frontmatter の status を closed に更新する。",
+      "   回答は `## 回答` 節のチェックボックスで判定する。`- [x] 対応不要(このままクローズしてよい)` だけに",
+      "   チェックが入っているものは Stage 1 が機械的に closed にするため、ここへ回ってきた場合でも",
+      "   そのまま closed にしてよい。`- [x] 回答を下に書いた` にチェックがあるもの(チェックボックス行を",
+      "   消して本文に直接書かれている場合も含む)は、回答本文の内容に沿って判断する。新しい作業が必要なら",
+      "   新タスクとして登録し、新規タスク化が不要なら(既に別タスクで対応済み・感想のみ・方針の確認だけ等)",
+      "   タスクを作らずに closed にする。いずれの場合も frontmatter の status を closed に更新する。",
       "   BLOCK エントリだった場合は、影響タスクを再開できるか判断し、可能なら該当タスクを ready に戻す。",
       "   フェーズゲート HR の BLOCK には再開すべき影響タスクは存在しない。回答内容(続行同意・方針変更)を",
       "   踏まえて次フェーズのタスク生成を再開する、または方針変更を反映する(詳細は共通ルールの",
@@ -2624,7 +2673,7 @@ function startTaskSession(
   const worktree = worktreePathFor(config.parallel.worktreeDir, t.id);
   const branch = branchNameFor(t.id);
   // 前回の統合が失敗し、コンフリクトを再現した状態の worktree が残っているか
-  const resuming = fs.existsSync(worktree) && mergeInProgress(worktree);
+  const resuming = fs.existsSync(worktree) && worktreeConflictPending(worktree);
   const startedAt = new Date().toISOString();
 
   const state = loadState();
@@ -2882,8 +2931,8 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
       // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる
       taskFileChanged = taskFileChangedOnBranch(repoPaths().root, branch, taskId);
 
-      // 3. 統合。マージ未完了のまま終わった衝突解消セッションは worktree をそのまま残す
-      mergeStuck = mergeInProgress(worktree);
+      // 3. 統合。中断された git 操作が残ったまま終わったセッションは worktree をそのまま残す
+      mergeStuck = worktreeConflictPending(worktree);
       if (mergeStuck) {
         mergeLabel = "unresolved";
         log(`${taskId}: 衝突解消が未完のままセッションが終了した。worktree を残す`);
@@ -3987,11 +4036,7 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   try {
     for (const entry of listWorktrees(root)) {
       if (!isInsideDir(worktreeDir, entry.path)) continue;
-      try {
-        if (!fs.existsSync(entry.path) || !mergeInProgress(entry.path)) continue;
-      } catch {
-        continue;
-      }
+      if (!fs.existsSync(entry.path) || !worktreeConflictPending(entry.path)) continue;
       worktrees.push({ taskId: path.basename(entry.path), path: entry.path });
     }
   } catch {

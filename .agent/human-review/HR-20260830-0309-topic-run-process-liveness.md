@@ -1,7 +1,8 @@
 ---
 title: "ループが生きているかどうかを status で分かるようにするか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0342-status-loop-liveness]
 createdAt: 2026-08-30T03:09:29.734Z
 ---
 
@@ -52,5 +53,4 @@ createdAt: 2026-08-30T03:09:29.734Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+やる

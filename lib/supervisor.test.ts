@@ -80,6 +80,7 @@ import {
   taskFrontmatter,
   useRepoRoot,
   withTrailer,
+  worktreeConflictPending,
 } from "./supervisor.ts";
 import {
   branchNameFor,
@@ -1748,6 +1749,27 @@ describe("buildExplorePrompt", () => {
     expect(prompt).toContain("status: open");
   });
 
+  it("回答の判定はチェックボックス方式で指示し、旧 `対応:` マーカーには言及しない", () => {
+    // `対応:` は closeHumanReview が処理結果を書き足す記法であって、人間の回答マーカーではない。
+    // 探索セッションへの指示が旧表記に戻ると、現行テンプレートに存在しない目印を探すことになる。
+    const prompt = buildExplorePrompt(ctx({}));
+    // GOAL.md の本文が混ざらないよう、指示部分だけを取り出して検証する
+    const section = prompt.slice(prompt.indexOf("## 探索セッション"));
+
+    expect(section).toContain("対応不要(このままクローズしてよい)");
+    expect(section).toContain("回答を下に書いた");
+    expect(section).not.toContain("対応:");
+    expect(section).not.toContain("対応：");
+  });
+
+  it("回答があっても新規タスク化が不要なら closed にしてよいことを指示する", () => {
+    // Stage 2 の close/task/escalate と揃え、「回答あり → 必ず新タスク」の 2 択にしない
+    const prompt = buildExplorePrompt(ctx({}));
+
+    expect(prompt).toContain("新規タスク化が不要なら");
+    expect(prompt).toContain("タスクを作らずに closed にする");
+  });
+
   it("deadline を渡すとその時刻がプロンプトに含まれる", () => {
     const prompt = buildExplorePrompt(ctx({ deadline: "2026-08-21T12:34:56.000Z" }));
 
@@ -2298,7 +2320,7 @@ describe("commitAgentDir", () => {
     expect(headHash()).toBe(before);
   });
 
-  it("c: .agent 以外のパスがステージ済みだとコミットをスキップする", () => {
+  it("c: .agent 以外のパスがステージ済みだとコミットをスキップし、.agent はステージに残さず人間のステージも保つ", () => {
     fs.writeFileSync(path.join(dir, "outside.txt"), "human work");
     execFileSync("git", ["add", "outside.txt"], { cwd: dir });
     const agentDir = path.join(dir, ".agent");
@@ -2308,7 +2330,13 @@ describe("commitAgentDir", () => {
     const before = headHash();
     commitAgentDir("docs(agent): 運用状態を更新する", dir);
 
+    // (a) 新しいコミットが作られない
     expect(headHash()).toBe(before);
+    // (b) .agent 配下が自分のステージ(add -A)によってインデックスに残っていない
+    const cachedNames = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir }).toString();
+    expect(cachedNames).not.toContain(".agent/");
+    // (c) 人間がステージしていたファイルはステージされたまま残る
+    expect(cachedNames).toContain("outside.txt");
     const status = execFileSync("git", ["status", "--porcelain"], { cwd: dir }).toString();
     expect(status).toContain("outside.txt");
   });
@@ -2375,6 +2403,21 @@ describe("commitAgentDir", () => {
     commitAgentDir(undefined, dir);
 
     expect(headHash()).toBe(before);
+  });
+
+  it("h: .agent 配下だけが事前にステージ済みなら従来どおり正常にコミットされる", () => {
+    const agentDir = path.join(dir, ".agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "OVERVIEW.md"), "# 概要");
+    execFileSync("git", ["add", "--", ".agent"], { cwd: dir });
+
+    const before = headHash();
+    commitAgentDir("docs(agent): 運用状態を更新する", dir);
+
+    expect(headHash()).not.toBe(before);
+    expect(headFiles()).toEqual([".agent/OVERVIEW.md"]);
+    const cachedNames = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir }).toString();
+    expect(cachedNames.trim()).toBe("");
   });
 
   it("cherry-pick 進行中はコミットをスキップする", () => {
@@ -3702,7 +3745,49 @@ describe("recoverStartupIn", () => {
     expect(state.supervisorSourceHash).not.toBe("");
   });
 
-  it("K: main の merge --abort 自体が失敗する(wedged)場合、worktree・ブランチ・タスクファイルに一切手を付けない", () => {
+  it("K: worktree に CHERRY_PICK_HEAD が残っている(merge 以外の中断)も衝突解消待ちとして保持する", () => {
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+    git(["branch", "side"]);
+    git(["checkout", "side"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side\n");
+    git(["commit", "-am", "side で書き換える"]);
+    const sideHead = git(["rev-parse", "HEAD"]).trim();
+    git(["checkout", "main"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "conflict.txt"), "ブランチ側\n"),
+      "ブランチ側で書き換える",
+    );
+    try {
+      git(["cherry-pick", sideHead], wt);
+    } catch {
+      // コンフリクトによる非ゼロ終了は想定通り
+    }
+    // MERGE_HEAD ではなく CHERRY_PICK_HEAD が残っている状態(狭い mergeInProgress では捉えられない)
+    expect(mergeInProgress(wt)).toBe(false);
+    expect(worktreeConflictPending(wt)).toBe(true);
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.keptConflicts).toBe(1);
+    expect(fs.existsSync(wt)).toBe(true);
+    expect(worktreeConflictPending(wt)).toBe(true);
+    expect(branchExists("agent/T-001")).toBe(true);
+  });
+
+  it("L: git リポジトリでないディレクトリを渡しても worktreeConflictPending は例外を投げず false を返す", () => {
+    const notGit = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-not-git-"));
+    try {
+      expect(worktreeConflictPending(notGit)).toBe(false);
+    } finally {
+      fs.rmSync(notGit, { recursive: true, force: true });
+    }
+  });
+
+  it("M: main の merge --abort 自体が失敗する(wedged)場合、worktree・ブランチ・タスクファイルに一切手を付けない", () => {
     // 本番インシデントの再現(lib/merge.test.ts の resolveMechanically 直接呼び出しのテストと同根):
     // 衝突なく自動マージされたタスクファイルが、abort 直前に作業ツリー上だけで(git を経由せず)
     // 書き換わっていると、abort が "not uptodate" で失敗し main が固まる(wedged)。

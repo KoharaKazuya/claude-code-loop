@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { defaultWorktreeDir } from "./config.ts";
 import {
   branchNameFor,
   createWorktree,
@@ -387,97 +386,5 @@ describe("salvagePatch", () => {
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("worktree-create hook (lib/hooks/worktree-create.ts)", () => {
-  let dir: string;
-  let hooksDir: string;
-  let worktreesDir: string;
-
-  const scriptPath = path.join(import.meta.dirname, "hooks", "worktree-create.ts");
-
-  // hook は CLAUDE_PROJECT_DIR を最優先で見る。テストは stdin の cwd で対象を指定するため、
-  // 実行環境から継承した値がテスト対象のリポジトリを上書きしないよう取り除く
-  function runHook(input: object): { stdout: string; status: number } {
-    const env = { ...process.env };
-    delete env.CLAUDE_PROJECT_DIR;
-    delete env.CCLOOP_REPO;
-    try {
-      const stdout = execFileSync("node", [scriptPath], {
-        input: JSON.stringify(input),
-        cwd: dir,
-        encoding: "utf8",
-        env,
-      });
-      return { stdout, status: 0 };
-    } catch (err) {
-      const e = err as { status?: number | null; stdout?: string };
-      return { stdout: e.stdout ?? "", status: e.status ?? 1 };
-    }
-  }
-
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-create-test-repo-"));
-    hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "worktree-create-test-hooks-"));
-    initRepo(dir, hooksDir);
-    // hook は Supervisor と同じ config.ts の既定値(state ディレクトリ配下)を使う
-    worktreesDir = defaultWorktreeDir(dir);
-  });
-
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.rmSync(hooksDir, { recursive: true, force: true });
-    fs.rmSync(worktreesDir, { recursive: true, force: true });
-  });
-
-  it("worktree を作成し、そのパスを標準出力へ返す", () => {
-    const result = runHook({ name: "T-001", cwd: dir });
-
-    expect(result.status).toBe(0);
-    const wtPath = result.stdout.trim();
-    expect(wtPath).toBe(path.join(worktreesDir, "T-001"));
-    expect(fs.existsSync(wtPath)).toBe(true);
-    const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: wtPath })
-      .toString()
-      .trim();
-    expect(branch).toBe("agent/T-001");
-  });
-
-  it("同名 worktree は再作成せず既存パスを返す(冪等・コンフリクト解決の継続で使う)", () => {
-    const first = runHook({ name: "T-002", cwd: dir });
-    expect(first.status).toBe(0);
-
-    const second = runHook({ name: "T-002", cwd: dir });
-
-    expect(second.status).toBe(0);
-    expect(second.stdout.trim()).toBe(first.stdout.trim());
-  });
-
-  it("不正な name(パストラバーサル等)は拒否される", () => {
-    const result = runHook({ name: "../../etc", cwd: dir });
-    expect(result.status).not.toBe(0);
-    expect(fs.existsSync(worktreesDir)).toBe(false);
-  });
-
-  it("許可文字のみでも '.' '..' 単体は拒否される(親ディレクトリへの解決を防ぐ)", () => {
-    for (const name of [".", ".."]) {
-      const result = runHook({ name, cwd: dir });
-      expect(result.status).not.toBe(0);
-    }
-    expect(fs.existsSync(worktreesDir)).toBe(false);
-  });
-
-  it("root に node_modules があれば worktree へシンボリックリンクする", () => {
-    fs.mkdirSync(path.join(dir, "node_modules"));
-    fs.writeFileSync(path.join(dir, "node_modules", "marker.txt"), "x");
-
-    const result = runHook({ name: "T-003", cwd: dir });
-
-    expect(result.status).toBe(0);
-    const wtPath = result.stdout.trim();
-    const linked = path.join(wtPath, "node_modules");
-    expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
-    expect(fs.readFileSync(path.join(linked, "marker.txt"), "utf8")).toBe("x");
   });
 });

@@ -1,7 +1,8 @@
 ---
 title: "status の一覧に「何を聞かれているか」「なぜ待っているか」を出すか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0342-status-line-context]
 createdAt: 2026-08-30T03:09:29.734Z
 ---
 
@@ -48,5 +49,4 @@ createdAt: 2026-08-30T03:09:29.734Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+やる

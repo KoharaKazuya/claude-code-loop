@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { usageOf } from "./help.ts";
 import { DEFAULT_WATCH_INTERVAL_MS, MIN_WATCH_INTERVAL_MS, parseWatchArgs, renderFrame } from "./watch.ts";
 
 describe("parseWatchArgs", () => {
@@ -31,6 +32,16 @@ describe("parseWatchArgs", () => {
 
   it("未知の引数はエラーにする(黙って無視しない)", () => {
     expect(() => parseWatchArgs(["--nope"])).toThrow(/未知の引数/);
+  });
+
+  it("未知の引数のエラーメッセージは help.ts の使い方(usageOf)と一致する", () => {
+    let message = "";
+    try {
+      parseWatchArgs(["--bogus"]);
+    } catch (err) {
+      message = String((err as Error).message);
+    }
+    expect(message).toContain(usageOf("watch"));
   });
 });
 

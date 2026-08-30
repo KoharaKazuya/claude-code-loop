@@ -1,7 +1,8 @@
 ---
 title: "変更履歴(リリースノート)を残す仕組みを作るか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0341-changelog-initial, T-20260830-0341-changelog-update-rule]
 createdAt: 2026-08-30T03:03:01.138Z
 ---
 
@@ -51,5 +52,4 @@ createdAt: 2026-08-30T03:03:01.138Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+作る

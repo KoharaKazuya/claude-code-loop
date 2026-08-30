@@ -1,9 +1,10 @@
 ---
 title: "テストの無い hook スクリプトに回帰検知テストを足す"
-status: ready
+status: completed
 priority: 3
 dependencies: [T-20260830-0254-test-env-isolation-session-vars]
 retries: 0
+note: "3 hook のテストを追加。worktree-create の重複テストは hooks 側へ集約。settings.template.json の PreToolUse/matcher 結び付きも構造検証に変更"
 createdAt: 2026-08-30T02:54:00.229Z
 ---
 
@@ -52,3 +53,15 @@ hook 側では「入力が空だった」と区別がつかず、無音で誤動
 単体テストの範囲外であり、今回の調査では未確認である。このタスクで担保できるのは
 スクリプト単体の入出力契約までである点に留意すること。実機での発火確認が必要と判断した場合は、
 このタスクに含めず別タスクとして登録する。
+
+### 対応結果(このタスク内で処理した範囲)
+
+`lib/settings.test.ts` の既存検証は `JSON.stringify(hooks)` にスクリプトパスが含まれることしか
+見ておらず、エントリが別の hook イベント配下へ移っても matcher が変わっても通ってしまう状態だった。
+そのため「`hooks.PreToolUse` に `matcher: "AskUserQuestion"` のエントリがあり、その配下の command が
+`deny-ask-user.ts` を指す」ことを構造として検証するテストを追加した。
+
+これにより静的に検証できる範囲(スクリプトの入出力契約 + テンプレートへの登録の結び付き)は
+埋まったと判断し、実機での発火確認タスクは登録していない。残る未検証部分は
+「Claude Code が settings.json の記述どおりに hook を発火させること」であり、これは
+ccloop 側では検証しようがない外部依存である。

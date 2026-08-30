@@ -18,6 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline/promises";
+import { usageOf } from "./help.ts";
 import { CURRENT_SCHEMA_VERSION, compareSchemaVersion, migrateConfig, readSchemaVersion } from "./migrations.ts";
 import { AGENT_DIR_NAME, ccloopHome, type Paths } from "./paths.ts";
 
@@ -199,7 +200,7 @@ export async function cmdInit(paths: Paths, argv: string[], home: string = ccloo
   const upgrade = argv.includes("--upgrade");
   const unknown = argv.find((a) => a.startsWith("-") && !["--yes", "-y", "--upgrade"].includes(a));
   if (unknown !== undefined) {
-    console.error(`未知のオプション: ${unknown}\n使い方: ccloop init [--yes] [--upgrade]`);
+    console.error(`未知のオプション: ${unknown}\n${usageOf("init")}`);
     return 1;
   }
   return upgrade ? await runUpgrade(paths, yes) : await runInit(paths, yes, home);

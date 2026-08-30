@@ -1,9 +1,10 @@
 ---
 title: "探索セッション向け指示文の回答判定表記をチェックボックス方式へ合わせる"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "注入文をチェックボックス方式へ書き換え、回帰テスト 2 件を追加。typecheck / lint / test すべて成功"
 createdAt: 2026-08-30T03:18:17.730Z
 ---
 
