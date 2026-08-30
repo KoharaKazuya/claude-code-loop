@@ -1055,10 +1055,32 @@ function listAgentBranches(root: string): { sha: string; branch: string }[] {
   }
 }
 
-/** mergeInProgress の判定不能(git が使えない等)を「進行中でない」に倒す版 */
+/**
+ * mergeInProgress の判定不能(git が使えない等)を「進行中でない」に倒す版。
+ * main 側専用(MERGE_HEAD の中身を読んで agent ブランチ由来か人間のマージかを見分ける
+ * 処理に使うため、merge 固有の狭い判定のままにしている)。worktree 側の「衝突解消待ちか」の
+ * 判定には代わりに worktreeConflictPending を使うこと。
+ */
 function mergeInProgressSafe(dir: string): boolean {
   try {
     return mergeInProgress(dir);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * worktree に前回の git 操作(merge / cherry-pick / revert / rebase / bisect)が
+ * 中断されたまま残っているか。判定不能(git が使えない等)は「残っていない」に倒す。
+ *
+ * worktree 側の「衝突解消待ちか」の判定は、残す(finishTaskSession)・再開対象に選ぶ
+ * (selectConflictResumable / startTaskSession)・起動時に保持する(recoverStartupIn)・
+ * status に表示する(collectPendingConflicts)がすべて同じ状態を指していなければならない。
+ * ここで一箇所に集約し、判定がずれて worktree が取り残されるのを防ぐ。
+ */
+export function worktreeConflictPending(dir: string): boolean {
+  try {
+    return gitOperationInProgress(dir);
   } catch {
     return false;
   }
@@ -1173,7 +1195,7 @@ function recoverOrphanBranch(
   const worktree = worktreePath ?? worktreePathFor(worktreeDir, taskId);
   const worktreeExists = fs.existsSync(worktree);
 
-  if (worktreeExists && mergeInProgressSafe(worktree)) {
+  if (worktreeExists && worktreeConflictPending(worktree)) {
     // ここは「セッションが中断された」わけではなく、単に衝突解消待ちの worktree が
     // まだ残っているだけの可能性がある(例えば単純な再起動)。実際にセッションが走って
     // 失敗した場合のみ retries を進めるべきで、ここで recordFailure すると再起動のたびに
@@ -1610,7 +1632,7 @@ function selectConflictResumable(config: Config, launchedIds: Set<string>): Task
     launchedIds,
     hasConflict: (taskId) => {
       const worktree = worktreePathFor(config.parallel.worktreeDir, taskId);
-      return fs.existsSync(worktree) && mergeInProgressSafe(worktree);
+      return fs.existsSync(worktree) && worktreeConflictPending(worktree);
     },
   });
 }
@@ -2397,8 +2419,8 @@ function conflictResolutionSection(task: Task): string {
     "## 衝突解消セッション(Supervisor による機械的情報)",
     "",
     `- 前回の試行の成果は \`${branchNameFor(task.id)}\` に既にコミットされている(作業をやり直す必要はない)`,
-    "- この作業ツリーには main とのマージが進行中で、衝突マーカーが残っている(`git status` で確認する)",
-    "- まず衝突を解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` でマージを完成させること",
+    "- この作業ツリーには前回の git 操作(main とのマージなど)が中断されたまま残っており、衝突マーカーが残っている(`git status` で確認する)",
+    "- まず衝突を解消し、機械的検証(tests / lint / typecheck)を通した上で `git add` → `git commit` で中断された操作を完了させること",
     "- 解消の判断に迷う箇所は main 側を優先する。優先した理由と捨てた変更は `.agent/decisions/` に記録する",
     "- `.agent/` 配下で同じ ID のファイルが両側にある衝突は、同じ内容を二重に起票した状態(ID は日時 + slug で付けるため偶然は起きない)。内容を 1 つに統合するか、どちらかの ID を付け替えて両方残すこと。これは新規追加同士の衝突であり、どちらの ID もこの時点ではまだ他から参照されていないため付け替えてよい(一度付けた slug を変更しないルールは、参照が発生した後の ID に対するもの)。付け替える場合は重複時の規約と同様に末尾へ `-2` を付ける",
     "- 衝突解消が終わってから、必要なら本来のタスクの続きに取りかかること",
@@ -2624,7 +2646,7 @@ function startTaskSession(
   const worktree = worktreePathFor(config.parallel.worktreeDir, t.id);
   const branch = branchNameFor(t.id);
   // 前回の統合が失敗し、コンフリクトを再現した状態の worktree が残っているか
-  const resuming = fs.existsSync(worktree) && mergeInProgress(worktree);
+  const resuming = fs.existsSync(worktree) && worktreeConflictPending(worktree);
   const startedAt = new Date().toISOString();
 
   const state = loadState();
@@ -2882,8 +2904,8 @@ function finishTaskSession(config: Config, ctx: TaskSessionContext, res: Session
       // 2. マージ前にしか取れない情報(ブランチ先端との差分)を先に確定させる
       taskFileChanged = taskFileChangedOnBranch(repoPaths().root, branch, taskId);
 
-      // 3. 統合。マージ未完了のまま終わった衝突解消セッションは worktree をそのまま残す
-      mergeStuck = mergeInProgress(worktree);
+      // 3. 統合。中断された git 操作が残ったまま終わったセッションは worktree をそのまま残す
+      mergeStuck = worktreeConflictPending(worktree);
       if (mergeStuck) {
         mergeLabel = "unresolved";
         log(`${taskId}: 衝突解消が未完のままセッションが終了した。worktree を残す`);
@@ -3987,11 +4009,7 @@ function collectPendingConflicts(root: string, worktreeDir: string): PendingConf
   try {
     for (const entry of listWorktrees(root)) {
       if (!isInsideDir(worktreeDir, entry.path)) continue;
-      try {
-        if (!fs.existsSync(entry.path) || !mergeInProgress(entry.path)) continue;
-      } catch {
-        continue;
-      }
+      if (!fs.existsSync(entry.path) || !worktreeConflictPending(entry.path)) continue;
       worktrees.push({ taskId: path.basename(entry.path), path: entry.path });
     }
   } catch {

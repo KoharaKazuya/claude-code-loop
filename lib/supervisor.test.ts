@@ -80,6 +80,7 @@ import {
   taskFrontmatter,
   useRepoRoot,
   withTrailer,
+  worktreeConflictPending,
 } from "./supervisor.ts";
 import {
   branchNameFor,
@@ -3700,6 +3701,48 @@ describe("recoverStartupIn", () => {
     const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as { supervisorSourceHash?: string };
     expect(state.supervisorSourceHash).toBe(supervisorSourceHash());
     expect(state.supervisorSourceHash).not.toBe("");
+  });
+
+  it("K: worktree に CHERRY_PICK_HEAD が残っている(merge 以外の中断)も衝突解消待ちとして保持する", () => {
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    git(["add", "-A"]);
+    git(["commit", "-m", "基底を追加する"]);
+    git(["branch", "side"]);
+    git(["checkout", "side"]);
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side\n");
+    git(["commit", "-am", "side で書き換える"]);
+    const sideHead = git(["rev-parse", "HEAD"]).trim();
+    git(["checkout", "main"]);
+
+    const wt = commitOnAgentBranch(
+      "T-001",
+      (p) => fs.writeFileSync(path.join(p, "conflict.txt"), "ブランチ側\n"),
+      "ブランチ側で書き換える",
+    );
+    try {
+      git(["cherry-pick", sideHead], wt);
+    } catch {
+      // コンフリクトによる非ゼロ終了は想定通り
+    }
+    // MERGE_HEAD ではなく CHERRY_PICK_HEAD が残っている状態(狭い mergeInProgress では捉えられない)
+    expect(mergeInProgress(wt)).toBe(false);
+    expect(worktreeConflictPending(wt)).toBe(true);
+
+    const counts = recoverStartupIn(dir, config(), NOW);
+
+    expect(counts.keptConflicts).toBe(1);
+    expect(fs.existsSync(wt)).toBe(true);
+    expect(worktreeConflictPending(wt)).toBe(true);
+    expect(branchExists("agent/T-001")).toBe(true);
+  });
+
+  it("L: git リポジトリでないディレクトリを渡しても worktreeConflictPending は例外を投げず false を返す", () => {
+    const notGit = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-not-git-"));
+    try {
+      expect(worktreeConflictPending(notGit)).toBe(false);
+    } finally {
+      fs.rmSync(notGit, { recursive: true, force: true });
+    }
   });
 });
 
