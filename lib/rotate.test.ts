@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DECISIONS_INDEX_DEFAULT_HEADER, mergeDecisionsIndexText } from "./decisions-index.ts";
 import { rotate, rotateResultIsEmpty } from "./rotate.ts";
 
 function fixture(status: string, body = "本文"): string {
@@ -294,5 +295,35 @@ describe("rotate", () => {
 
     expect(result).toEqual({ tasks: 0, decisions: 0, humanReview: 0 });
     expect(rotateResultIsEmpty(result)).toBe(true);
+  });
+
+  it("mergeDecisionsIndexText が生成した index.md は、実体と矛盾が無ければ rotate で書き換えられない", () => {
+    const decisionsDir = path.join(agentDir, "decisions");
+    writeFile(decisionsDir, "D-20260101-0000-a.md", decisionFixture("判断 A"));
+    writeFile(decisionsDir, "D-20260102-0000-b.md", decisionFixture("判断 B"));
+    writeFile(decisionsDir, "D-20260103-0000-c.md", decisionFixture("判断 C"));
+
+    // base(共通祖先)には a のみ。ours は b を新規追加、theirs は c を新規追加した状況を再現する。
+    const base =
+      DECISIONS_INDEX_DEFAULT_HEADER + "- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A\n";
+    const ours =
+      DECISIONS_INDEX_DEFAULT_HEADER +
+      "- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A\n" +
+      "- [ ] [D-20260102-0000-b](D-20260102-0000-b.md) — 判断 B\n";
+    const theirs =
+      DECISIONS_INDEX_DEFAULT_HEADER +
+      "- [ ] [D-20260101-0000-a](D-20260101-0000-a.md) — 判断 A\n" +
+      "- [ ] [D-20260103-0000-c](D-20260103-0000-c.md) — 判断 C\n";
+
+    const merged = mergeDecisionsIndexText(base, ours, theirs);
+    if (merged === null) throw new Error("この base/ours/theirs はコンフリクトせずマージできるはず");
+
+    writeFile(decisionsDir, "index.md", merged);
+
+    const result = rotate(agentDir);
+
+    expect(result.decisions).toBe(0);
+    expect(readIndex(decisionsDir)).toBe(merged);
+    expect(fs.existsSync(path.join(agentDir, "archive", "decisions"))).toBe(false);
   });
 });
