@@ -96,8 +96,9 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
   (最終段)は次に空き枠が空いたタイミングで 1 回にまとめて取り込む(BLOCK は常に最終段のみ)。
 - **failed / blocked タスクの再実行**: 該当タスクファイル(`.agent/tasks/T-<日時>-<slug>.md`)の frontmatter を
   `status: ready`、`retries: 0` に手で編集する。失敗原因を放置すると再び失敗するので、原因側の修正を
-  先に行うのが普通。古い completed / closed / 判断ファイルは `.agent/archive/` へ自動的に退避される
-  (ローテーションはループ内で自動)。
+  先に行うのが普通。completed タスク・closed な Review は `.agent/archive/` へ自動的に退避される
+  (ローテーションはループ内で自動)。判断ファイルは `.agent/decisions/index.md` で人間がチェックを
+  付けたものだけが退避される。
 - **巻き戻し**: 自律コミットは対象リポジトリの `git log` に積まれるだけで push はされない。緊急時は
   `ccloop run` を停止し、`git log` / `git diff` で確認したうえで人間が `git revert` し、経緯を
   `.agent/decisions/` に記録してから再開する。
@@ -115,7 +116,8 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
 - `OVERVIEW.md` — GOAL に対する現在地と次の見立て(探索セッションが生成・維持する)
 - `config.json` — モデル・リトライ・タイムアウト・並列数などの設定
 - `tasks/` / `decisions/` / `human-review/` — 1 トピック 1 ファイルの記録
-- `archive/` — completed タスク・closed な Review・古い判断の退避先
+- `decisions/index.md` — 判断のチェックリスト。人間がチェックを付けた判断がアーカイブ対象になる
+- `archive/` — completed タスク・closed な Review・チェック済みの判断の退避先
 - (任意)`claude-settings.json` — permissions の allow/deny への追記
 - (任意)`PROMPT.local.md` — 共通ルールへの追記
 
