@@ -90,7 +90,7 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
           (--full の有無に関わらず全フィールドを含む。--full との併用はエラーにならない)`,
 
   add: `使い方: ccloop [--repo <path>] add "タイトル" [--desc <説明>] [--priority <N>]
-                     [--deps <ID>,<ID>,...] [--model <モデル名>] [--slug <slug>]
+                     [--deps <ID>,<ID>,...] [--conflicts <ID>,<ID>,...] [--model <モデル名>] [--slug <slug>]
 
 新規タスクを .agent/tasks/ に追加する。
 
@@ -99,6 +99,8 @@ ready なタスクがある間も、一定間隔ごとに空いた枠で探索�
                       タイトル自体を本文にする
   --priority <N>      優先度(数値が小さいほど先に実行される)。既定 3
   --deps <ID>,<ID>    依存タスク ID(カンマ区切り)。既定は依存なし
+  --conflicts <ID>,<ID>
+                      同時に実行しないタスク ID(カンマ区切り)。既定は競合なし
   --model <モデル名>  このタスクだけに使うモデル。既定は .agent/config.json の model
   --slug <slug>       タスク ID に使う slug(小文字英数字とハイフンのみ)。省略時はタイトルから
                       自動生成し、生成できなければ "task" にフォールバックする`,

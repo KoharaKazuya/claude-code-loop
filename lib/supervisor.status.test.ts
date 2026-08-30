@@ -566,6 +566,52 @@ describe("collectStatusData / formatStatus", () => {
     });
   });
 
+  describe("競合するタスク(conflicts)", () => {
+    it("実行中タスクと競合する ready タスクは conflictHeldTasks に入り、次に実行予定の一覧に競合待ちとして出る", () => {
+      writeTask("T-running", { status: "ready", title: "実行中のタスク" });
+      writeTask("T-conflict", {
+        status: "ready",
+        title: "競合するタスク",
+        conflicts: ["T-running"],
+      });
+      fs.writeFileSync(
+        statePathOf(dir),
+        JSON.stringify({
+          runningSessions: [{ kind: "task", taskId: "T-running", startedAt: "2026-08-29T00:00:00.000Z" }],
+        }),
+      );
+
+      const data = collectStatusData(NOW);
+      expect(data.conflictHeldTasks).toEqual([
+        { id: "T-conflict", priority: 3, title: "競合するタスク", blockedBy: ["T-running"] },
+      ]);
+
+      const out = formatStatus();
+      expect(out).toContain("競合待ち  T-conflict  p3  競合するタスク(T-running と同時に実行しない)");
+    });
+
+    it("next が空で競合待ちのみのとき「なし(競合待ち N 件)」と表示する", () => {
+      writeTask("T-running", { status: "ready", title: "実行中のタスク" });
+      writeTask("T-conflict", {
+        status: "ready",
+        title: "競合するタスク",
+        conflicts: ["T-running"],
+      });
+      fs.writeFileSync(
+        statePathOf(dir),
+        JSON.stringify({
+          runningSessions: [{ kind: "task", taskId: "T-running", startedAt: "2026-08-29T00:00:00.000Z" }],
+        }),
+      );
+
+      const data = collectStatusData(NOW);
+      expect(data.nextRunnableTasks).toEqual([]);
+
+      const out = formatStatus();
+      expect(out).toContain("なし(競合待ち 1 件)");
+    });
+  });
+
   describe("config.json の schemaVersion 食い違い", () => {
     it("config.json が無ければ configSchema は null で「要対応事項なし」のまま", () => {
       const data = collectStatusData(NOW);

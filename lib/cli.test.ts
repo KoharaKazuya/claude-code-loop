@@ -247,9 +247,9 @@ describe("--help / -h(子プロセスで検証)", () => {
     expect(result.stdout).toBe(`${SUBCOMMAND_HELP[cmd]}\n`);
   });
 
-  it("add --help はオプション --desc/--priority/--deps/--model/--slug を含む", () => {
+  it("add --help はオプション --desc/--priority/--deps/--conflicts/--model/--slug を含む", () => {
     const result = run(["add", "--help"]);
-    for (const opt of ["--desc", "--priority", "--deps", "--model", "--slug"]) {
+    for (const opt of ["--desc", "--priority", "--deps", "--conflicts", "--model", "--slug"]) {
       expect(result.stdout).toContain(opt);
     }
   });

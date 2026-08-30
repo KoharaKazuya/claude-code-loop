@@ -32,7 +32,8 @@ export interface LoopInput {
   runningCount: number;
   /** 同時セッション数の上限 */
   maxSessions: number;
-  /** planTaskSelection が返した実行可能タスクの ID(優先度順) */
+  /** planTaskSelection が返した実行可能タスクの ID(優先度順)。
+   * 互いに競合しない(conflicts で結ばれていない)ことは planTaskSelection が保証する */
   runnableTaskIds: string[];
   /** 衝突解消待ちの worktree(マージ進行中)を抱えたまま runnable に戻っているタスクの ID(優先度順)。
    * ただし「この停止指示の後にまだ衝突解消セッションを起動していない」ものに限る。

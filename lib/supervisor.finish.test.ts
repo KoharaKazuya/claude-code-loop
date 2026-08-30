@@ -65,6 +65,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     status: "ready",
     priority: 3,
     dependencies: [],
+    conflicts: [],
     retries: 0,
     conflictRetries: 0,
     createdAt: "2026-08-01T00:00:00.000Z",
