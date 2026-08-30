@@ -5,7 +5,7 @@
  * オプションだけを載せる(推測で書かない)。実体は cli.ts(グローバルオプション)、
  * supervisor.ts(status/list/add)、watch.ts(watch)、init.ts(init)の argv 解析部を参照して同期する。
  *
- * テストから参照できるよう、文字列は定数としてエクスポートする(cli.test.ts / help.test.ts)。
+ * テストから参照できるよう、文字列は定数としてエクスポートする(cli.test.ts)。
  */
 
 export const TOP_LEVEL_HELP = `ccloop: Claude Code を使った自律開発ループ CLI。
