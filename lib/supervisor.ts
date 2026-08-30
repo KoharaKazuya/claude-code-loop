@@ -5434,13 +5434,15 @@ function snoozedTasksByUntil(tasks: Task[], runningIds: ReadonlySet<string>): Ta
  * 競合により今回は選ばれなかった(実行中または優先度の高い別タスクと同時に実行しない)タスクを、
  * 優先度昇順 → 作成日時昇順で返す。判定基準を表示用に複製しないため、nextRunnableTasks と同じ
  * planTaskSelection をそのまま呼ぶ。
+ * 表示用に切り詰めた items と、切り詰め前の総数 total を返す。
  */
 function conflictHeldTasks(
   tasks: Task[],
   runningIds: ReadonlySet<string>,
   limit: number,
-): { task: Task; blockedBy: string[] }[] {
-  return planTaskSelection(tasks, new Date(), runningIds).conflictHeld.slice(0, limit);
+): { total: number; items: { task: Task; blockedBy: string[] }[] } {
+  const all = planTaskSelection(tasks, new Date(), runningIds).conflictHeld;
+  return { total: all.length, items: all.slice(0, limit) };
 }
 
 /** ミリ秒を人間向けの経過時間表記(45秒 / 12分 / 1時間5分)にする */
@@ -5939,8 +5941,10 @@ export interface StatusData {
   pendingDecisions: PendingDecisions;
   nextRunnableTasks: Task[];
   snoozedTasks: Task[];
-  /** 実行中または優先度の高い別タスクと競合するため、今回は選ばれなかったタスク */
+  /** 実行中または優先度の高い別タスクと競合するため、今回は選ばれなかったタスク。表示用に先頭 3 件へ切り詰めたもの */
   conflictHeldTasks: { id: string; priority: number; title: string; blockedBy: string[] }[];
+  /** conflictHeldTasks の切り詰め前の全件数 */
+  conflictHeldTotal: number;
   metrics: SessionMetrics[];
   /** 読み込み上限で metrics.jsonl の古い記録を読み飛ばしているか(累計 cost が直近ぶんの集計になる) */
   metricsTruncated: boolean;
@@ -6053,7 +6057,8 @@ export function collectStatusData(now: Date): StatusData {
   );
   const next = nextRunnableTasks(tasks, runningTaskIds, 3);
   const snoozed = snoozedTasksByUntil(tasks, runningTaskIds);
-  const conflictHeld = conflictHeldTasks(tasks, runningTaskIds, 3).map(({ task, blockedBy }) => ({
+  const { total: conflictHeldTotal, items: conflictHeldItems } = conflictHeldTasks(tasks, runningTaskIds, 3);
+  const conflictHeld = conflictHeldItems.map(({ task, blockedBy }) => ({
     id: task.id,
     priority: task.priority,
     title: task.title,
@@ -6119,6 +6124,7 @@ export function collectStatusData(now: Date): StatusData {
     nextRunnableTasks: next,
     snoozedTasks: snoozed,
     conflictHeldTasks: conflictHeld,
+    conflictHeldTotal,
     metrics,
     metricsTruncated,
     inputsChanged,
@@ -6340,7 +6346,7 @@ export function formatStatus(): string {
     // 待ち理由は同時に成立しうるので、成立しているものをすべて並べる(片方だけ出すと
     // 「もう片方は無い」と読めてしまう)。どれも無ければ依存待ちを疑う
     const waiting: string[] = [];
-    if (conflictHeld.length > 0) waiting.push(`競合待ち ${conflictHeld.length} 件`);
+    if (data.conflictHeldTotal > 0) waiting.push(`競合待ち ${data.conflictHeldTotal} 件`);
     if (snoozed.length > 0) waiting.push(`スヌーズ待ち ${snoozed.length} 件、最短解除 ${snoozed[0]!.snoozeUntil}`);
     push(waiting.length > 0 ? `  なし(${waiting.join("、")})` : "  なし(依存待ちの可能性)");
   } else {
@@ -6349,6 +6355,10 @@ export function formatStatus(): string {
   for (const c of conflictHeld) {
     push(`  競合待ち  ${c.id}  p${c.priority}  ${c.title}(${c.blockedBy.join(", ")} と同時に実行しない)`);
   }
+  // 一覧は表示用に先頭 3 件へ切り詰めているため、総数(conflictHeldTotal)との差分があれば
+  // 超過分を「ほか N 件」で明示する(切り詰めを黙って行うと、隠れているタスクに気づけない)
+  const conflictHeldRest = data.conflictHeldTotal - conflictHeld.length;
+  if (conflictHeldRest > 0) push(`  競合待ち  ほか ${conflictHeldRest} 件`);
 
   push(`\nスヌーズ中のタスク (${snoozed.length} 件)`);
   if (snoozed.length === 0) {

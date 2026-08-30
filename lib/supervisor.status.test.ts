@@ -610,6 +610,28 @@ describe("collectStatusData / formatStatus", () => {
       const out = formatStatus();
       expect(out).toContain("なし(競合待ち 1 件)");
     });
+
+    it("競合待ちが表示上限(3件)を超えるとき、conflictHeldTotal は全件数を保持し、一覧は先頭3件へ切り詰めつつ超過分を「ほか N 件」で示す", () => {
+      writeTask("T-running", { status: "ready", title: "実行中のタスク" });
+      writeTask("T-conflict-1", { status: "ready", title: "競合するタスク1", conflicts: ["T-running"] });
+      writeTask("T-conflict-2", { status: "ready", title: "競合するタスク2", conflicts: ["T-running"] });
+      writeTask("T-conflict-3", { status: "ready", title: "競合するタスク3", conflicts: ["T-running"] });
+      writeTask("T-conflict-4", { status: "ready", title: "競合するタスク4", conflicts: ["T-running"] });
+      fs.writeFileSync(
+        statePathOf(dir),
+        JSON.stringify({
+          runningSessions: [{ kind: "task", taskId: "T-running", startedAt: "2026-08-29T00:00:00.000Z" }],
+        }),
+      );
+
+      const data = collectStatusData(NOW);
+      expect(data.conflictHeldTotal).toBe(4);
+      expect(data.conflictHeldTasks).toHaveLength(3);
+
+      const out = formatStatus();
+      expect(out).toContain("競合待ち 4 件");
+      expect(out).toContain("競合待ち  ほか 1 件");
+    });
   });
 
   describe("config.json の schemaVersion 食い違い", () => {
