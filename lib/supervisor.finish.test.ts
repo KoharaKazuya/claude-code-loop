@@ -439,4 +439,38 @@ describe("finishTaskSession", () => {
     expect(t.body).toContain("error_during_execution");
     expect(t.body).toContain("## 試行履歴");
   });
+
+  it("(g) タイムアウト × stderr に利用上限の文言あり: retries を消費せず、待機状態を設定する", () => {
+    // 未コミットの差分は残さない(退避記録は分類と独立した別処理のため、ここでは
+    // 「利用上限としての分類」だけを切り分けて検証する)
+    const wt = createSessionWorktree("T-001");
+
+    const ctx: TaskSessionContext = {
+      task: makeTask(),
+      model: "opus",
+      branch: branchNameFor("T-001"),
+      worktree: wt,
+      launchStatus: "ready",
+      resuming: false,
+      startedAt: NOW.toISOString(),
+    };
+    const res: SessionResult = {
+      exitCode: null,
+      timedOut: true,
+      stdout: "",
+      stderr: "You've hit your session limit · resets 9:20am (UTC)",
+    };
+
+    finishTaskSession(config(), ctx, res);
+
+    const t = readTask("T-001");
+    expect(t.retries).toBe(0);
+    expect(t.status).toBe("ready");
+    expect(t.body).not.toContain("## 試行履歴");
+
+    const state = JSON.parse(fs.readFileSync(statePathOf(dir), "utf8")) as {
+      rateLimit?: { resumeAt: string | null };
+    };
+    expect(state.rateLimit?.resumeAt).not.toBeNull();
+  });
 });

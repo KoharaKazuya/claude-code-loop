@@ -1,7 +1,8 @@
 ---
 title: "タスクの依存が輪になっているときに警告を出すか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0825-dependency-cycle-detection]
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -56,5 +57,4 @@ createdAt: 2026-08-30T06:21:28.294Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+やる

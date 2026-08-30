@@ -1,7 +1,8 @@
 ---
 title: "記録が増え続けると状況表示が重くなる件に手を入れるか"
-status: open
+status: closed
 importance: BLOCK
+tasks: [T-20260830-0825-metrics-read-cap, T-20260830-0825-archived-tasks-read-cap]
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -60,5 +61,4 @@ createdAt: 2026-08-30T06:21:28.294Z
 
 ## 回答
 
-- [ ] 対応不要(このままクローズしてよい)
-- [ ] 回答を下に書いた
+読む量に上限を設けて。とくに archive されたものは優先度は低い。

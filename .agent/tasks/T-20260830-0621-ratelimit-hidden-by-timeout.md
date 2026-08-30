@@ -1,10 +1,10 @@
 ---
 title: "利用上限が時間切れに隠れると、やり直し回数を消費しモデルまで昇格して費用が増える"
-status: ready
+status: completed
 priority: 3
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.ts)(元: -)"
+retries: 0
+note: "分類順を「利用上限 → タイムアウト」に変更。タイムアウト時は stderr のみを判定対象にして誤検出を抑えた"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -77,11 +77,3 @@ crash-backoff のストリーク管理(`nextFastCrashStreak`、`lib/supervisor.t
 ## 完了条件
 
 利用上限が時間切れに隠れた場合でも、やり直し回数を消費せず待機が入ること。機械的検証が通ること。
-
-## 試行履歴
-
-### 試行 1(2026-08-30T08:11:25.131Z, Supervisor 記録: マージ衝突)
-
-- 結果: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.ts)
-- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
-- この記録は機械的検出のみで、失敗原因の分析ではない

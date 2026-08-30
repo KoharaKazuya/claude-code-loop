@@ -1,10 +1,10 @@
 ---
 title: "マージ衝突の再試行が必ずまた衝突し、タスクのやり直し回数を使い切る"
-status: ready
+status: failed
 priority: 2
 dependencies: []
-retries: 1
-note: "失敗のため ready に戻す(1/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.finish.test.ts)(元: -)"
+retries: 3
+note: "失敗回数が上限(3)に達した。最後の失敗: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0621-conflict-retry-always-reconflicts.md)(元: 失敗のため ready に戻す(2/3)。理由: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks…)"
 createdAt: 2026-08-30T06:21:28.294Z
 ---
 
@@ -83,3 +83,17 @@ Supervisor が残した記録から確認できる)。
 - 結果: main へのマージが衝突した(.agent/decisions/index.md, CHANGELOG.md, lib/supervisor.finish.test.ts)
 - このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
 - この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 2(2026-08-30T08:13:38.210Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0621-conflict-retry-always-reconflicts.md, CHANGELOG.md, docs/architecture.md, lib/supervisor.test.ts, lib/supervisor.ts)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+
+### 試行 3(2026-08-30T08:23:29.090Z, Supervisor 記録: マージ衝突)
+
+- 結果: main へのマージが衝突した(.agent/decisions/index.md, .agent/tasks/T-20260830-0621-conflict-retry-always-reconflicts.md)
+- このタスクのブランチを main へ統合できなかった。次の試行は衝突が再現した状態の worktree で起動される。`git status` で衝突ファイルを確認し、解消してコミットすることから始めること
+- この記録は機械的検出のみで、失敗原因の分析ではない
+- 未コミット差分を `/home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z.patch` へ退避した(`CHANGELOG.md`, `lib/ratelimit.test.ts`, `lib/ratelimit.ts`, `lib/supervisor.finish.test.ts`, `lib/supervisor.ts`)。復元は `git apply /home/node/.local/state/ccloop/claude-code-loop-cd26cd26/patches/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z.patch`
+- コミット済みの成果はブランチ `agent/conflict/T-20260830-0621-conflict-retry-always-reconflicts-20260830T082329Z` に退避した(削除していない)

@@ -50,7 +50,7 @@ import {
 import { log } from "./log.ts";
 import { mergeAgentBranch, type ConflictKind, type MergeOutcome } from "./merge.ts";
 import { ccloopHome, createPaths, resolveRepoRoot, type Paths } from "./paths.ts";
-import { detectRateLimit } from "./ratelimit.ts";
+import { detectSessionRateLimit } from "./ratelimit.ts";
 import { rotate, rotateResultIsEmpty, type RotateOptions } from "./rotate.ts";
 import { agentsArgs } from "./agents.ts";
 import { generateSystemPrompt } from "./prompt.ts";
@@ -931,9 +931,13 @@ export function isFastCrash(res: SessionResult, wallMs: number): boolean {
 
 /**
  * fastCrashStreak の次の値を、1 セッションの結果から計算する。finishTaskSession から
- * 判定ロジックだけを切り出したもの(単体テストで検証できるようにするため)。判定順序は
- * finishTaskSession の結果分類(6. 結果の分類: タイムアウト → レートリミット → それ以外)と
- * 揃えてある:
+ * 判定ロジックだけを切り出したもの(単体テストで検証できるようにするため)。
+ *
+ * finishTaskSession の結果分類(6. 結果の分類: レートリミット → タイムアウト → それ以外)は
+ * retries・待機の設定を誤らせないためレートリミットを最優先にするが、こちらは判定の目的が
+ * 異なるため timedOut を先に見てよい: タイムアウトになるまで(taskTimeoutMs 分、通常は数十分)
+ * 走ったセッションはレートリミットが絡んでいるかどうかに関わらず「起動直後に落ちた」瞬時
+ * クラッシュではないため、streak は 0 に戻すのが正しい。
  *   1. タイムアウトは瞬時クラッシュではないため streak を 0 に戻す(レートリミットかどうかに
  *      関わらず優先する)。
  *   2. レートリミットによる終了は環境要因の故障でも復旧の証拠でもないため据え置く(増減させない)。
@@ -2353,9 +2357,13 @@ function recordMetrics(params: {
 
 // ---------- レートリミット ----------
 
-/** ベストエフォートのレートリミット検出(誤検出しても待機するだけで壊れない) */
+/**
+ * ベストエフォートのレートリミット検出(誤検出しても待機するだけで壊れない)。
+ * 判定自体は ratelimit.ts の detectSessionRateLimit に委譲する(タイムアウト時は
+ * stderr のみを見る、という線引きの詳細はそちらのコメントを参照)。
+ */
 function isSessionRateLimited(res: SessionResult): boolean {
-  return detectRateLimit(`${res.stdout}\n${res.stderr}`, res.exitCode);
+  return detectSessionRateLimit(res);
 }
 
 function applyRateLimit(config: Config): void {
@@ -3341,14 +3349,22 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
       log(`${styleText(meta.color, meta.symbol)} ${taskId} ${t.status} (session ${session})`);
     };
 
-    // 6. 結果の分類(判定の順序に意味がある)
+    // 6. 結果の分類(判定の順序に意味がある: レートリミット → タイムアウト → それ以外)
     const errorSubtype = sessionErrorSubtype(res);
-    if (res.timedOut) {
-      fail(`タイムアウト(${config.taskTimeoutMs}ms)`, "timeout");
-    } else if (rateLimited) {
-      // レートリミットはタスクの失敗として数えない(retries を増やさない)。worktree の
-      // 扱いはマージ結果に従うため、ここでは待機の設定だけ行う
+    if (rateLimited) {
+      // レートリミットを最優先で見る。利用上限に当たったまま CLI がすぐには終了せず
+      // タイムアウトで kill されるケースがあり、これをタイムアウト側で先に拾ってしまうと
+      // retries を消費したうえ待機(rateLimit.resumeAt)も設定されないまま、同じ状況を
+      // 繰り返してしまう。レートリミットはタスクの失敗として数えない(retries を増やさない)。
+      // worktree の扱いはマージ結果に従うため、ここでは待機の設定だけ行う
       applyRateLimit(config);
+      if (res.timedOut) {
+        log(
+          `${taskId}: タイムアウトで打ち切られたが利用上限が検出されたため、やり直し回数を消費しない(session ${session})`,
+        );
+      }
+    } else if (res.timedOut) {
+      fail(`タイムアウト(${config.taskTimeoutMs}ms)`, "timeout");
     } else {
       clearRateLimit();
       // 統合できていれば main 側のタスクファイルにセッションの更新が反映されている
