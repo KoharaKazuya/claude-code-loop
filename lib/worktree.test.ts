@@ -325,6 +325,83 @@ describe("mergeInProgress / gitOperationInProgress", () => {
     expect(mergeInProgress(wtPath)).toBe(true);
     expect(gitOperationInProgress(wtPath)).toBe(true);
   });
+
+  it("コンフリクトした revert の途中は true(REVERT_HEAD)", () => {
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    execFileSync("git", ["add", "conflict.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "add base"], { cwd: dir });
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir }).toString().trim();
+
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "changed\n");
+    execFileSync("git", ["commit", "-am", "change"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+
+    try {
+      execFileSync("git", ["revert", "--no-edit", baseSha], { cwd: dir });
+    } catch {
+      // コンフリクトによる非ゼロ終了は想定通り
+    }
+
+    expect(gitOperationInProgress(dir)).toBe(true);
+
+    execFileSync("git", ["revert", "--abort"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+  });
+
+  it("bisect の途中は true(BISECT_LOG)", () => {
+    fs.writeFileSync(path.join(dir, "f.txt"), "1\n");
+    execFileSync("git", ["add", "f.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "commit 1"], { cwd: dir });
+
+    fs.writeFileSync(path.join(dir, "f.txt"), "2\n");
+    execFileSync("git", ["commit", "-am", "commit 2"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+
+    // good/bad を指定していない `git bisect start` だけの時点で BISECT_LOG は作られる(実測確認済み)。
+    execFileSync("git", ["bisect", "start"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(true);
+
+    execFileSync("git", ["bisect", "reset"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+  });
+
+  it("コンフリクトした rebase の途中は true(rebase-merge)", () => {
+    // 既定の rebase は rebase-merge ディレクトリを作る。rebase-apply は
+    // `git rebase --apply` / `git am` 経由でのみ作られるため、ここでは検証しない。
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "base\n");
+    execFileSync("git", ["add", "conflict.txt"], { cwd: dir });
+    execFileSync("git", ["commit", "-m", "add base"], { cwd: dir });
+    execFileSync("git", ["branch", "side3"], { cwd: dir });
+
+    execFileSync("git", ["checkout", "side3"], { cwd: dir });
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "side change\n");
+    execFileSync("git", ["commit", "-am", "side change"], { cwd: dir });
+
+    execFileSync("git", ["checkout", "main"], { cwd: dir });
+    fs.writeFileSync(path.join(dir, "conflict.txt"), "main change\n");
+    execFileSync("git", ["commit", "-am", "main change"], { cwd: dir });
+
+    execFileSync("git", ["checkout", "side3"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+
+    try {
+      execFileSync("git", ["rebase", "main"], { cwd: dir });
+    } catch {
+      // コンフリクトによる非ゼロ終了は想定通り
+    }
+
+    expect(gitOperationInProgress(dir)).toBe(true);
+
+    execFileSync("git", ["rebase", "--abort"], { cwd: dir });
+
+    expect(gitOperationInProgress(dir)).toBe(false);
+  });
 });
 
 describe("deleteBranch / renameBranch / pruneWorktrees", () => {

@@ -1,9 +1,10 @@
 ---
 title: "作業中の git 操作を検出する安全弁の未検証な条件をテストで固める"
-status: ready
+status: completed
 priority: 3
 dependencies: []
 retries: 0
+note: "REVERT_HEAD / BISECT_LOG / rebase-merge の 3 条件を実操作で再現するテストを追加。実装は不備なしで変更不要だった"
 createdAt: 2026-08-30T13:54:37.114Z
 ---
 
