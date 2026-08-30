@@ -3247,15 +3247,16 @@ export async function mainLoop(opts: { force?: boolean } = {}): Promise<void> {
   const guard = evaluateStartupGuard(evaluateLoopLiveness(readRunnerRecord(repoPaths().runnerPath), new Date()));
   if (!guard.allow) {
     if (opts.force === true) {
-      log(`--force が指定されたため、次の警告を無視して起動します:\n${guard.message}`);
+      log(`警告: --force が指定されたため、次の警告を無視して起動します:\n${guard.message}`);
     } else {
-      // ログファイルではなく確実に標準エラーへ出す(呼び出し元がここで異常終了に気づけるように)
+      // log() は標準出力なので、起動を諦めたことは標準エラーへ出す
+      // (呼び出し元が出力を分けて扱えるように。終了コードも 1 にする)
       console.error(guard.message);
       process.exitCode = 1;
       return;
     }
   } else if (guard.warning !== null) {
-    log(guard.warning);
+    log(`警告: ${guard.warning}`);
   }
 
   // 自律実行セッションへ渡す settings は毎回の起動時に組み立て直す
