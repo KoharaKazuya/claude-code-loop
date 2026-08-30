@@ -142,13 +142,17 @@ git worktree もここ(`worktrees/<タスクID>`、ブランチ `agent/<タス�
 | キー | 内容 |
 | --- | --- |
 | `schemaVersion` | このファイルのスキーマバージョン(現在 1) |
+| `claudeCommand` | セッションを起動するコマンド名(既定 `claude`)。ラッパースクリプト経由で起動したい場合に変える |
 | `model` / `escalation` | セッションに使うモデル、リトライ超過時のエスカレーション先 |
 | `permissionMode` | `claude -p` の permission mode |
 | `maxRetries` / `taskTimeoutMs` / `maxTurns` | タスクセッションのリトライ上限・タイムアウト・ターン上限 |
 | `rateLimit.backoffMs` | レート制限検出時のバックオフ |
+| `idlePollMs` | 次に起動できるものが無いときの待機間隔(既定 60000)。短くすると状況変化への反応が早くなる代わりに空回りが増える |
 | `explore` | 探索セッションの有効/無効・最小間隔(`minIntervalMs` は、実行可能タスクがある間の定期見直し間隔と、直前の探索が空振りだった場合のクールダウンを兼ねる) |
 | `triage` | Human Review の軽量モデル判定の有効/無効・モデル |
 | `parallel.maxSessions` | 独立な ready タスクを同時に走らせる上限(探索セッションもこの枠を 1 つ消費し、探索中は新規タスクセッションを起動しない) |
+| `parallel.worktreeDir` | タスクセッションの worktree 置き場(既定は状態ディレクトリ配下の `worktrees/`)。相対パスはリポジトリルート基準で解決する |
+| `parallel.linkPaths` | worktree にリポジトリ直下から symlink する gitignore 済みパス(既定 `["node_modules"]`)。セッションごとの依存インストールを省くためのもの |
 
 `.agent/claude-settings.json`(任意)は permissions の allow/deny への追記だけを書く。
 `.agent/PROMPT.local.md`(任意)はリポジトリ固有の追加ルールを書くと共通ルールの後ろに連結されて
