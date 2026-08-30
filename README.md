@@ -115,9 +115,10 @@ Ctrl+C しなくても、実行できるタスクが無くなり新しく探索�
   次のセッション起動時に決定論判定 → 軽量モデル判定(triage)までが即時に走り、探索セッション
   (最終段)は次に空き枠が空いたタイミングで 1 回にまとめて取り込む(BLOCK は常に最終段のみ)。
 - **failed / blocked タスクの再実行**: `ccloop retry <タスクID>` を使う。実行中でなければ、直前の失敗理由
-  (note と本文の「## 試行履歴」)を表示したうえで `status: ready`、`retries: 0` に戻す(snoozeUntil が
-  設定されていれば併せて解除する)。失敗原因を放置すると再び失敗するので、原因側の修正を先に行うのが
-  普通。手で該当タスクファイル(`.agent/tasks/T-<日時>-<slug>.md`)の frontmatter を編集する方法も
+  (note と本文の「## 試行履歴」)を表示したうえで `status: ready`、`retries: 0`、マージ衝突による
+  再試行回数(`conflictRetries`)を 0 に戻す(snoozeUntil が設定されていれば併せて解除する)。
+  失敗原因を放置すると再び失敗するので、原因側の修正を先に行うのが普通。手で該当タスクファイル
+  (`.agent/tasks/T-<日時>-<slug>.md`)の frontmatter を編集する方法も
   引き続き使える。completed タスク・closed な Review は `.agent/archive/` へ自動的に退避される
   (ローテーションはループ内で自動)。判断ファイルは `.agent/decisions/index.md` で人間がチェックを
   付けたものだけが退避される。未チェックの判断が何件溜まっているかは `ccloop status` の
