@@ -42,10 +42,12 @@ import {
   lastAttemptFailureKind,
   lastAttemptHistoryEntry,
   loadDenyRules,
+  loadMetrics,
   loadPendingDecisions,
   loadPermissionDenials,
   mainChangedByTaskOutcome,
   mainLoop,
+  metricsTotalLine,
   newTaskId,
   nextFastCrashStreak,
   nextStopEscalation,
@@ -66,6 +68,7 @@ import {
   planTaskSelection,
   projectsDirName,
   prunePatches,
+  readTailLines,
   recordFailure,
   recordPermissionDenials,
   recoverStartupIn,
@@ -3682,6 +3685,71 @@ describe("recordPermissionDenials", () => {
   });
 });
 
+describe("readTailLines", () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-tailread-"));
+    filePath = path.join(dir, "log.jsonl");
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** id ごとに 1 行の JSON を作る(1 行約 30〜40 バイト程度) */
+  function line(id: number): string {
+    return JSON.stringify({ id, timestamp: `2026-01-01T00:00:${String(id % 60).padStart(2, "0")}.000Z` });
+  }
+
+  it("ファイルが無ければ空・truncated false", () => {
+    expect(readTailLines(filePath, 1024, 100)).toEqual({ lines: [], truncated: false });
+  });
+
+  it("上限未満のファイルは全件読めて truncated は false", () => {
+    const lines = [line(0), line(1), line(2)];
+    fs.writeFileSync(filePath, lines.join("\n") + "\n");
+
+    const result = readTailLines(filePath, 1024 * 1024, 100);
+
+    expect(result.truncated).toBe(false);
+    expect(result.lines).toEqual(lines);
+  });
+
+  it("maxBytes を超えるファイルは末尾だけを読み、先頭の切れた行を捨て、truncated は true", () => {
+    // 1 行あたりのバイト数を揃えて書き、maxBytes をその途中に来るよう選ぶ
+    const lines = Array.from({ length: 50 }, (_, i) => line(i));
+    fs.writeFileSync(filePath, lines.join("\n") + "\n");
+    const fileSize = fs.statSync(filePath).size;
+    const maxBytes = Math.floor(fileSize / 2); // 末尾半分だけを読ませる
+
+    const result = readTailLines(filePath, maxBytes, 1000);
+
+    expect(result.truncated).toBe(true);
+    // 残った行はすべて JSON として解釈できる(先頭の切れた行が捨てられている)
+    for (const l of result.lines) {
+      expect(() => JSON.parse(l)).not.toThrow();
+    }
+    // 最新の行(末尾)が確実に含まれる
+    expect(result.lines.at(-1)).toBe(line(49));
+    expect(result.lines.length).toBeGreaterThan(0);
+    expect(result.lines.length).toBeLessThan(lines.length);
+  });
+
+  it("行数が maxEntries を超えるファイルは末尾 maxEntries 行に絞り、truncated は true", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => line(i));
+    fs.writeFileSync(filePath, lines.join("\n") + "\n");
+
+    const result = readTailLines(filePath, 1024 * 1024, 10);
+
+    expect(result.truncated).toBe(true);
+    expect(result.lines).toHaveLength(10);
+    expect(result.lines).toEqual(lines.slice(20));
+    expect(result.lines.at(-1)).toBe(line(29));
+  });
+});
+
 describe("loadPermissionDenials", () => {
   let dir: string;
 
@@ -3694,7 +3762,7 @@ describe("loadPermissionDenials", () => {
   });
 
   it("ファイルが無ければ空配列", () => {
-    expect(loadPermissionDenials(dir)).toEqual([]);
+    expect(loadPermissionDenials(dir)).toEqual({ entries: [], truncated: false });
   });
 
   it("壊れた行はスキップして続行する", () => {
@@ -3705,9 +3773,93 @@ describe("loadPermissionDenials", () => {
     ];
     fs.writeFileSync(permissionDenialsPathOf(dir), lines.join("\n") + "\n");
 
-    const entries = loadPermissionDenials(dir);
+    const { entries, truncated } = loadPermissionDenials(dir);
 
     expect(entries.map((e) => e.session)).toEqual(["T-001", "T-002"]);
+    expect(truncated).toBe(false);
+  });
+
+  it("大量記録でも打ち切られ、壊れず末尾のエントリを含んで返す", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      lines.push(
+        JSON.stringify({
+          timestamp: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+          session: `T-${String(i).padStart(5, "0")}`,
+          tool: "Bash",
+          // command を padding で伸ばし、5000 行の合計が LOG_READ_MAX_BYTES(512 KiB)を超えるようにする。
+          // これにより行数上限だけでなくバイト数上限側の切り出し(readTailLines の size > maxBytes 分岐)も
+          // この関数経由で踏む
+          command: `ls ${"x".repeat(40)}`,
+        }),
+      );
+    }
+    fs.writeFileSync(permissionDenialsPathOf(dir), lines.join("\n") + "\n");
+    expect(fs.statSync(permissionDenialsPathOf(dir)).size).toBeGreaterThan(512 * 1024);
+
+    const { entries, truncated } = loadPermissionDenials(dir);
+
+    expect(truncated).toBe(true);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => typeof e.session === "string")).toBe(true);
+    expect(entries.at(-1)?.session).toBe("T-04999");
+  });
+});
+
+describe("loadMetrics", () => {
+  let dir: string;
+  let metricsPath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-test-load-metrics-"));
+    metricsPath = path.join(dir, "metrics.jsonl");
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ファイルが無ければ空・truncated false", () => {
+    expect(loadMetrics(metricsPath)).toEqual({ entries: [], truncated: false });
+  });
+
+  it("壊れた行はスキップして続行する", () => {
+    const lines = [
+      JSON.stringify({ timestamp: "2026-08-10T00:00:00.000Z", kind: "task", model: "claude-test", costUsd: 0.1 }),
+      "not json",
+      JSON.stringify({ timestamp: "2026-08-10T00:00:01.000Z", kind: "task", model: "claude-test", costUsd: 0.2 }),
+    ];
+    fs.writeFileSync(metricsPath, lines.join("\n") + "\n");
+
+    const { entries, truncated } = loadMetrics(metricsPath);
+
+    expect(entries.map((e) => e.costUsd)).toEqual([0.1, 0.2]);
+    expect(truncated).toBe(false);
+  });
+
+  it("大量記録でも打ち切られ、最新エントリを含む", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      lines.push(
+        JSON.stringify({
+          timestamp: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+          kind: "task",
+          model: "claude-test",
+          taskId: `T-${String(i).padStart(5, "0")}`,
+          costUsd: 0.01,
+        }),
+      );
+    }
+    fs.writeFileSync(metricsPath, lines.join("\n") + "\n");
+    // 5000 行の合計が LOG_READ_MAX_BYTES(512 KiB)を超えており、行数上限だけでなくバイト数上限側の
+    // 切り出し(readTailLines の size > maxBytes 分岐)もこの関数経由で踏んでいる
+    expect(fs.statSync(metricsPath).size).toBeGreaterThan(512 * 1024);
+
+    const { entries, truncated } = loadMetrics(metricsPath);
+
+    expect(truncated).toBe(true);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.at(-1)?.taskId).toBe("T-04999");
   });
 });
 
@@ -3801,11 +3953,45 @@ describe("summarizePermissionDenials", () => {
 
     expect(summary.rows[0]?.sessions).toEqual(["T-004", "T-003", "T-001"]);
   });
+
+  it("truncated を渡さなければ partialWindow は false", () => {
+    const entries = [record({ timestamp: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString() })];
+
+    const summary = summarizePermissionDenials(entries, now);
+
+    expect(summary.partialWindow).toBe(false);
+  });
+
+  it("truncated かつ最古のエントリがウィンドウ内なら partialWindow は true(読み飛ばした側にもウィンドウ内の記録が残りうる)", () => {
+    // 最古でも 7 日ウィンドウ(now - 1日)内なので、読み飛ばした側にもウィンドウ内の記録が残っている可能性がある
+    const entries = [record({ timestamp: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString() })];
+
+    const summary = summarizePermissionDenials(entries, now, { truncated: true });
+
+    expect(summary.partialWindow).toBe(true);
+  });
+
+  it("truncated でも最古のエントリがウィンドウ外なら partialWindow は false(ウィンドウ内は読み切れている)", () => {
+    // 最古が 7 日ウィンドウより古いので、ウィンドウ内の記録は読み飛ばされていない
+    const entries = [record({ timestamp: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString() })];
+
+    const summary = summarizePermissionDenials(entries, now, { truncated: true });
+
+    expect(summary.partialWindow).toBe(false);
+  });
+
+  it("truncated かつ entries が空なら partialWindow は true(安全側)", () => {
+    const summary = summarizePermissionDenials([], now, { truncated: true });
+
+    expect(summary.partialWindow).toBe(true);
+  });
 });
 
 describe("permissionDenialLines", () => {
   it("rows が空なら空配列を返す", () => {
-    expect(permissionDenialLines({ total: 0, rows: [], hiddenPatterns: 0, hiddenCount: 0 })).toEqual([]);
+    expect(
+      permissionDenialLines({ total: 0, rows: [], hiddenPatterns: 0, hiddenCount: 0, partialWindow: false }),
+    ).toEqual([]);
   });
 
   it("各行に件数・パターン・例・最終時刻(分まで)・セッションを含め、隠れた分と導線を末尾に付ける", () => {
@@ -3822,6 +4008,7 @@ describe("permissionDenialLines", () => {
       ],
       hiddenPatterns: 2,
       hiddenCount: 5,
+      partialWindow: false,
     };
 
     const lines = permissionDenialLines(summary);
@@ -3829,6 +4016,52 @@ describe("permissionDenialLines", () => {
     expect(lines[0]).toBe("9x Bash(stat …)  例: stat -c %s file  最終 2026-08-16T20:39 (T-178, T-171)");
     expect(lines).toContain("…他 2 パターン 5 件");
     expect(lines.at(-1)).toContain("permissions.allow");
+  });
+
+  it("partialWindow が true のとき、読み飛ばしている旨の注記を末尾の導線の手前に付ける", () => {
+    const summary = {
+      total: 1,
+      rows: [
+        {
+          pattern: "Bash(stat …)",
+          count: 1,
+          example: "stat -c %s file",
+          lastAt: "2026-08-16T20:39:12.000Z",
+          sessions: ["T-178"],
+        },
+      ],
+      hiddenPatterns: 0,
+      hiddenCount: 0,
+      partialWindow: true,
+    };
+
+    const lines = permissionDenialLines(summary);
+
+    expect(lines).toContain(
+      "※ 記録が多いため直近ぶんだけを読んで集計している(これより古い拒否は件数に入っていない)",
+    );
+    expect(lines.at(-1)).toContain("permissions.allow");
+    expect(lines.at(-2)).toContain("記録が多いため");
+  });
+});
+
+describe("metricsTotalLine", () => {
+  function metric(costUsd: number): Parameters<typeof metricsTotalLine>[0][number] {
+    return { timestamp: "2026-08-16T00:00:00.000Z", kind: "task", model: "claude-test", costUsd };
+  }
+
+  it("truncated が false なら「終了した N セッション分」と表示する", () => {
+    const line = metricsTotalLine([metric(0.1), metric(0.2), metric(0.3)], false);
+
+    expect(line).toBe("累計: cost=$0.6000(終了した 3 セッション分・サブエージェント込み)");
+  });
+
+  it("truncated が true なら「直近 N セッション分」で、古い記録が集計外である旨を付ける", () => {
+    const line = metricsTotalLine([metric(0.1), metric(0.2)], true);
+
+    expect(line).toBe(
+      "累計: cost=$0.3000(直近 2 セッション分・サブエージェント込み。これより古い記録は集計に入っていない)",
+    );
   });
 });
 

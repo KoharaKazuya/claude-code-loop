@@ -15,6 +15,7 @@ import {
   formatStatus,
   hrSummary,
   loadSalvageFailures,
+  permissionDenialsPathOf,
   repoPaths,
   type SalvageFailure,
   setRepoPaths,
@@ -361,6 +362,72 @@ describe("collectStatusData / formatStatus", () => {
       // 「セッション数」という重複ラベル(何を数えているか区別できない旧表記)が再発していないこと
       const occurrences = out.match(/セッション数/g) ?? [];
       expect(occurrences.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe("metrics / permission-denials の読み込み上限", () => {
+    // 上限(LOG_READ_MAX_ENTRIES = 1000)を超える行数だけを目的にした最小限の行数(1 行を短くして行数で踏む)
+    const OVER_LIMIT_COUNT = 1200;
+
+    it("metrics.jsonl が上限行数を超えると metricsTruncated=true になり、metrics は上限件数に収まり最新エントリを含む", () => {
+      const lines: string[] = [];
+      for (let i = 0; i < OVER_LIMIT_COUNT; i++) {
+        lines.push(
+          JSON.stringify({
+            timestamp: NOW.toISOString(),
+            kind: "task",
+            model: "claude-test",
+            taskId: `T-${String(i).padStart(4, "0")}`,
+            costUsd: 0.01,
+          }),
+        );
+      }
+      fs.writeFileSync(repoPaths().metricsPath, lines.join("\n") + "\n");
+
+      const data = collectStatusData(NOW);
+
+      expect(data.metricsTruncated).toBe(true);
+      expect(data.metrics.length).toBeLessThanOrEqual(1000);
+      // 末尾(最新)のエントリが含まれる = 変数の取り違えで先頭側を読んでいない
+      expect(data.metrics.at(-1)?.taskId).toBe(`T-${String(OVER_LIMIT_COUNT - 1).padStart(4, "0")}`);
+    });
+
+    it("metrics.jsonl が上限未満なら metricsTruncated=false", () => {
+      const line = JSON.stringify({ timestamp: NOW.toISOString(), kind: "task", model: "claude-test", costUsd: 0.01 });
+      fs.writeFileSync(repoPaths().metricsPath, line + "\n");
+
+      const data = collectStatusData(NOW);
+
+      expect(data.metricsTruncated).toBe(false);
+      expect(data.metrics).toHaveLength(1);
+    });
+
+    it("permission-denials.jsonl が上限行数を超えると partialWindow=true になる(タイムスタンプは全て直近7日以内)", () => {
+      const lines: string[] = [];
+      for (let i = 0; i < OVER_LIMIT_COUNT; i++) {
+        lines.push(
+          JSON.stringify({
+            timestamp: NOW.toISOString(),
+            session: `T-${String(i).padStart(4, "0")}`,
+            tool: "Bash",
+            command: "ls",
+          }),
+        );
+      }
+      fs.writeFileSync(permissionDenialsPathOf(repoPaths().stateDir), lines.join("\n") + "\n");
+
+      const data = collectStatusData(NOW);
+
+      expect(data.permissionDenials.partialWindow).toBe(true);
+    });
+
+    it("permission-denials.jsonl が上限未満なら partialWindow=false", () => {
+      const line = JSON.stringify({ timestamp: NOW.toISOString(), session: "T-0001", tool: "Bash", command: "ls" });
+      fs.writeFileSync(permissionDenialsPathOf(repoPaths().stateDir), line + "\n");
+
+      const data = collectStatusData(NOW);
+
+      expect(data.permissionDenials.partialWindow).toBe(false);
     });
   });
 
