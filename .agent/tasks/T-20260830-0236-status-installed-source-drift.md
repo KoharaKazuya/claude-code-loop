@@ -1,9 +1,10 @@
 ---
 title: "status にインストール済み ccloop とリポジトリの乖離を表示する"
-status: ready
+status: completed
 priority: 2
 dependencies: []
 retries: 0
+note: "status に乖離警告を追加。実機で表示を確認済み(tests/lint/typecheck 通過)"
 createdAt: 2026-08-30T02:36:30.702Z
 ---
 
