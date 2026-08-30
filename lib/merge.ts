@@ -157,7 +157,8 @@ function hasControlChar(s: string): boolean {
   return false;
 }
 
-/** mergeCommitMessage が本文に書く「何を機械的に解決したか」の内訳 */
+/** 「何を機械的に解決したか」の内訳。mergeCommitMessage が本文に書く内容に加え、
+ *  MergeOutcome の "renumbered" が resolved として持ち出す */
 export interface ResolvedMechanicalPaths {
   /** own-task-file を解決した場合、そのパス */
   ownTaskFile?: string | null;
@@ -213,14 +214,15 @@ export type ConflictKind = "substantive" | "mechanical";
 export type MergeOutcome =
   | { result: "merged" }
   /**
-   * own-task-file の衝突を機械的に解決してマージできたことを表す(常に own-task-file は
-   * ブランチ側の内容を採用する。モジュール先頭の説明を参照)。
+   * own-task-file と `.agent/decisions/index.md` のうち衝突したものを機械的に解決して
+   * マージできたことを表す(own-task-file は常にブランチ側の内容を採用する。
+   * モジュール先頭の説明を参照)。何を解決したかは `resolved` に入る。
    * "renumbered" という名前は ID 連番の改番機能があった頃の名残で、改番機能は既に無く
    * 実態と乖離しているが、この値は `mergeLabel` 経由で `recordMetrics`
    * (supervisor.ts の recordMetrics)が書く JSONL に残るため、過去のメトリクス値との
    * 継続性を優先してあえて改名していない。
    */
-  | { result: "renumbered" }
+  | { result: "renumbered"; resolved: ResolvedMechanicalPaths }
   | { result: "nothing-to-merge" }
   /** conflictKind は classifyConflicts が何と分類したかを表す。"mechanical" は
    *  本来機械的に解決できるはずだったが解決に失敗したことを意味する。 */
@@ -340,10 +342,11 @@ export function resolveMechanically(root: string, branch: string, taskId: string
       throw new Error(`コンフリクト解消後も未マージのパスが残っている: ${remainingUnmerged}`);
     }
 
-    const message = mergeCommitMessage(branch, taskId, title, trailer, {
+    const resolved: ResolvedMechanicalPaths = {
       ownTaskFile,
       decisionsIndex: decisionsIndex?.path ?? null,
-    });
+    };
+    const message = mergeCommitMessage(branch, taskId, title, trailer, resolved);
     execFileSync("git", ["commit", "-F", "-"], {
       cwd: root,
       input: message,
@@ -354,7 +357,7 @@ export function resolveMechanically(root: string, branch: string, taskId: string
       env: { ...process.env, GIT_HOOKS_IGNORE_DETECT_TODO: "1" },
     });
 
-    return { result: "renumbered" };
+    return { result: "renumbered", resolved };
   } catch {
     // 想定外の例外。作業ツリーを壊れたまま残さないよう merge 進行中なら abort してから
     // conflict として返す(ここまでに分かっているパスがあれば添える)。abort 自体が
@@ -369,8 +372,8 @@ export function resolveMechanically(root: string, branch: string, taskId: string
  * `branch`(想定: `agent/<taskId>`)を root 上の現在のブランチ(main を想定)へマージする。
  * - branch に root からの新規コミットが無ければ "nothing-to-merge"。
  * - 単純にマージできれば "merged"。
- * - コンフリクトが mechanical(own-task-file のみ)なら機械的に解決して "renumbered"
- *   (モジュール先頭の説明を参照)。
+ * - コンフリクトが mechanical(own-task-file・decisions/index.md)なら機械的に解決して
+ *   "renumbered"(モジュール先頭の説明を参照)。
  * - それ以外のコンフリクトは abort して "conflict"(paths に対象パスを列挙)。
  * - マージ自体が開始できない(ローカルの未コミット変更を上書きしてしまう等)場合は
  *   "blocked"(reason に git のエラー出力)。

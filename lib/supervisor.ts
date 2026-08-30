@@ -2848,12 +2848,24 @@ function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: 
 }
 
 /** MergeOutcome を 1 行のログ表現にする。 */
-function describeMergeOutcome(outcome: MergeOutcome): string {
+export function describeMergeOutcome(outcome: MergeOutcome): string {
   switch (outcome.result) {
     case "merged":
       return "main へマージした";
-    case "renumbered":
-      return "main へマージした(機械的に解決: タスクファイルはブランチ側を採用)";
+    case "renumbered": {
+      // 内訳の文言は mergeCommitMessage が本文に書く表現と揃える。パス自体は
+      // 1 行ログを短く保つため出さない。
+      const details: string[] = [];
+      if (outcome.resolved.ownTaskFile != null) {
+        details.push("タスクファイルはブランチ側を採用");
+      }
+      if (outcome.resolved.decisionsIndex != null) {
+        details.push("決定インデックスは両ブランチの項目を統合");
+      }
+      return details.length > 0
+        ? `main へマージした(機械的に解決: ${details.join(" / ")})`
+        : "main へマージした(機械的に解決)";
+    }
     case "nothing-to-merge":
       return "ブランチに新しいコミットがなく、マージするものがなかった";
     case "conflict":
