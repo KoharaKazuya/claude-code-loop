@@ -201,6 +201,8 @@ export interface Paths {
   metricsPath: string;
   denialsPath: string;
   patchesDir: string;
+  /** 未コミット差分の退避に失敗したことを記録するマーカー(`<taskId>.json`)の置き場 */
+  salvageFailuresDir: string;
   worktreesDir: string;
   generatedSettingsPath: string;
   /** 共通ルール(+ PROMPT.local.md)を連結して生成する system prompt ファイル */
@@ -232,6 +234,7 @@ export function createPaths(root: string, env: NodeJS.ProcessEnv = process.env):
     metricsPath: path.join(stateDir, "metrics.jsonl"),
     denialsPath: path.join(stateDir, "permission-denials.jsonl"),
     patchesDir: path.join(stateDir, "patches"),
+    salvageFailuresDir: path.join(stateDir, "salvage-failures"),
     worktreesDir: path.join(stateDir, "worktrees"),
     generatedSettingsPath: path.join(stateDir, "claude-settings.json"),
     generatedSystemPromptPath: path.join(stateDir, "system-prompt.md"),

@@ -1319,9 +1319,13 @@ function recoverOrphanBranch(
   }
 
   // merged / renumbered / nothing-to-merge: 成果は main 側にあるので worktree とブランチを畳む
-  const leftovers = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : null;
-  if (worktreeExists) removeWorktree(root, worktree);
-  if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  const salvage = worktreeExists ? salvageWorktreeDiff(taskId, worktree, now, root) : ({ kind: "none" } as const);
+  if (salvage.kind === "failed") {
+    log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+  } else {
+    if (worktreeExists) removeWorktree(root, worktree);
+    if (!deleteBranch(root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+  }
   if (outcome.result !== "nothing-to-merge") {
     counts.recoveredMerges += 1;
     log(`${taskId}: 中断していたタスクの成果を回収した`);
@@ -1336,8 +1340,15 @@ function recoverOrphanBranch(
         ? "セッションが中断された(ブランチに成果は残っていなかった)"
         : "セッションが中断された(ブランチの成果は main へ回収済み)",
     at,
+    extraLines:
+      salvage.kind === "failed"
+        ? [
+            `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
+          ]
+        : undefined,
   });
 
+  const leftovers = salvage.kind === "saved" ? salvage : null;
   if (leftovers !== null) {
     const t = loadTaskIn(root, taskId);
     if (t === null) {
@@ -2914,21 +2925,83 @@ function reproduceMergeConflict(worktree: string, opts: { root?: string } = {}):
   }
 }
 
-/** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する。戻り値はパッチの絶対パスと対象パス */
+/** 未コミット差分の退避結果。失敗(failed)を null と区別できないと worktree を消してしまう */
+type SalvageOutcome =
+  | { kind: "none" }
+  | { kind: "saved"; patchFile: string; paths: string[] }
+  | { kind: "failed"; error: string };
+
+/** 退避に失敗して残した worktree の記録(status の「要対応」に出す) */
+export interface SalvageFailure {
+  taskId: string;
+  worktree: string;
+  at: string; // ISO 8601
+  error: string;
+}
+
+/**
+ * 退避失敗を state ディレクトリへ記録する(`<taskId>.json`。同じタスクの再発は上書きでよい)。
+ * 書き込み自体が失敗しても例外を投げない。退避失敗の記録でさらに落ちて worktree 削除の判断まで
+ * 壊すことがないようにするため
+ */
+function recordSalvageFailure(root: string, rec: SalvageFailure): void {
+  try {
+    const dir = createPaths(root).salvageFailuresDir;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${rec.taskId}.json`), JSON.stringify(rec));
+  } catch (err) {
+    log(`警告: ${rec.taskId} の退避失敗記録の書き込みに失敗した: ${String(err)}`);
+  }
+}
+
+/**
+ * 退避に失敗して残っている worktree の一覧(status 表示用)。
+ * 記録された worktree が既に存在しない(人間が片付けた)エントリはマーカーファイルごと
+ * 削除して結果から除く(自己清掃: status から自然に消える)。taskId 昇順。
+ * 失敗は握りつぶして空配列を返す(status を例外で落とさないため)。
+ */
+export function loadSalvageFailures(root: string = repoPaths().root): SalvageFailure[] {
+  try {
+    const dir = createPaths(root).salvageFailuresDir;
+    if (!fs.existsSync(dir)) return [];
+    const result: SalvageFailure[] = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(dir, name);
+      try {
+        const rec = JSON.parse(fs.readFileSync(file, "utf8")) as SalvageFailure;
+        if (!fs.existsSync(rec.worktree)) {
+          fs.rmSync(file, { force: true });
+          continue;
+        }
+        result.push(rec);
+      } catch {
+        // 壊れたファイルはスキップする
+      }
+    }
+    return result.sort((a, b) => a.taskId.localeCompare(b.taskId));
+  } catch {
+    return [];
+  }
+}
+
+/** worktree 上の未コミット差分を state ディレクトリの patches/ へ退避する */
 function salvageWorktreeDiff(
   taskId: string,
   worktree: string,
   at: Date,
   root: string = repoPaths().root,
-): { patchFile: string; paths: string[] } | null {
+): SalvageOutcome {
   try {
     const patchFile = path.join(patchesDirOf(root), patchFileName(taskId, at));
     const paths = salvagePatch(worktree, patchFile);
-    if (paths === null) return null;
-    return { patchFile, paths };
+    if (paths === null) return { kind: "none" };
+    return { kind: "saved", patchFile, paths };
   } catch (err) {
-    log(`警告: ${taskId} の未コミット差分の退避に失敗した: ${String(err)}`);
-    return null;
+    const error = String(err);
+    log(`警告: ${taskId} の未コミット差分の退避に失敗した: ${error}`);
+    recordSalvageFailure(root, { taskId, worktree, at: at.toISOString(), error });
+    return { kind: "failed", error };
   }
 }
 
@@ -2940,11 +3013,16 @@ function salvageWorktreeDiff(
 function parkTaskWorktree(taskId: string, worktree: string, branch: string, at: Date): string[] {
   if (!fs.existsSync(worktree)) return [];
   const lines: string[] = [];
-  const salvaged = salvageWorktreeDiff(taskId, worktree, at);
-  if (salvaged !== null) {
+  const salvage = salvageWorktreeDiff(taskId, worktree, at);
+  if (salvage.kind === "saved") {
     lines.push(
-      `- 未コミット差分を \`${salvaged.patchFile}\` へ退避した(${formatDiffPathList(salvaged.paths)})。復元は \`git apply ${salvaged.patchFile}\``,
+      `- 未コミット差分を \`${salvage.patchFile}\` へ退避した(${formatDiffPathList(salvage.paths)})。復元は \`git apply ${salvage.patchFile}\``,
     );
+  } else if (salvage.kind === "failed") {
+    lines.push(
+      `- 未コミット差分の退避に失敗したため worktree \`${worktree}\` を残した(中の差分を回収してから手で削除すること)`,
+    );
+    return lines;
   }
   try {
     removeWorktree(repoPaths().root, worktree);
@@ -3081,9 +3159,14 @@ export function finishTaskSession(config: Config, ctx: TaskSessionContext, res: 
           log(`error: ${taskId}: ${describeMergeOutcome(outcome)}`);
         } else if (outcome.result !== "blocked") {
           // blocked は main 側でマージを開始すらできていない状態。worktree に手を触れず次の試行へ回す
-          leftovers = salvageWorktreeDiff(taskId, worktree, now);
-          removeWorktree(repoPaths().root, worktree);
-          if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+          const salvage = salvageWorktreeDiff(taskId, worktree, now);
+          if (salvage.kind === "saved") leftovers = salvage;
+          if (salvage.kind === "failed") {
+            log(`警告: ${taskId}: 未コミット差分の退避に失敗したため worktree ${worktree} を残す`);
+          } else {
+            removeWorktree(repoPaths().root, worktree);
+            if (!deleteBranch(repoPaths().root, branch)) log(`警告: ブランチ ${branch} の削除に失敗した`);
+          }
         }
       }
     }
@@ -4686,6 +4769,8 @@ export interface StatusData {
   humanReview: { openBlock: HrEntry[]; openReview: HrEntry[]; answered: HrEntry[] };
   overview: Overview | null;
   pendingConflicts: PendingConflicts;
+  /** 未コミット差分の退避に失敗して残された worktree */
+  salvageFailures: SalvageFailure[];
   permissionDenials: PermissionDenialSummary;
   /** 未承認(未アーカイブ)の決定 */
   pendingDecisions: PendingDecisions;
@@ -4748,6 +4833,7 @@ export function collectStatusData(now: Date): StatusData {
     // config が読めなければ既定値にフォールバック
   }
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
+  const salvageFailures = loadSalvageFailures(repoPaths().root);
   const permissionDenials = summarizePermissionDenials(loadPermissionDenials(), now);
   const pendingDecisions = loadPendingDecisions();
 
@@ -4793,6 +4879,7 @@ export function collectStatusData(now: Date): StatusData {
     humanReview,
     overview,
     pendingConflicts,
+    salvageFailures,
     permissionDenials,
     pendingDecisions,
     nextRunnableTasks: next,
@@ -4891,6 +4978,12 @@ export function formatStatus(): string {
     "退避された衝突ブランチ — 内容を確認し、統合するか破棄するかを判断:",
     pending.parkedBranches,
   );
+  section(
+    "要対応",
+    "未コミット差分の退避に失敗して残した worktree — 中の差分を回収したら " +
+      "`git worktree remove --force <path>` と `git branch -D agent/<タスクID>` で片付けてよい:",
+    data.salvageFailures.map((f) => `${f.taskId}: ${f.worktree}\n      ${f.at} の退避が失敗: ${f.error}`),
+  );
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
     "確認推奨",
@@ -4910,6 +5003,7 @@ export function formatStatus(): string {
       blocked.length +
       pending.worktrees.length +
       pending.parkedBranches.length +
+      data.salvageFailures.length +
       data.pendingDecisions.count +
       data.invalidTaskFiles.length ===
     0
