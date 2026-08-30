@@ -4066,6 +4066,59 @@ export function permissionDenialLines(summary: PermissionDenialSummary): string[
   return lines;
 }
 
+/** 未承認(未アーカイブ)の決定の件数とプレビュー */
+interface PendingDecisions {
+  count: number;
+  preview: { id: string; title: string }[];
+}
+
+/**
+ * `.agent/decisions/` に残っている `D-*.md`(index.md 等は除く)を未承認の決定として読む。
+ * チェック済みの決定は rotateDecisions が archive へ移動するため、ここに残っているものが
+ * 「人間の確認待ち」。ディレクトリが無い・読めない場合は 0 件として扱う(例外を投げない)。
+ */
+export function loadPendingDecisions(decisionsDir: string = repoPaths().decisionsDir): PendingDecisions {
+  let ids: string[];
+  try {
+    ids = fs
+      .readdirSync(decisionsDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.startsWith("D-") && e.name.endsWith(".md"))
+      .map((e) => e.name.slice(0, -".md".length))
+      .sort()
+      .reverse();
+  } catch {
+    return { count: 0, preview: [] };
+  }
+  const preview = ids.slice(0, 3).map((id) => {
+    let title = id;
+    try {
+      const text = fs.readFileSync(path.join(decisionsDir, `${id}.md`), "utf8");
+      const { data } = parseFrontmatter(text);
+      if (typeof data.title === "string") title = data.title;
+    } catch {
+      // 読めない場合は id にフォールバック
+    }
+    return { id, title };
+  });
+  return { count: ids.length, preview };
+}
+
+/**
+ * loadPendingDecisions の結果を status 表示行に整形する。count が 0 なら空配列
+ * (= section() が呼び出し側でセクションごと表示しない)。
+ */
+export function pendingDecisionsSectionLines(pd: PendingDecisions): string[] {
+  if (pd.count === 0) return [];
+  const lines = pd.preview.map((d) => `${d.id}: ${d.title}`);
+  if (pd.count > pd.preview.length) {
+    lines.push(`…他 ${pd.count - pd.preview.length} 件`);
+  }
+  lines.push(
+    "→ 内容を確認したら .agent/decisions/index.md のチェックボックスを [x] にすると archive へ移動",
+  );
+  return lines;
+}
+
 /**
  * `ccloop status` が扱う生データ一式(表示に依存しない)。
  * `formatStatus`(人間向けテキスト)と `statusDataToJson`(`--json`)の両方がここから作る
@@ -4080,6 +4133,8 @@ interface StatusData {
   overview: Overview | null;
   pendingConflicts: PendingConflicts;
   permissionDenials: PermissionDenialSummary;
+  /** 未承認(未アーカイブ)の決定 */
+  pendingDecisions: PendingDecisions;
   nextRunnableTasks: Task[];
   snoozedTasks: Task[];
   metrics: SessionMetrics[];
@@ -4120,6 +4175,7 @@ function collectStatusData(now: Date): StatusData {
   }
   const pendingConflicts = collectPendingConflicts(repoPaths().root, worktreeDir);
   const permissionDenials = summarizePermissionDenials(loadPermissionDenials(), now);
+  const pendingDecisions = loadPendingDecisions();
 
   const runningTaskIds = new Set(
     state.runningSessions.map((s) => s.taskId).filter((id): id is string => id !== undefined),
@@ -4138,6 +4194,7 @@ function collectStatusData(now: Date): StatusData {
     overview,
     pendingConflicts,
     permissionDenials,
+    pendingDecisions,
     nextRunnableTasks: next,
     snoozedTasks: snoozed,
     metrics,
@@ -4221,6 +4278,11 @@ export function formatStatus(): string {
   );
   section("確認推奨", "open な Human Review (REVIEW/INFO) — 回答を待たず続行中:", openReview.map(hrLine));
   section(
+    "確認推奨",
+    `未承認の決定 ${data.pendingDecisions.count} 件 — 人間の確認待ち:`,
+    pendingDecisionsSectionLines(data.pendingDecisions),
+  );
+  section(
     "対応不要",
     "answered — 次の triage / 探索セッションが取り込み予定:",
     answered.map((h) => `${h.id}: ${h.title}`),
@@ -4232,7 +4294,8 @@ export function formatStatus(): string {
       failed.length +
       blocked.length +
       pending.worktrees.length +
-      pending.parkedBranches.length ===
+      pending.parkedBranches.length +
+      data.pendingDecisions.count ===
     0
   ) {
     push("\n要対応事項なし");

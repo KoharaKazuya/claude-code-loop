@@ -308,6 +308,7 @@ describe("status --json / list --json(子プロセスで検証)", () => {
       "overview",
       "pendingConflicts",
       "permissionDenials",
+      "pendingDecisions",
       "nextRunnableTasks",
       "snoozedTasks",
       "metrics",
