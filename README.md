@@ -32,7 +32,7 @@ ccloop feature 自身は次を前提とし、インストールしない(ベー�
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.4.1": {}
+    "ghcr.io/koharakazuya/claude-code-loop/ccloop:0.5.0": {}
   }
 }
 ```
